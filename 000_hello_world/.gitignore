@@ -1,0 +1,35 @@
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Packaging / build artifacts ---
+build/
+dist/
+*.egg-info/
+
+# --- Secrets / local config ---
+.env
+.env.*
+!.env.example
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+
+# --- Claude Code per-user settings (keep .claude/settings.json if you add one) ---
+.claude/settings.local.json
+
+# --- OS junk ---
+.DS_Store
+
+# --- GO
+openrouter_via_langchaingo_go/openrouter_via_langchaingo_go

@@ -1,0 +1,17 @@
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I import sorting, B bugbear, UP pyupgrade
+select = ["E", "W", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+# `read_api_key(path=Path.home() / ".openai")` is an intentional, cheap default.
+extend-immutable-calls = ["pathlib.Path.home"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+ignore_missing_imports = true  # several SDKs (litellm, truststore) ship no stubs
+exclude = ['\.venv']

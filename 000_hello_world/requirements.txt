@@ -1,0 +1,22 @@
+# Pinned dependencies for all hello-world examples.
+# Install into an activated venv with:  pip install -r requirements.txt
+#
+# Versions reflect what is currently installed; bump them deliberately.
+
+# openai_py
+openai==2.30.0
+
+# anthropic_py
+anthropic==0.109.1
+truststore==0.10.4          # injects the OS certificate store into SSL
+
+# openrouter_via_litellm_py
+litellm==1.83.7
+
+# openrouter_via_langchain_py
+langchain==1.3.8
+langchain-openai==1.3.0
+
+# dev tooling (lint + types) — not needed to run the examples
+ruff==0.15.17
+mypy==2.1.0
