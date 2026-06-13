@@ -1,0 +1,1 @@
+{"lang":"<|zh|>","emotion":"<|NEUTRAL|>","event":"<|Speech|>","text":"今天天气很好，我们去公园吧。","timestamps":[0.0,0.2,0.5],"tokens":["今","天"],"words":[]}

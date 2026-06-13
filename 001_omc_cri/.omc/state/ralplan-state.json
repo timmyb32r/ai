@@ -1,0 +1,10 @@
+{
+  "mode": "ralplan",
+  "active": false,
+  "current_phase": "pending_approval",
+  "session_id": "di-cri-radio-client-server-20260613",
+  "source_spec": ".omc/specs/deep-interview-cri-radio-go-client-server.md",
+  "plan_path": ".omc/plans/cri-radio-client-server-plan.md",
+  "consensus": "APPROVED (Planner -> Architect -> Critic, 2 iterations; iteration-1 REJECT on a false segmentation premise, corrected)",
+  "interactive": false
+}

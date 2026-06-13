@@ -1,0 +1,28 @@
+{
+  "active": true,
+  "current_phase": "pending-approval",
+  "state": {
+    "interview_id": "di-cri-radio-client-server-20260613",
+    "type": "brownfield",
+    "current_ambiguity": 0.17,
+    "threshold": 0.2,
+    "threshold_source": "default",
+    "status": "PASSED",
+    "spec_path": ".omc/specs/deep-interview-cri-radio-go-client-server.md",
+    "rounds_completed": 8,
+    "challenge_modes_used": ["contrarian", "simplifier"],
+    "final_scores": {"goal": 0.88, "constraints": 0.85, "criteria": 0.78, "context": 0.78, "ambiguity": 0.17},
+    "decisions": {
+      "client_playback": "shell out to ffplay/mpv (no model dep)",
+      "transport_sync": "server paces 2 streams: chunked-HTTP audio + SSE/NDJSON timestamped subtitles; server is timeline authority",
+      "transcription": "VAD-segmented offline; extend chineseasr to expose Result.Segments{Start,End,Text}",
+      "architecture": "thin clients + heavy server, multi-client, ASR shared once",
+      "delay": "rolling 2-5 min buffer, join at delayed edge, configurable",
+      "ingestion": "on-demand ref-counted, single channel 905, network ffmpeg in NEW server code (lib stays offline)",
+      "edge": "basic resilience: reconnect w/ backoff, no-speech=no subs, graceful disconnect",
+      "acceptance": "auto plumbing tests + recorded manual E2E",
+      "radio_source": "https://sk.cri.cn/905.m3u8 (HLS, MPEG-TS, CRI 905)"
+    },
+    "deferred": ["enrichment: pinyin + English + word-level pronunciation-sync (API-planned)"]
+  }
+}

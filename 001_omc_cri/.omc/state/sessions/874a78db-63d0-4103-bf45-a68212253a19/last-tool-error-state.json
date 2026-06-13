@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cat /private/tmp/claude-501/-Users-timmyb32r-cursor-ai-001-tool-oh-my-claudecode/874a78db-63d0-4103-bf45-a68212253a19/tasks/buy7e9y57.output 2>/dev/null | grep -E 'entrypoint:|BUILD EXIT|n...",
+  "error": "Exit code 1\nentrypoint: shell syntax OK\nBUILD EXIT: 1\n--- image present? ---\nCannot connect to the Docker daemon at unix:///Users/timmyb32r/.colima/docker.sock. Is the docker daemon running?",
+  "timestamp": "2026-06-13T21:13:55.814Z",
+  "retry_count": 1
+}

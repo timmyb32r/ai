@@ -1,0 +1,18 @@
+# One-command run:  docker compose up --build
+# Then on the host (needs ffplay):  go run ./cmd/client -server http://localhost:8080
+services:
+  criradio:
+    build:
+      context: .
+      # args:
+      #   GO_VERSION: "1.24"
+      #   MODEL_NAME: sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
+    image: criradio-server
+    ports:
+      - "8080:8080"
+    environment:
+      # All optional — these are the built-in defaults.
+      ADDR: ":8080"
+      CHANNEL_URL: "https://sk.cri.cn/905.m3u8"
+      DELAY: "180s"
+    restart: unless-stopped

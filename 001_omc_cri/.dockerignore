@@ -1,0 +1,9 @@
+# Keep the build context small — only Go source is needed to build the server.
+.git
+.gitignore
+.omc
+.claude
+README*.md
+docker-compose.yml
+testdata/e2e-checklist.md
+examples
