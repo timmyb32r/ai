@@ -6,8 +6,17 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/timmyb32r/001_omc_cri"
+	"github.com/timmyb32r/001_omc_cri/internal/chineseasr"
 )
+
+// fakeSegmenter returns canned word boundaries for every call.
+type fakeSegmenter struct {
+	result []WordBoundary
+}
+
+func (f *fakeSegmenter) Segment(_ string) []WordBoundary {
+	return f.result
+}
 
 // fakeTranscriber records the wav paths it is asked to transcribe and returns a
 // canned transcript (or ErrEmptyTranscript when text is empty), simulating
@@ -45,7 +54,7 @@ func pcmFor(sec float64) []byte {
 func TestASRStep_FixedWindowAppendsSubtitle(t *testing.T) {
 	t.Parallel()
 	buf := &Buffer{}
-	a := NewASR(nil, buf)
+	a := NewASR(nil, buf, nil)
 	a.tempDir = t.TempDir()
 	fake := &fakeTranscriber{text: "你好世界"}
 	a.setTranscriber(fake)
@@ -77,7 +86,7 @@ func TestASRStep_FixedWindowAppendsSubtitle(t *testing.T) {
 func TestASRStep_WaitsForFullWindow(t *testing.T) {
 	t.Parallel()
 	buf := &Buffer{}
-	a := NewASR(nil, buf)
+	a := NewASR(nil, buf, nil)
 	a.tempDir = t.TempDir()
 	fake := &fakeTranscriber{text: "x"}
 	a.setTranscriber(fake)
@@ -101,7 +110,7 @@ func TestASRStep_WaitsForFullWindow(t *testing.T) {
 func TestASRStep_MusicOnlyWindowAdvancesNoSubtitle(t *testing.T) {
 	t.Parallel()
 	buf := &Buffer{}
-	a := NewASR(nil, buf)
+	a := NewASR(nil, buf, nil)
 	a.tempDir = t.TempDir()
 	fake := &fakeTranscriber{text: ""} // -> ErrEmptyTranscript
 	a.setTranscriber(fake)
@@ -128,7 +137,7 @@ func TestASRStep_MusicOnlyWindowAdvancesNoSubtitle(t *testing.T) {
 func TestASRStep_GapBoundsContiguousRun(t *testing.T) {
 	t.Parallel()
 	buf := &Buffer{}
-	a := NewASR(nil, buf)
+	a := NewASR(nil, buf, nil)
 	a.tempDir = t.TempDir()
 	fake := &fakeTranscriber{text: "你好"}
 	a.setTranscriber(fake)
@@ -152,6 +161,62 @@ func TestASRStep_GapBoundsContiguousRun(t *testing.T) {
 	}
 	if a.cursor != 10.0+a.windowSec {
 		t.Fatalf("cursor = %v, want %v (within the leading run, not jumped to 100)", a.cursor, 10.0+a.windowSec)
+	}
+}
+
+// TestASRStep_WordBoundariesAttached verifies that a segmenter's output is
+// attached to the SubtitleEvent stored in the buffer.
+func TestASRStep_WordBoundariesAttached(t *testing.T) {
+	t.Parallel()
+	buf := &Buffer{}
+	a := NewASR(nil, buf, nil)
+	a.tempDir = t.TempDir()
+	fake := &fakeTranscriber{text: "你好世界"}
+	a.setTranscriber(fake)
+	seg := &fakeSegmenter{result: []WordBoundary{{CharStart: 0, CharEnd: 2}, {CharStart: 2, CharEnd: 4}}}
+	a.setSegmenter(seg)
+
+	buf.AppendPCM(0, pcmFor(12))
+	if err := a.step(context.Background()); err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	got := buf.ReadSubtitlesUpTo(1e9)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 subtitle, got %d", len(got))
+	}
+	wantWords := []WordBoundary{{CharStart: 0, CharEnd: 2}, {CharStart: 2, CharEnd: 4}}
+	if len(got[0].Words) != len(wantWords) {
+		t.Fatalf("expected %d word boundaries, got %d: %+v",
+			len(wantWords), len(got[0].Words), got[0].Words)
+	}
+	for i, w := range wantWords {
+		if got[0].Words[i] != w {
+			t.Errorf("word[%d] = %+v, want %+v", i, got[0].Words[i], w)
+		}
+	}
+}
+
+// TestASRStep_NilSegmenterNoWords verifies that when the segmenter is nil,
+// the Words field is empty (backward-compatible).
+func TestASRStep_NilSegmenterNoWords(t *testing.T) {
+	t.Parallel()
+	buf := &Buffer{}
+	a := NewASR(nil, buf, nil)
+	a.tempDir = t.TempDir()
+	fake := &fakeTranscriber{text: "测试"}
+	a.setTranscriber(fake)
+
+	buf.AppendPCM(0, pcmFor(12))
+	if err := a.step(context.Background()); err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	got := buf.ReadSubtitlesUpTo(1e9)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 subtitle, got %d", len(got))
+	}
+	if len(got[0].Words) != 0 {
+		t.Fatalf("expected no words with nil segmenter, got %d: %+v",
+			len(got[0].Words), got[0].Words)
 	}
 }
 

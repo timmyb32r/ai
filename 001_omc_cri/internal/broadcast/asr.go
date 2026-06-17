@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/timmyb32r/001_omc_cri/internal/chineseasr"
@@ -43,15 +44,15 @@ type windowTranscriber interface {
 }
 
 // ASR is the broadcast-side ASR driver. It pulls the not-yet-transcribed PCM
-// region from the Buffer, writes a temp WAV, runs TranscribeSegments over it,
-// offsets each segment's times onto the broadcast timeline, and stores the
+// region from the Buffer, writes a temp WAV, runs the fixed-window Transcribe
+// over it, offsets each result onto the broadcast timeline, and stores the
 // resulting SubtitleEvents back into the Buffer. It stays offline (only the
 // file-based chineseasr path is used); the broadcast package imports the
 // chineseasr root, which never imports broadcast (no cycle).
 //
-// The driver advances cursor only past finalized (silence-bounded) segments, so
-// trailing not-yet-silence speech is re-processed on the next pass. ASR lag is
-// tolerated: a TranscribeSegments error is logged and the pass retried.
+// The driver advances the cursor by a fixed pass interval so settled PCM is
+// re-processed on each pass. ASR lag is tolerated: a Transcribe error is logged
+// and the pass retried.
 type ASR struct {
 	tr  windowTranscriber
 	buf *Buffer
@@ -69,12 +70,20 @@ type ASR struct {
 	liveMargin float64
 	windowSec  float64
 	sleep      func(ctx context.Context, d time.Duration)
+
+	// segmenter produces word boundaries for the transcribed text.
+	// When nil, word segmentation is skipped (backward-compatible).
+	segmenter WordSegmenter
+
+	// enricher adds pinyin and English to each SubtitleEvent.
+	// When nil, enrichment is skipped. Set via SetEnricher.
+	enricher *Enricher
 }
 
 // NewASR constructs the ASR driver over the given transcriber and buffer. The
 // concrete *chineseasr.Transcriber is stored behind the unexported
 // windowTranscriber interface so tests can inject a fake via setTranscriber.
-func NewASR(transcriber *chineseasr.Transcriber, buf *Buffer) *ASR {
+func NewASR(transcriber *chineseasr.Transcriber, buf *Buffer, segmenter WordSegmenter) *ASR {
 	return &ASR{
 		tr:         transcriber,
 		buf:        buf,
@@ -82,12 +91,20 @@ func NewASR(transcriber *chineseasr.Transcriber, buf *Buffer) *ASR {
 		liveMargin: asrLiveMargin,
 		windowSec:  asrWindowSec,
 		sleep:      asrSleep,
+		segmenter:  segmenter,
 	}
 }
 
 // setTranscriber replaces the transcriber. Unexported test seam (asr_test.go);
 // production wires the concrete transcriber via NewASR.
 func (a *ASR) setTranscriber(t windowTranscriber) { a.tr = t }
+
+// setSegmenter replaces the word segmenter. Unexported test seam.
+func (a *ASR) setSegmenter(s WordSegmenter) { a.segmenter = s }
+
+// SetEnricher installs an Enricher that adds pinyin and English translation to
+// every SubtitleEvent before it is appended to the buffer.  May be nil.
+func (a *ASR) SetEnricher(e *Enricher) { a.enricher = e }
 
 // reset clears the ASR driver's per-epoch state so the next ingest epoch begins
 // on a clean, zero-based timeline (Fix 2). The cursor is the only per-epoch
@@ -141,7 +158,7 @@ func (a *ASR) Run(ctx context.Context) error {
 //     not-yet-silence speech is re-processed next pass (if no finalized segment
 //     came back, cursor is left in place to retry once more audio settles).
 //
-// A TranscribeSegments error is returned (Run logs it); the temp WAV is always
+// A Transcribe error is returned (Run logs it); the temp WAV is always
 // removed.
 func (a *ASR) step(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -197,22 +214,96 @@ func (a *ASR) step(ctx context.Context) error {
 	}
 
 	text := ""
+	var tokens []string
+	var timestamps []float64
 	if res != nil {
 		text = res.Text
+		tokens = res.Tokens
+		timestamps = res.Timestamps
 	}
 	dbg("asr.window start=%.2f win=%.1fs text=%q", regionStart, a.windowSec, text)
 	if text != "" {
-		a.buf.AppendSubtitle(SubtitleEvent{
+		var words []WordBoundary
+		if a.segmenter != nil {
+			words = a.segmenter.Segment(text)
+			words = timestampWords(words, tokens, timestamps)
+		}
+		ev := SubtitleEvent{
 			Start:  regionStart,
 			End:    regionStart + a.windowSec,
 			TextZh: text,
-		})
+			Words:  words,
+		}
+		if a.enricher != nil {
+			a.enricher.Enrich(&ev)
+		}
+		a.buf.AppendSubtitle(ev)
 	}
 	// Always advance by exactly one window so the un-transcribed region never
 	// grows unbounded (the silence-based approach stalled forever on a
 	// continuous music bed).
 	a.cursor = regionStart + a.windowSec
 	return nil
+}
+
+// timestampWords enriches gse word boundaries with sherpa-onnx per-token
+// start timestamps. Each word's StartSec is the timestamp of its first token;
+// EndSec is the timestamp of the next word's first token (or an estimate for
+// the last word). When tokens/timestamps are empty the boundaries are returned
+// unchanged (StartSec/EndSec remain zero — client uses char-based fallback).
+func timestampWords(
+	words []WordBoundary,
+	tokens []string,
+	timestamps []float64,
+) []WordBoundary {
+	if len(tokens) == 0 || len(timestamps) == 0 {
+		return words
+	}
+
+	out := make([]WordBoundary, len(words))
+	for i, w := range words {
+		out[i] = w
+		startIdx := w.CharStart
+		endIdx := w.CharEnd
+		if startIdx < len(timestamps) {
+			out[i].StartSec = timestamps[startIdx]
+		}
+		if endIdx < len(timestamps) {
+			out[i].EndSec = timestamps[endIdx]
+		} else if endIdx == len(tokens) && len(timestamps) > 0 {
+			out[i].EndSec = estimateEndSec(timestamps)
+		}
+	}
+	return out
+}
+
+// estimateEndSec estimates the end time of the last word from the trailing
+// token timestamps using the median inter-token gap (more robust to outliers
+// than the mean, especially for the last word in a window where the final
+// token may be truncated).
+func estimateEndSec(ts []float64) float64 {
+	if len(ts) < 2 {
+		if len(ts) == 1 {
+			return ts[0] + 0.5
+		}
+		return 0
+	}
+	// Collect all positive inter-token gaps.
+	gaps := make([]float64, 0, len(ts)-1)
+	for i := 1; i < len(ts); i++ {
+		gap := ts[i] - ts[i-1]
+		if gap > 0 {
+			gaps = append(gaps, gap)
+		}
+	}
+	// Default fallback if no valid gaps found.
+	if len(gaps) == 0 {
+		return ts[len(ts)-1] + 0.1
+	}
+	// Sort and pick median.
+	sort.Float64s(gaps)
+	medianGap := gaps[len(gaps)/2]
+	return ts[len(ts)-1] + medianGap
 }
 
 // firstPCMTsAtOrAfter returns the timeline ts of the earliest buffered PCM

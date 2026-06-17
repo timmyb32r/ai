@@ -1,9 +1,25 @@
+// Package broadcast ties the CRI radio ingest pipeline together: a single
+// ffmpeg-based ingestor feeds a rolling Buffer (PCM + subtitles), an offline
+// ASR driver transcribes the buffered PCM in fixed windows, and a
+// per-subscriber pacer releases real-time-paced PCM audio and Start-anchored
+// subtitles behind the live edge by a configurable delay.
+//
+// The lifecycle is ref-counted: ingest starts on the first subscriber and
+// stops after the last one leaves (with a linger timer).  A permanent
+// always-on reference keeps ingest running independently of clients.
+//
+// Timeline model: bufferHead = wall-time since first ingested byte.
+// broadcastHead = bufferHead - delay.  Content is released up to
+// broadcastHead; during warming the offset ramps from 0 toward the delay.
 package broadcast
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"log"
 	"math"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -11,23 +27,19 @@ import (
 	"github.com/timmyb32r/001_omc_cri/internal/ingest"
 )
 
-// Pacer / fan-out tuning. The audio queue is sized for several seconds of CBR
-// 64 kbit/s MP3 in ~chunkBytes pieces; the subtitle queue is smaller since
-// events are sparse. Both are bounded so a stalled subscriber never blocks the
-// shared producers (the pacer drops-oldest instead).
+// Pacer / fan-out tuning. The audio queue is sized for several seconds of PCM
+// in ~chunkBytes pieces; the subtitle queue is smaller since events are sparse.
+// Both are bounded so a stalled subscriber never blocks the shared producers
+// (the pacer drops-oldest instead).
 const (
 	audioQueueCap = 32
 	subsQueueCap  = 16
+	syncQueueCap  = 1
 
-	// chunkBytes is the max MP3 bytes a pacer pulls per tick. At CBR 64 kbit/s
-	// (8000 B/s) this is ~1s of audio per chunk, comfortably more than one tick
-	// produces so we never starve.
+	// chunkBytes is the max audio bytes a pacer pulls per tick. At 32000 B/s
+	// (PCM s16le 16kHz mono) this is ~250ms of audio per chunk, comfortably
+	// more than one tick produces so we never starve.
 	chunkBytes = 8192
-
-	// mp3BytesPerSec is the CBR MP3 byte rate (64 kbit/s = 8000 B/s), matching
-	// the ingestor's MP3 branch. The pacer uses it to cap each read so the
-	// released blob never extends past the broadcast head.
-	mp3BytesPerSec = 64 * 1000 / 8
 
 	// pacerTick is the wall cadence at which each subscriber pacer re-reads the
 	// clock and releases more content. Release is gated by the (injected) clock,
@@ -36,7 +48,7 @@ const (
 	pacerTick = 100 * time.Millisecond
 
 	// evictMargin is extra retained history beyond the delay so a just-joined
-	// subscriber starting at the broadcast head still finds its frame boundary.
+	// subscriber starting at the broadcast head still finds its boundary.
 	evictMargin = 30 * time.Second
 
 	// evictTick is how often the maintenance loop trims the buffer and drives
@@ -46,7 +58,7 @@ const (
 
 // Broadcast ties the timeline together: it runs one shared ingest into the
 // Buffer, drives the ASR driver over the buffered PCM, maintains
-// broadcastHead = bufferHead - delay, and fans real-time-paced MP3 plus
+// broadcastHead = bufferHead - delay, and fans real-time-paced PCM plus
 // Start-anchored subtitles out to all subscribers. The ingest lifecycle is
 // ref-counted by subscriber count.
 //
@@ -78,7 +90,8 @@ type Broadcast struct {
 	// start alongside cancel, captured and waited on by stop) rather than a single
 	// reused WaitGroup, so a slow epoch-1 teardown can never overlap an epoch-2
 	// start (Fix 2). nil when ingest is not running.
-	epochWG *sync.WaitGroup
+	epochWG  *sync.WaitGroup
+	alwaysOn bool
 }
 
 // NewBroadcast wires the broadcast pipeline from its dependencies. This
@@ -98,6 +111,7 @@ func NewBroadcast(
 	lifecycle *Lifecycle,
 	ingestor *ingest.Ingestor,
 	transcriber *chineseasr.Transcriber,
+	segmenter WordSegmenter,
 	delay time.Duration,
 	channel string,
 ) *Broadcast {
@@ -105,7 +119,7 @@ func NewBroadcast(
 		clock:    clock,
 		buf:      buf,
 		ingestor: ingestor,
-		asr:      NewASR(transcriber, buf),
+		asr:      NewASR(transcriber, buf, segmenter),
 		delay:    delay,
 		channel:  channel,
 	}
@@ -161,18 +175,14 @@ func (b *Broadcast) start() {
 
 	wg.Add(3)
 
-	// (a) Ingest: PCM/MP3 into the buffer; record ingestStartWall on first bytes.
+	// (a) Ingest: PCM into the buffer; record ingestStartWall on first bytes.
 	go func() {
 		defer wg.Done()
 		onPCM := func(tsSec float64, p []byte) {
 			b.markIngestStarted()
 			b.buf.AppendPCM(tsSec, p)
 		}
-		onMP3 := func(tsSec float64, p []byte) {
-			b.markIngestStarted()
-			b.buf.AppendMP3(tsSec, p)
-		}
-		if err := b.ingestor.Run(ctx, onPCM, onMP3); err != nil && ctx.Err() == nil {
+		if err := b.ingestor.Run(ctx, onPCM); err != nil && ctx.Err() == nil {
 			log.Printf("broadcast: ingest: %v", err)
 		}
 	}()
@@ -194,8 +204,8 @@ func (b *Broadcast) start() {
 
 // stop is the lifecycle stop hook: it cancels THIS epoch's ingest goroutine
 // group and then WAITS for those goroutines (ingest, ASR, maintain) to fully
-// exit before returning (Fix 2). Waiting guarantees epoch-1's onPCM/onMP3/ASR
-// closures can no longer append into the buffer once stop returns, so the next
+// exit before returning (Fix 2). Waiting guarantees epoch-1's onPCM/ASR
+// closure can no longer append into the buffer once stop returns, so the next
 // epoch begins from a genuinely drained state and a clean, zero-based timeline.
 //
 // stop is invoked by Lifecycle.onLingerExpired AFTER it releases l.mu (see that
@@ -305,26 +315,68 @@ func (b *Broadcast) releaseHead() (float64, bool) {
 	if b.lifecycle.State() == Running {
 		return bh - b.delay.Seconds(), true
 	}
-	// Warming (or Starting): release up to the live edge.
-	return bh, true
+	// Warming: use a fixed pre-buffer delay so ASR has time to produce
+	// subtitles before audio is released.  Audio flows continuously.
+	const prebufWarmingSeconds = 20.0
+	head := bh - prebufWarmingSeconds
+	if head < 0 {
+		head = 0
+	}
+	return head, true
 }
 
-// Subscribe registers a new subscriber and returns its paced audio channel, its
-// subtitle channel, and a cancel func that unsubscribes (decrementing the
-// lifecycle ref-count). Channels are bounded; the pacer drops-oldest rather
-// than block. cancel is idempotent.
-func (b *Broadcast) Subscribe() (audio <-chan []byte, subs <-chan SubtitleEvent, cancel func()) {
+// subscriber bundles per-subscriber state for the pacer goroutine. For Opus
+// subscribers the ffmpegCmd is non-nil and PCM is transcoded to OGG/Opus on the
+// fly; for PCM subscribers ffmpegCmd is nil and raw PCM is fanned out directly.
+type subscriber struct {
+	audioCh   chan []byte
+	subsCh    chan SubtitleEvent
+	ctrlCh    chan any
+	ffmpegCmd *exec.Cmd
+	cancelFn  context.CancelFunc
+}
+
+// Subscribe registers a new PCM subscriber and returns its paced audio,
+// subtitle, and control channels plus an idempotent cancel func. The audio
+// channel carries raw s16le 16 kHz mono PCM bytes.
+func (b *Broadcast) Subscribe() (audio <-chan []byte, subs <-chan SubtitleEvent, ctrlCh <-chan any, cancel func()) {
+	return b.subscribe(false)
+}
+
+// SubscribeOpus registers a subscriber whose audio channel carries OGG/Opus
+// instead of raw PCM. PCM is transcoded per-subscriber through ffmpeg.
+func (b *Broadcast) SubscribeOpus() (audio <-chan []byte, subs <-chan SubtitleEvent, ctrlCh <-chan any, cancel func()) {
+	return b.subscribe(true)
+}
+
+// subscribe is the shared implementation. When opus is true, PCM bytes are
+// piped through ffmpeg (libopus, 32 kbps, OGG container) before being sent to
+// the subscriber's audio channel.
+func (b *Broadcast) subscribe(opus bool) (audio <-chan []byte, subs <-chan SubtitleEvent, ctrlCh <-chan any, cancel func()) {
 	b.lifecycle.Acquire()
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	audioCh := make(chan []byte, audioQueueCap)
 	subsCh := make(chan SubtitleEvent, subsQueueCap)
+	ctrlChan := make(chan any, syncQueueCap)
+	ctrlCh = ctrlChan
+
+	sub := &subscriber{
+		audioCh:  audioCh,
+		subsCh:   subsCh,
+		ctrlCh:   ctrlChan,
+		cancelFn: cancelCtx,
+	}
 
 	var done sync.WaitGroup
 	done.Add(1)
 	go func() {
 		defer done.Done()
-		b.pace(ctx, audioCh, subsCh)
+		if opus {
+			b.paceOpus(ctx, sub)
+		} else {
+			b.pace(ctx, sub.audioCh, sub.subsCh, sub.ctrlCh)
+		}
 	}()
 
 	var once sync.Once
@@ -337,16 +389,18 @@ func (b *Broadcast) Subscribe() (audio <-chan []byte, subs <-chan SubtitleEvent,
 			b.lifecycle.Release()
 		})
 	}
-	return audioCh, subsCh, cancel
+	return audioCh, subsCh, ctrlCh, cancel
 }
 
 // pace is one subscriber's pacer goroutine. It establishes a start position on
-// the first iteration, then each tick releases MP3 frames and Start-anchored
-// subtitles whose timeline ts <= broadcastHead, with non-blocking (drop-oldest)
-// sends so a slow subscriber never stalls the shared producers.
-func (b *Broadcast) pace(ctx context.Context, audioCh chan []byte, subsCh chan SubtitleEvent) {
+// the first iteration, then each tick releases PCM audio frames and
+// Start-anchored subtitles whose timeline ts <= broadcastHead, with
+// non-blocking (drop-oldest) sends so a slow subscriber never stalls the
+// shared producers.
+func (b *Broadcast) pace(ctx context.Context, audioCh chan []byte, subsCh chan SubtitleEvent, ctrlCh chan<- any) {
 	t := time.NewTicker(pacerTick)
 	defer t.Stop()
+	defer close(ctrlCh)
 
 	var (
 		started bool
@@ -360,6 +414,9 @@ func (b *Broadcast) pace(ctx context.Context, audioCh chan []byte, subsCh chan S
 		lastSentSubSeq int64 = -1
 		haveSubAnchor  bool
 	)
+
+	bytesPerSec := pcmBytesPerSec
+	readFn := b.buf.ReadPCMFrom
 
 	for {
 		select {
@@ -380,18 +437,22 @@ func (b *Broadcast) pace(ctx context.Context, audioCh chan []byte, subsCh chan S
 			// subtitle whose Start is at or before where this subscriber began.
 			subStartAnchor = curPos
 			haveSubAnchor = true
+			// Send the sync event so the client knows the absolute timeline
+			// position at which audio begins for this subscriber.
+			ctrlCh <- SyncEvent{AudioTimelineStart: curPos}
 		}
 
 		// --- audio: release frames whose boundary is <= head ---
 		for {
-			// Cap the read so the returned blob never extends past head. The MP3
-			// track is CBR (mp3BytesPerSec), so the bytes covering [curPos, head]
-			// are bounded by (head-curPos)*rate; clamp that to chunkBytes per tick.
+			// Cap the read so the returned blob never extends past head. The audio
+			// track is constant-rate (bytesPerSec), so the bytes covering [curPos,
+			// head] are bounded by (head-curPos)*rate; clamp that to chunkBytes per
+			// tick.
 			span := head - curPos
 			if span <= 0 {
 				break
 			}
-			maxBytes := int(span * mp3BytesPerSec)
+			maxBytes := int(span * float64(bytesPerSec))
 			if maxBytes <= 0 {
 				break
 			}
@@ -399,11 +460,11 @@ func (b *Broadcast) pace(ctx context.Context, audioCh chan []byte, subsCh chan S
 				maxBytes = chunkBytes
 			}
 
-			data, frameStart, next := b.buf.ReadMP3From(curPos, maxBytes)
+			data, frameStart, next := readFn(curPos, maxBytes)
 			// Stop BEFORE sending when there is no new frame to deliver:
 			//   - len(data)==0: nothing buffered, or curPos is strictly past the
-			//     latest frame boundary so ReadMP3From reports no progress (the
-			//     re-send fix: the last frame is NOT re-returned once consumed);
+			//     latest frame boundary so readFn reports no progress (the re-send
+			//     fix: the last frame is NOT re-returned once consumed);
 			//   - frameStart > head: the frame has not aged into the window yet.
 			// Breaking here, before the send, is what prevents re-emitting the tail
 			// frame every tick.
@@ -411,14 +472,15 @@ func (b *Broadcast) pace(ctx context.Context, audioCh chan []byte, subsCh chan S
 				break
 			}
 			send(audioCh, data)
-			// Advance strictly past the audio we just delivered. The MP3 track is
-			// CBR, so the blob covers [frameStart, frameStart+len/rate) of timeline;
-			// advancing curPos to that end (never behind the next un-returned
-			// boundary) puts it strictly past every frame we have sent. Once it
-			// reaches the tail, the next read's curPos is past the last boundary and
-			// ReadMP3From returns no progress, so the final frame is delivered
-			// exactly once and never re-included when a newer frame is appended.
-			deliveredEnd := frameStart + float64(len(data))/float64(mp3BytesPerSec)
+			// Advance strictly past the audio we just delivered. The audio track is
+			// constant-rate, so the blob covers [frameStart, frameStart+len/rate) of
+			// timeline; advancing curPos to that end (never behind the next
+			// un-returned boundary) puts it strictly past every frame we have sent.
+			// Once it reaches the tail, the next read's curPos is past the last
+			// boundary and readFn returns no progress, so the final frame is
+			// delivered exactly once and never re-included when a newer frame is
+			// appended.
+			deliveredEnd := frameStart + float64(len(data))/float64(bytesPerSec)
 			if deliveredEnd > next {
 				curPos = deliveredEnd
 			} else {
@@ -450,13 +512,177 @@ func (b *Broadcast) pace(ctx context.Context, audioCh chan []byte, subsCh chan S
 	}
 }
 
+// paceOpus is the pacer for Opus subscribers. It runs a ffmpeg subprocess
+// that transcodes PCM s16le → Opus/OGG (32 kbps) on the fly. PCM bytes are
+// read from the shared Buffer using the same pacing logic as pace(), written to
+// ffmpeg's stdin, and OGG bytes are read from ffmpeg's stdout and sent to the
+// subscriber's audio channel.
+//
+// ffmpeg command (no shell — exec directly):
+//
+//	ffmpeg -f s16le -ar 16000 -ac 1 -i pipe:0 \
+//	  -c:a libopus -b:a 32k -fflags flush_packets \
+//	  -max_delay 200000 -f ogg pipe:1
+//
+// The subscriber struct carries the ffmpeg Cmd so the cancel func can clean it
+// up.
+func (b *Broadcast) paceOpus(ctx context.Context, sub *subscriber) {
+	cmd := exec.CommandContext(ctx,
+		"ffmpeg",
+		"-hide_banner", "-nostdin",
+		"-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "pipe:0",
+		"-c:a", "libopus", "-b:a", "32k",
+		"-fflags", "flush_packets",
+		"-max_delay", "200000",
+		"-f", "ogg", "pipe:1",
+	)
+	sub.ffmpegCmd = cmd
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		log.Printf("broadcast: paceOpus: stdin pipe: %v", err)
+		return
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("broadcast: paceOpus: stdout pipe: %v", err)
+		return
+	}
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("broadcast: paceOpus: ffmpeg start: %v", err)
+		return
+	}
+
+	// Read OGG output in a separate goroutine and feed the subscriber's audio
+	// channel. This runs independently of the PCM pacing loop below.
+	oggDone := make(chan struct{})
+	go func() {
+		defer close(oggDone)
+		buf := make([]byte, 8192)
+		for {
+			n, readErr := stdout.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				select { case sub.audioCh <- chunk: case <-ctx.Done(): return }
+			}
+			if readErr != nil {
+				if readErr != io.EOF {
+					log.Printf("broadcast: paceOpus: ffmpeg stdout read: %v", readErr)
+				}
+				return
+			}
+		}
+	}()
+
+	// PCM pacing loop — same logic as pace(), but writes to ffmpeg stdin instead
+	// of sending directly to the audio channel.
+	t := time.NewTicker(pacerTick)
+	defer t.Stop()
+
+	var (
+		started        bool
+		curPos         float64
+		subStartAnchor float64
+		lastSentSubSeq int64 = -1
+		haveSubAnchor  bool
+	)
+
+	bytesPerSec := pcmBytesPerSec
+	readFn := b.buf.ReadPCMFrom
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Close stdin so ffmpeg flushes and exits.
+			stdin.Close()
+			// Wait for the OGG reader to drain.
+			<-oggDone
+			// Wait for ffmpeg to exit (or kill after timeout).
+			waitCh := make(chan struct{})
+			go func() { cmd.Wait(); close(waitCh) }()
+			select {
+			case <-waitCh:
+			case <-time.After(5 * time.Second):
+				log.Printf("broadcast: paceOpus: ffmpeg did not exit, killing")
+				cmd.Process.Kill()
+			}
+			if stderrBuf.Len() > 0 {
+				log.Printf("broadcast: paceOpus: ffmpeg stderr (%d bytes): %s",
+					stderrBuf.Len(), stderrBuf.String())
+			}
+			return
+		case <-t.C:
+		}
+
+		head, ingestStarted := b.releaseHead()
+		if !ingestStarted {
+			continue
+		}
+
+		if !started {
+			curPos = b.startPosition(head)
+			haveSubAnchor = true
+			}
+		// PCM pacing: read frames ≤ head and write into ffmpeg stdin.
+		for {
+			span := head - curPos
+			if span <= 0 {
+				break
+			}
+			maxBytes := int(span * float64(bytesPerSec))
+			if maxBytes <= 0 {
+				break
+			}
+			if maxBytes > chunkBytes {
+				maxBytes = chunkBytes
+			}
+
+			data, frameStart, next := readFn(curPos, maxBytes)
+			if len(data) == 0 || frameStart > head {
+				break
+			}
+			// Write PCM into ffmpeg stdin. If ffmpeg has exited, break.
+			if _, err := stdin.Write(data); err != nil {
+				log.Printf("broadcast: paceOpus: ffmpeg stdin write: %v", err)
+				return
+			}
+			if !started {
+				started = true
+				sub.ctrlCh <- SyncEvent{AudioTimelineStart: curPos}
+			}
+			deliveredEnd := frameStart + float64(len(data))/float64(bytesPerSec)
+			if deliveredEnd > next {
+				curPos = deliveredEnd
+			} else {
+				curPos = next
+			}
+		}
+
+		// Subtitles: same logic as pace().
+		if haveSubAnchor {
+			events, lastSeq := b.buf.ReadSubtitlesAfterSeq(lastSentSubSeq, head)
+			for _, ev := range events {
+				if ev.Start <= subStartAnchor {
+					continue
+				}
+				sendSub(sub.subsCh, ev)
+			}
+			lastSentSubSeq = lastSeq
+		}
+	}
+}
+
 // startPosition picks where a subscriber begins reading.
 //
 // While Running, the steady-state head trails the live edge by the full delay
 // and there is at least delay+margin of buffered history, so we start at the
-// frame boundary at or before head (clamped to the live edge): the subscriber
-// joins delay seconds behind live, with subtitles already transcribed for that
-// span.
+// PCM entry boundary at or before head (clamped to the live edge): the
+// subscriber joins delay seconds behind live, with subtitles already
+// transcribed for that span.
 //
 // While Warming (the buffer has not yet filled to the delay), starting at the
 // delayed head could be before anything buffered, or could dump a large
@@ -464,16 +690,17 @@ func (b *Broadcast) pace(ctx context.Context, audioCh chan []byte, subsCh chan S
 // seconds with only a bounded (sub-tick) prebuffer; the offset behind live then
 // ramps toward the delay as the buffer fills and the lifecycle flips to Running.
 func (b *Broadcast) startPosition(head float64) float64 {
-	live := b.buf.FrameBoundaryAtOrBefore(math.MaxFloat64) // latest boundary
+	boundary := b.buf.PCMFrameBoundaryAtOrBefore
+	live := boundary(math.MaxFloat64) // latest boundary
 	if b.lifecycle.State() != Running {
 		// Warming: bounded prebuffer near the live edge, never the whole buffer.
-		return live
+		return boundary(head)
 	}
 	target := head
 	if target > live {
 		target = live
 	}
-	return b.buf.FrameBoundaryAtOrBefore(target)
+	return boundary(target)
 }
 
 // send does a non-blocking send on a bounded audio queue, dropping the oldest
@@ -523,6 +750,46 @@ func (b *Broadcast) State() LifecycleState {
 // the pacer releases at the live edge (releaseHead == bufferHead), so the offset
 // reports ~0 and ramps toward the delay as the buffer fills and the lifecycle
 // flips to Running — instead of the old code's full bufferHead (Fix 4).
+// SetEnricher installs an Enricher that adds pinyin and English to every
+// SubtitleEvent produced by the ASR driver. May be nil.
+func (b *Broadcast) SetEnricher(e *Enricher) { b.asr.SetEnricher(e) }
+
+// StartAlwaysOn acquires a permanent lifecycle reference so the ingest pipeline
+// runs independently of client connections. Idempotent.
+func (b *Broadcast) StartAlwaysOn() {
+	b.mu.Lock()
+	if b.alwaysOn {
+		b.mu.Unlock()
+		return
+	}
+	b.alwaysOn = true
+	b.mu.Unlock()
+	// Release b.mu before Acquire — the start hook also takes b.mu.
+	b.lifecycle.Acquire()
+}
+
+// ForceStop tears down the ingest pipeline immediately, bypassing the linger timer.
+func (b *Broadcast) ForceStop() {
+	b.mu.Lock()
+	cancel := b.cancel
+	wg := b.epochWG
+	b.cancel = nil
+	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if wg != nil {
+		wg.Wait()
+	}
+	b.mu.Lock()
+	if b.epochWG == wg {
+		b.epochWG = nil
+	}
+	b.alwaysOn = false
+	b.mu.Unlock()
+	b.lifecycle.ForceStopped()
+}
+
 func (b *Broadcast) Status() Status {
 	var offset float64
 	if bh, ok := b.bufferHead(); ok {

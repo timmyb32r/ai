@@ -1,0 +1,64 @@
+# Base image: ffmpeg + sherpa-onnx-offline + SenseVoice model + CC-CEDICT + gse dicts.
+# Build this ONCE — it rarely changes. Rebuild only when model/sherpa/CEDICT change.
+#
+#   ./download-cache.sh                             # one-time cache fill
+#   docker build -f Dockerfile.base -t criradio-base:latest .   # build base
+#
+# Then rebuild the server as often as needed:
+#   ./docker-build.sh                               # thin server-only build
+
+FROM python:3.12-slim-bookworm
+
+# ffmpeg (HLS/https demuxing), TLS roots, fetch tools.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg ca-certificates wget bzip2 unzip \
+ && rm -rf /var/lib/apt/lists/*
+
+# SenseVoice int8 model (zh/en/ja/ko/yue). Baked in so the image is self-contained.
+# Override with: --build-arg MODEL_NAME=sherpa-onnx-sense-voice-...-<date>
+ARG MODEL_NAME=sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
+COPY .docker-cache/${MODEL_NAME}.tar.bz2 /tmp/model.tar.bz2
+RUN mkdir -p /opt/model \
+ && tar xjf /tmp/model.tar.bz2 -C /opt/model --strip-components=1 \
+ && rm /tmp/model.tar.bz2 \
+ && test -f /opt/model/model.int8.onnx \
+ && test -f /opt/model/tokens.txt
+
+# sherpa-onnx-offline CLI + onnxruntime. The `sherpa-onnx-bin` package ships the
+# C++ binaries; the plain `sherpa-onnx` package is Python bindings only.
+COPY .docker-cache/wheels/ /tmp/wheels/
+RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels sherpa-onnx-bin \
+ && command -v sherpa-onnx-offline \
+ && rm -rf /tmp/wheels
+
+# CC-CEDICT Chinese-English dictionary (~4 MB ZIP → ~8 MB extracted).
+COPY .docker-cache/cedict_1_0_ts_utf-8_mdbg.zip /tmp/cedict.zip
+RUN unzip -o /tmp/cedict.zip -d /opt/ \
+ && test -s /opt/cedict_ts.u8 \
+ && rm /tmp/cedict.zip
+
+# gse Chinese word segmentation dictionaries (tiny text files).
+COPY .docker-cache/gse-dict/ /opt/gse-dict/
+RUN test -f /opt/gse-dict/zh/s_1.txt \
+ && test -f /opt/gse-dict/zh/t_1.txt \
+ && test -f /opt/gse-dict/zh/stop_word.txt
+
+# Entrypoint — resolves tool paths and maps ENV → server flags.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Runtime knobs — override any with `docker run -e NAME=value`.
+ENV ADDR=:8080 \
+    MODEL_DIR=/opt/model \
+    GSE_DICT=/opt/gse-dict \
+    CEDICT=/opt/cedict_ts.u8 \
+    CHANNEL_URL=https://sk.cri.cn/905.m3u8 \
+    DELAY=180s
+
+EXPOSE 8080
+
+# /v1/status responds even when idle (state "stopped"), so it's a good liveness probe.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- "http://127.0.0.1:8080/v1/status" >/dev/null 2>&1 || exit 1
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

@@ -16,10 +16,10 @@ audio through ffplay locally.
 ## Architecture
 
 The server is organised as four cooperating packages. `internal/ingest` spawns
-one ffmpeg subprocess that emits PCM (for ASR) and CBR-64 kbit/s MP3 (for
-clients) simultaneously; the MP3 and PCM frames land in `internal/broadcast`'s
-rolling buffer. `internal/broadcast` tracks a configurable delay behind the
-live edge (default 180 s), real-time-paces each subscriber's MP3 delivery, and
+one ffmpeg subprocess that emits PCM (s16le 16 kHz mono) for both ASR and
+clients; the PCM frames land in `internal/broadcast`'s rolling buffer.
+`internal/broadcast` tracks a configurable delay behind the
+live edge (default 180 s), real-time-paces each subscriber's PCM delivery, and
 runs an ASR driver that feeds silence-bounded WAV segments to the
 `chineseasr.Transcriber` (which shells out to `sherpa-onnx-offline`). Subtitle
 events land back in the buffer keyed by timeline position and are fanned to
@@ -86,7 +86,7 @@ FFPLAY_OPTS="-fflags nobuffer -probesize 32k" go run ./cmd/client -server http:/
 
 | Method | Path | Response | Description |
 |---|---|---|---|
-| GET | `/v1/stream/audio` | `audio/mpeg` chunked | Real-time-paced CBR 64 kbit/s MP3 stream |
+| GET | `/v1/stream/audio` | `audio/L16;rate=16000;channels=1` chunked | Real-time-paced PCM s16le 16 kHz mono stream |
 | GET | `/v1/stream/subtitles` | `text/event-stream` SSE | JSON `SubtitleEvent` objects (`start`, `end`, `text_zh` fields) |
 | GET | `/v1/status` | `application/json` | Snapshot: channel, listeners, state, delay, live-edge offset |
 

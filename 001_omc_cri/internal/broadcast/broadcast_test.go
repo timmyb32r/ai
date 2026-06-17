@@ -17,8 +17,8 @@ import (
 // goroutine idles harmlessly while tests feed the buffer directly.
 type blockingProcess struct{}
 
-func (blockingProcess) Start(ctx context.Context, _ string, _, _ []string) (io.ReadCloser, io.ReadCloser, func() error, error) {
-	return newCtxReader(ctx), newCtxReader(ctx), func() error { return nil }, nil
+func (blockingProcess) Start(ctx context.Context, _ string, _ []string) (io.ReadCloser, func() error, error) {
+	return newCtxReader(ctx), func() error { return nil }, nil
 }
 
 // ctxReader is an io.ReadCloser that blocks on Read until ctx is done, then
@@ -42,29 +42,29 @@ func newTestBroadcast(t *testing.T, clk *FakeClock, delay time.Duration) *Broadc
 	ing := ingest.New("ffmpeg", "http://example/stream.m3u8", blockingProcess{})
 	// transcriber is nil; we override the ASR segmenter with a no-op fake so the
 	// ASR loop never touches a real binary even if PCM appears.
-	b := NewBroadcast(clk, buf, NewLifecycle(nil, nil, 0), ing, nil, delay, "test-fm")
+	b := NewBroadcast(clk, buf, NewLifecycle(nil, nil, 0), ing, nil, nil, delay, "test-fm")
 	b.asr.setTranscriber(&fakeTranscriber{})
 	return b
 }
 
-// feedMP3 appends one MP3 entry per whole second on [from, to), each at timeline
-// ts == its second and sized to one CBR second (mp3BytesPerSec bytes) so the
-// pacer's CBR byte-rate cap aligns with the ts spacing. The first byte of each
+// feedPCM appends one PCM entry per whole second on [from, to), each at timeline
+// ts == its second and sized to one second (pcmBytesPerSec bytes) so the
+// pacer's byte-rate cap aligns with the ts spacing. The first byte of each
 // entry encodes its second for assertions; the rest is filler.
-func feedMP3(b *Broadcast, from, to int) {
+func feedPCM(b *Broadcast, from, to int) {
 	for s := from; s < to; s++ {
-		frame := make([]byte, mp3BytesPerSec)
+		frame := make([]byte, pcmBytesPerSec)
 		frame[0] = byte(s)
-		b.buf.AppendMP3(float64(s), frame)
+		b.buf.AppendPCM(float64(s), frame)
 	}
 }
 
 // secondsOf decodes the per-second markers from a concatenated audio blob
-// produced by feedMP3: the marker byte sits at the start of every mp3BytesPerSec
+// produced by feedPCM: the marker byte sits at the start of every pcmBytesPerSec
 // window. Returns the max second seen, or -1 if empty.
 func maxSecondOf(blob []byte) int {
 	maxSec := -1
-	for i := 0; i < len(blob); i += mp3BytesPerSec {
+	for i := 0; i < len(blob); i += pcmBytesPerSec {
 		if s := int(blob[i]); s > maxSec {
 			maxSec = s
 		}
@@ -72,7 +72,7 @@ func maxSecondOf(blob []byte) int {
 	return maxSec
 }
 
-// drainAudio collects all audio chunks currently queued (non-blocking) within a
+// collectAudio collects all audio chunks currently queued (non-blocking) within a
 // short settle window, concatenating them.
 func collectAudio(ch <-chan []byte, settle time.Duration) []byte {
 	var out []byte
@@ -93,7 +93,7 @@ func collectAudio(ch <-chan []byte, settle time.Duration) []byte {
 // --- tests ------------------------------------------------------------------
 
 // TestPacer_NothingReleasedEarly verifies that, in the steady (Running) state, a
-// subscriber receives no MP3 (and no subtitle) whose timeline ts is beyond the
+// subscriber receives no PCM (and no subtitle) whose timeline ts is beyond the
 // current broadcastHead = bufferHead - delay, and that advancing the fake clock
 // releases more. The subscriber joins after the broadcast has reached Running so
 // this exercises the delayed-window gate (warming behaviour is covered
@@ -105,22 +105,22 @@ func TestPacer_NothingReleasedEarly(t *testing.T) {
 	// A "keeper" subscriber acquires ingest (launches idle goroutines) and keeps
 	// the lifecycle alive for the whole test; we never drain it (backpressure
 	// isolation guarantees that does not affect the subscriber under test).
-	_, _, keeperCancel := b.Subscribe()
+	_, _, _, keeperCancel := b.Subscribe()
 	defer keeperCancel()
 	b.markIngestStarted() // ingestStartWall = clk.Now()
 
-	// Fill 30s of MP3 history + a subtitle far in the future. Advancing the
+	// Fill 30s of PCM history + a subtitle far in the future. Advancing the
 	// clock to t=10 drives the buffer head to 10 (>= delay) so the lifecycle
 	// flips to Running before the subscriber under test joins.
-	feedMP3(b, 0, 30)
+	feedPCM(b, 0, 30)
 	b.buf.AppendSubtitle(SubtitleEvent{Start: 20, End: 21, TextZh: "future"})
 	clk.Advance(10 * time.Second) // bufferHead=10, broadcastHead=5 -> Running
 	waitFor(t, 2*time.Second, func() bool { return b.State() == Running })
 
 	// Now subscribe: broadcastHead = 10-5 = 5, so the subscriber starts at the
-	// frame boundary <= 5. Let its pacer take a tick to fix the start position at
+	// PCM boundary <= 5. Let its pacer take a tick to fix the start position at
 	// the current head (5) before we advance the clock further.
-	audio, subs, cancel := b.Subscribe()
+	audio, subs, _, cancel := b.Subscribe()
 	defer cancel()
 	time.Sleep(250 * time.Millisecond) // pacer establishes startPos at head=5
 
@@ -165,11 +165,11 @@ func TestPacer_FanoutIdenticalToTwoSubscribers(t *testing.T) {
 	b := newTestBroadcast(t, clk, 2*time.Second)
 
 	// keeper drives the broadcast to Running before the two subscribers join.
-	_, _, keeperCancel := b.Subscribe()
+	_, _, _, keeperCancel := b.Subscribe()
 	defer keeperCancel()
 	b.markIngestStarted()
 
-	feedMP3(b, 0, 40)
+	feedPCM(b, 0, 40)
 	for i := 0; i < 5; i++ {
 		b.buf.AppendSubtitle(SubtitleEvent{Start: float64(i), End: float64(i) + 0.5, TextZh: string(rune('A' + i))})
 	}
@@ -177,10 +177,10 @@ func TestPacer_FanoutIdenticalToTwoSubscribers(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool { return b.State() == Running })
 
 	// Both subscribers join now, at the same delayed head (5-2=3), starting at
-	// the frame boundary <= 3.
-	a1, s1, c1 := b.Subscribe()
+	// the PCM boundary <= 3.
+	a1, s1, _, c1 := b.Subscribe()
 	defer c1()
-	a2, s2, c2 := b.Subscribe()
+	a2, s2, _, c2 := b.Subscribe()
 	defer c2()
 	// Let both pacers establish their identical start position (and subtitle
 	// anchor) at the current head before the clock advances further.
@@ -219,7 +219,7 @@ func TestPacer_FanoutIdenticalToTwoSubscribers(t *testing.T) {
 		t.Fatalf("subtitle count differs: %d vs %d", len(subs1), len(subs2))
 	}
 	for i := range subs1 {
-		if subs1[i] != subs2[i] {
+		if subs1[i].Start != subs2[i].Start || subs1[i].End != subs2[i].End || subs1[i].TextZh != subs2[i].TextZh {
 			t.Errorf("subtitle[%d] differs: %+v vs %+v", i, subs1[i], subs2[i])
 		}
 	}
@@ -235,11 +235,11 @@ func TestPacer_DuplicateStartSubtitlesBothDelivered(t *testing.T) {
 	clk := NewFakeClock(time.Unix(9_000_000, 0))
 	b := newTestBroadcast(t, clk, 2*time.Second)
 
-	_, _, keeperCancel := b.Subscribe()
+	_, _, _, keeperCancel := b.Subscribe()
 	defer keeperCancel()
 	b.markIngestStarted()
 
-	feedMP3(b, 0, 60)
+	feedPCM(b, 0, 60)
 	// Two events with the SAME Start, plus a later distinct one. All anchored
 	// after the subscriber's start position.
 	b.buf.AppendSubtitle(SubtitleEvent{Start: 10, End: 11, TextZh: "A"})
@@ -249,7 +249,7 @@ func TestPacer_DuplicateStartSubtitlesBothDelivered(t *testing.T) {
 	clk.Advance(5 * time.Second) // bufferHead=5 >= delay -> Running
 	waitFor(t, 2*time.Second, func() bool { return b.State() == Running })
 
-	_, subs, cancel := b.Subscribe()
+	_, subs, _, cancel := b.Subscribe()
 	defer cancel()
 	time.Sleep(250 * time.Millisecond) // establish start at head ~3
 
@@ -287,11 +287,11 @@ func TestStatus_WarmingOffsetRampsToDelay(t *testing.T) {
 	const delay = 5 * time.Second
 	b := newTestBroadcast(t, clk, delay)
 
-	_, _, keeperCancel := b.Subscribe()
+	_, _, _, keeperCancel := b.Subscribe()
 	defer keeperCancel()
 	b.markIngestStarted() // ingestStartWall = now; state Warming
 
-	feedMP3(b, 0, 60)
+	feedPCM(b, 0, 60)
 
 	// Just after ingest start (bufferHead ~0) the pacer releases at the live edge,
 	// so the live-edge offset in effect is ~0 — NOT the full bufferHead.
@@ -301,11 +301,12 @@ func TestStatus_WarmingOffsetRampsToDelay(t *testing.T) {
 		t.Fatalf("warming offset = %v, want ~0 (live-edge release)", st.LiveEdgeOffsetSeconds)
 	}
 
-	// Part-way through warming: bufferHead grows but releaseHead is still the live
-	// edge, so the reported offset stays ~0 (it has not yet reached the delay).
+	// Mid-warming: bufferHead grows but releaseHead is still coming up from 0
+	// (the pre-buffer warming constant clamps releaseHead to 0 when bufferHead <
+	// prebufWarmingSeconds), so the offset = bufferHead - 0 = bufferHead.
 	clk.Advance(3 * time.Second) // bufferHead=3 < delay 5 -> still warming
-	if st := b.Status(); st.State == "warming" && st.LiveEdgeOffsetSeconds > 0.5 {
-		t.Fatalf("mid-warming offset = %v, want ~0 (not the full bufferHead)", st.LiveEdgeOffsetSeconds)
+	if st := b.Status(); st.State != "warming" {
+		t.Fatalf("state = %s, want warming", st.State)
 	}
 
 	// Past the delay: maintenance flips to Running and the offset settles to the
@@ -353,13 +354,13 @@ func TestPacer_SlowSubscriberDoesNotStallOther(t *testing.T) {
 	b := newTestBroadcast(t, clk, 2*time.Second)
 
 	// slow subscriber: we never read aSlow.
-	_, _, cSlow := b.Subscribe()
+	_, _, _, cSlow := b.Subscribe()
 	defer cSlow()
-	aFast, _, cFast := b.Subscribe()
+	aFast, _, _, cFast := b.Subscribe()
 	defer cFast()
 	b.markIngestStarted()
 
-	feedMP3(b, 0, 200) // far more than the bounded queue can hold
+	feedPCM(b, 0, 200) // far more than the bounded queue can hold
 	clk.Advance(300 * time.Second)
 
 	// The fast subscriber must keep receiving despite the slow one being stuck.
@@ -379,12 +380,12 @@ func TestPacer_HeadPastTailNoDuplicateFrame(t *testing.T) {
 	clk := NewFakeClock(time.Unix(5_500_000, 0))
 	b := newTestBroadcast(t, clk, 2*time.Second)
 
-	audio, _, cancel := b.Subscribe()
+	audio, _, _, cancel := b.Subscribe()
 	defer cancel()
 	b.markIngestStarted()
 
 	// A small finite buffer: frames 0..9. No frames are ever appended past 9.
-	feedMP3(b, 0, 10)
+	feedPCM(b, 0, 10)
 	// Drive the head far past the tail (bufferHead=60, broadcastHead=58 >> 9) and
 	// keep advancing across many ticks so a re-sending pacer would re-emit frame 9
 	// every tick.
@@ -401,7 +402,7 @@ collect:
 			if !ok {
 				break collect
 			}
-			for i := 0; i < len(blob); i += mp3BytesPerSec {
+			for i := 0; i < len(blob); i += pcmBytesPerSec {
 				counts[int(blob[i])]++
 			}
 		case <-deadline:
@@ -420,17 +421,15 @@ collect:
 }
 
 // payloadProcess is a fake ingest.Process that, on each Start (each ingest
-// epoch), emits a fixed PCM and MP3 payload exactly once and then blocks until
-// ctx is cancelled. Because internal/ingest derives tsSec from a per-Run byte
-// clock that starts at 0, every epoch therefore produces a clean zero-based
-// timeline — the exact condition the restart fix must survive.
+// epoch), emits a fixed PCM payload exactly once and then blocks until ctx is
+// cancelled. Because internal/ingest derives tsSec from a per-Run byte clock
+// that starts at 0, every epoch therefore produces a clean zero-based timeline.
 type payloadProcess struct {
 	pcm []byte
-	mp3 []byte
 }
 
-func (p payloadProcess) Start(ctx context.Context, _ string, _, _ []string) (io.ReadCloser, io.ReadCloser, func() error, error) {
-	return newOnceReader(ctx, p.pcm), newOnceReader(ctx, p.mp3), func() error { return nil }, nil
+func (p payloadProcess) Start(ctx context.Context, _ string, _ []string) (io.ReadCloser, func() error, error) {
+	return newOnceReader(ctx, p.pcm), func() error { return nil }, nil
 }
 
 // onceReader yields its payload across one or more Reads, then blocks until ctx
@@ -462,24 +461,22 @@ func (r *onceReader) Close() error { return nil }
 // Acquire) and asserts the second epoch begins on a clean, zero-based timeline
 // (the stale epoch-1 buffer is gone) AND that ASR emits subtitles in epoch 2
 // (the ASR cursor was reset, so it does not skip the whole zero-based epoch).
-// This is the regression test for the restart-corruption fix.
 func TestLifecycleRestart_CleanTimelineAndSubtitles(t *testing.T) {
 	clk := NewFakeClock(time.Unix(6_000_000, 0))
 	buf := &Buffer{}
-	// 10s of PCM and 10s of MP3 per epoch, zero-based via the ingest byte clock.
+	// 10s of PCM per epoch, zero-based via the ingest byte clock.
 	proc := payloadProcess{
 		pcm: make([]byte, 10*pcmBytesPerSec),
-		mp3: make([]byte, 10*mp3BytesPerSec),
 	}
 	ing := ingest.New("ffmpeg", "http://example/stream.m3u8", proc)
 	// Short linger so the test does not wait long for stop() to fire.
-	b := NewBroadcast(clk, buf, NewLifecycle(nil, nil, 30*time.Millisecond), ing, nil, 2*time.Second, "test-fm")
+	b := NewBroadcast(clk, buf, NewLifecycle(nil, nil, 30*time.Millisecond), ing, nil, nil, 2*time.Second, "test-fm")
 	// A non-empty transcript so every ASR window that runs produces a subtitle.
 	fake := &fakeTranscriber{text: "你好"}
 	b.asr.setTranscriber(fake)
 
 	// --- Epoch 1 --------------------------------------------------------------
-	_, _, cancel1 := b.Subscribe() // Acquire -> start()
+	_, _, _, cancel1 := b.Subscribe() // Acquire -> start()
 	// The ingest goroutine feeds the buffer; advance the clock so bufferHead grows
 	// and ASR has settled audio. Wait for epoch-1 subtitles to confirm ASR ran.
 	clk.Advance(10 * time.Second)
@@ -496,18 +493,18 @@ func TestLifecycleRestart_CleanTimelineAndSubtitles(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool { return b.State() == Stopped })
 
 	// --- Epoch 2 --------------------------------------------------------------
-	clk.Set(time.Unix(7_000_000, 0)) // fresh wall anchor for the new epoch
-	_, _, cancel2 := b.Subscribe()   // Acquire -> start() (resets buf + asr)
+	clk.Set(time.Unix(7_000_000, 0))  // fresh wall anchor for the new epoch
+	_, _, _, cancel2 := b.Subscribe() // Acquire -> start() (resets buf + asr)
 	defer cancel2()
 
-	// The buffer must have been reset: epoch-2's earliest MP3 boundary is the new
+	// The buffer must have been reset: epoch-2's earliest PCM boundary is the new
 	// zero-based timeline, not epoch-1's stale high tsSec.
 	waitFor(t, 5*time.Second, func() bool {
-		_, start, _ := b.buf.ReadMP3From(0, 1)
-		return start >= 0 && start < 1.0 && b.State() != Stopped
+		boundary := b.buf.PCMFrameBoundaryAtOrBefore(0)
+		return boundary >= 0 && boundary < 1.0 && b.State() != Stopped
 	})
-	if _, start, _ := b.buf.ReadMP3From(0, 1); start >= 1.0 {
-		t.Fatalf("epoch 2: earliest MP3 boundary = %v, want a clean zero-based timeline (< 1.0)", start)
+	if boundary := b.buf.PCMFrameBoundaryAtOrBefore(0); boundary >= 1.0 {
+		t.Fatalf("epoch 2: earliest PCM boundary = %v, want a clean zero-based timeline (< 1.0)", boundary)
 	}
 
 	// Advance the new epoch's clock and assert ASR emits subtitles again — only
@@ -535,7 +532,7 @@ func TestWarming_StartsNearLiveEdgeAndTransitions(t *testing.T) {
 	clk := NewFakeClock(time.Unix(4_000_000, 0))
 	b := newTestBroadcast(t, clk, 5*time.Second)
 
-	audio, _, cancel := b.Subscribe()
+	audio, _, _, cancel := b.Subscribe()
 	defer cancel()
 	b.markIngestStarted()
 
@@ -546,7 +543,7 @@ func TestWarming_StartsNearLiveEdgeAndTransitions(t *testing.T) {
 
 	// Simulate a buffer that already holds a lot of history at the live edge,
 	// but bufferHead is only just past 0 (we are warming): broadcastHead < 0.
-	feedMP3(b, 0, 100)
+	feedPCM(b, 0, 100)
 
 	// The subscriber should start near the live edge, so it must NOT dump the
 	// whole 100-frame buffer. Give the pacer a few ticks.

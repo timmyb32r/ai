@@ -15,7 +15,7 @@ const goldenText = "今天天气很好，我们去公园吧。"
 // readGolden loads the single golden SenseVoice stdout line from testdata.
 func readGolden(t *testing.T) []byte {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("testdata", "golden_sensevoice_stdout.txt"))
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "golden_sensevoice_stdout.txt"))
 	if err != nil {
 		t.Fatalf("read golden fixture: %v", err)
 	}

@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/timmyb32r/001_omc_cri"
+	"github.com/timmyb32r/001_omc_cri/internal/chineseasr"
 )
 
 func main() {

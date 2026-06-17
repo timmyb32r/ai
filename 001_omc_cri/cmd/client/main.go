@@ -1,6 +1,6 @@
 // Command client is the thin CRI-radio console client. It connects to the
 // server's two streams: it pipes GET /v1/stream/audio into a media player
-// (ffplay by default, reading MP3 from stdin) and concurrently consumes the
+// (ffplay by default, reading PCM from stdin) and concurrently consumes the
 // GET /v1/stream/subtitles SSE stream, printing each Chinese subtitle line with
 // its timestamp. Ctrl-C cancels cleanly and kills the player.
 //
@@ -34,7 +34,7 @@ type subtitle struct {
 
 func main() {
 	server := flag.String("server", "http://localhost:8080", "server base URL")
-	player := flag.String("player", "ffplay", "media player binary that reads MP3 from stdin")
+	player := flag.String("player", "ffplay", "media player binary that reads PCM from stdin")
 	flag.Parse()
 
 	base := strings.TrimRight(*server, "/")

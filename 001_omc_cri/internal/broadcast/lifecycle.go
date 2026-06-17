@@ -223,3 +223,19 @@ func (l *Lifecycle) Count() int {
 	defer l.mu.Unlock()
 	return l.refCount
 }
+
+// ForceStopped immediately transitions the lifecycle to Stopped, resetting the
+// ref-count and cancelling any pending linger timer. It is used by Broadcast's
+// ForceStop during graceful server shutdown so the always-on ingest pipeline is
+// torn down cleanly without waiting for the linger window.
+//
+// Unlike onLingerExpired, ForceStopped does NOT call the stop hook — the caller
+// (Broadcast.ForceStop) has already cancelled the epoch context and waited for
+// goroutines. ForceStopped only cleans up lifecycle bookkeeping.
+func (l *Lifecycle) ForceStopped() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.cancelTimerLocked()
+	l.state = Stopped
+	l.refCount = 0
+}

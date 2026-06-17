@@ -3,31 +3,27 @@ package broadcast
 import "sync"
 
 // Buffer is the thread-safe rolling timeline buffer shared by the ingest
-// producer, the ASR driver, and the per-subscriber pacers. It stores three
+// producer, the ASR driver, and the per-subscriber pacers. It stores two
 // timeline-keyed tracks:
-//   - PCM (s16le 16 kHz mono) bytes, appended by timestamp, consumed by ASR;
-//   - CBR MP3 bytes with frame boundaries (each AppendMP3 chunk starts on a
-//     frame boundary at its timeline position) so late joiners can start on a
-//     frame boundary;
+//   - PCM (s16le 16 kHz mono) bytes, appended by timestamp, consumed by ASR
+//     and served to subscribers;
 //   - SubtitleEvents, released Start-anchored by the pacer.
 //
 // Old data past the configured window is evicted via EvictBefore.
 //
 // All tracks are kept ordered ascending by their timeline anchor (tsSec for
-// PCM/MP3, Start for subtitles). The ingestor delivers monotonically
-// increasing, frame-aligned chunks, so appends are normally already in order;
-// the implementation nonetheless inserts in sorted position to stay correct if
-// a slightly out-of-order append arrives.
+// PCM, Start for subtitles). The ingestor delivers monotonically increasing
+// chunks, so appends are normally already in order; the implementation
+// nonetheless inserts in sorted position to stay correct if a slightly
+// out-of-order append arrives.
 //
 // Every method takes b.mu so the buffer is safe for concurrent producers and
 // consumers (verified under -race in buffer_test.go).
 type Buffer struct {
 	mu sync.Mutex
 
-	// pcm and mp3 are timeline-ordered entries. Each mp3 entry begins on a
-	// frame boundary at its tsSec (the ingestor delivers frame-aligned chunks).
+	// pcm is timeline-ordered PCM entries.
 	pcm []pcmEntry
-	mp3 []mp3Entry
 
 	// subs are subtitle events kept ordered by Start. Each carries a monotonic
 	// append sequence so the pacer can dedup by sequence rather than by Start;
@@ -45,21 +41,14 @@ type pcmEntry struct {
 	bytes []byte
 }
 
-// mp3Entry is one or more contiguous CBR MP3 frames that begin on a frame
-// boundary at timeline tsSec.
-type mp3Entry struct {
-	tsSec float64
-	bytes []byte
-}
-
 // subEntry is one subtitle event tagged with its monotonic append sequence.
 type subEntry struct {
 	ev  SubtitleEvent
 	seq int64
 }
 
-// Reset clears all buffered PCM, MP3, and subtitle data under the mutex,
-// returning the buffer to its empty zero state.
+// Reset clears all buffered PCM and subtitle data under the mutex, returning
+// the buffer to its empty zero state.
 //
 // ADDITIVE (not in the frozen set): used by the broadcast at the start of each
 // ingest epoch so a re-acquired broadcast begins from a clean, zero-based
@@ -71,7 +60,6 @@ func (b *Buffer) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.pcm = b.pcm[:0]
-	b.mp3 = b.mp3[:0]
 	b.subs = b.subs[:0]
 	b.subSeq = 0
 }
@@ -97,28 +85,6 @@ func (b *Buffer) AppendPCM(tsSec float64, p []byte) {
 	b.pcm[i] = e
 }
 
-// AppendMP3 appends one or more CBR MP3 frames starting on a frame boundary at
-// timeline tsSec. Frames within a single call are contiguous; consecutive calls
-// extend the timeline.
-func (b *Buffer) AppendMP3(tsSec float64, frame []byte) {
-	if len(frame) == 0 {
-		return
-	}
-	cp := make([]byte, len(frame))
-	copy(cp, frame)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	e := mp3Entry{tsSec: tsSec, bytes: cp}
-	if len(b.mp3) == 0 || tsSec >= b.mp3[len(b.mp3)-1].tsSec {
-		b.mp3 = append(b.mp3, e)
-		return
-	}
-	i := mp3InsertIndex(b.mp3, tsSec)
-	b.mp3 = append(b.mp3, mp3Entry{})
-	copy(b.mp3[i+1:], b.mp3[i:])
-	b.mp3[i] = e
-}
-
 // AppendSubtitle stores a transcribed subtitle event, keeping the track ordered
 // by Start for later Start-anchored release by the pacer. Each event is tagged
 // with the next monotonic sequence so equal-Start events stay distinguishable.
@@ -137,95 +103,9 @@ func (b *Buffer) AppendSubtitle(ev SubtitleEvent) {
 	b.subs[i] = e
 }
 
-// ReadMP3From returns MP3 bytes beginning at the frame boundary at or before
-// fromTsSec (or the earliest available frame if fromTsSec predates the buffer),
-// up to maxBytes of contiguous bytes, along with frameStartTsSec (the boundary
-// actually used) and nextTsSec (the timeline position to request next).
-//
-// When the buffer is empty it returns (nil, 0, fromTsSec) so the caller can
-// retry from the same position once data arrives. nextTsSec is the tsSec of the
-// first frame not returned; if everything available was returned it is the
-// boundary just past the last returned frame (== the last entry's tsSec when
-// only one entry exists, advanced to the would-be next boundary otherwise).
-//
-// No-progress guarantee (re-send fix): when fromTsSec is STRICTLY past the
-// latest frame boundary there is no newer frame to deliver, so it returns
-// (nil, lastBoundary, fromTsSec) — i.e. nextTsSec == fromTsSec (no forward
-// progress) and no bytes — rather than re-returning the last frame. Once the
-// pacer's curPos has advanced past the tail boundary, this stops it re-emitting
-// the final frame every tick. A read whose fromTsSec lands exactly ON a
-// boundary still returns that frame (first delivery of the tail frame).
-func (b *Buffer) ReadMP3From(fromTsSec float64, maxBytes int) (data []byte, frameStartTsSec float64, nextTsSec float64) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if len(b.mp3) == 0 {
-		return nil, 0, fromTsSec
-	}
-
-	// No newer frame to deliver: fromTsSec sits strictly past the latest frame
-	// boundary. Report no forward progress (nextTsSec == fromTsSec, nil data) so
-	// the caller does not re-emit the last frame until a newer one is appended.
-	lastBoundary := b.mp3[len(b.mp3)-1].tsSec
-	if fromTsSec > lastBoundary {
-		return nil, lastBoundary, fromTsSec
-	}
-
-	// Find the index of the frame boundary at or before fromTsSec. If
-	// fromTsSec is older than the buffer, start at the earliest entry.
-	start := mp3BoundaryIndexAtOrBefore(b.mp3, fromTsSec)
-	frameStartTsSec = b.mp3[start].tsSec
-
-	if maxBytes <= 0 {
-		// Nothing requested; report where to resume.
-		return nil, frameStartTsSec, frameStartTsSec
-	}
-
-	var out []byte
-	i := start
-	for ; i < len(b.mp3); i++ {
-		entry := b.mp3[i]
-		// Never split an entry: each AppendMP3 chunk is an atomic frame-aligned
-		// unit. Include it only if it fits, but always include at least the
-		// first (start) entry so the reader makes progress.
-		if len(out) > 0 && len(out)+len(entry.bytes) > maxBytes {
-			break
-		}
-		out = append(out, entry.bytes...)
-		if len(out) >= maxBytes {
-			i++
-			break
-		}
-	}
-
-	if i < len(b.mp3) {
-		// More data remains: resume at the next un-returned boundary.
-		nextTsSec = b.mp3[i].tsSec
-	} else {
-		// Returned everything available. Resume just past the last frame; we do
-		// not know the next frame's tsSec yet, so report the last boundary so a
-		// subsequent ReadMP3From with the same value re-finds it and reads only
-		// newly appended frames after it.
-		nextTsSec = b.mp3[len(b.mp3)-1].tsSec
-	}
-	return out, frameStartTsSec, nextTsSec
-}
-
-// FrameBoundaryAtOrBefore returns the timeline position of the latest MP3 frame
-// boundary at or before posSec, or the earliest available boundary if none is
-// at or before posSec. Returns 0 when no MP3 data is buffered.
-func (b *Buffer) FrameBoundaryAtOrBefore(posSec float64) float64 {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if len(b.mp3) == 0 {
-		return 0
-	}
-	return b.mp3[mp3BoundaryIndexAtOrBefore(b.mp3, posSec)].tsSec
-}
-
-// EvictBefore drops all PCM, MP3, and subtitle data anchored strictly before
-// tsSec to bound memory to the configured window. A subtitle is evicted only
-// once its End is before tsSec so in-flight (not-yet-released) subtitles survive.
+// EvictBefore drops all PCM and subtitle data anchored strictly before tsSec
+// to bound memory to the configured window. A subtitle is evicted only once
+// its End is before tsSec so in-flight (not-yet-released) subtitles survive.
 func (b *Buffer) EvictBefore(tsSec float64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -237,15 +117,6 @@ func (b *Buffer) EvictBefore(tsSec float64) {
 	}
 	if pi > 0 {
 		b.pcm = append(b.pcm[:0], b.pcm[pi:]...)
-	}
-
-	// MP3: drop entries whose tsSec < tsSec.
-	mi := 0
-	for mi < len(b.mp3) && b.mp3[mi].tsSec < tsSec {
-		mi++
-	}
-	if mi > 0 {
-		b.mp3 = append(b.mp3[:0], b.mp3[mi:]...)
 	}
 
 	// Subtitles: drop only fully-past events (End < tsSec). Sequences on the
@@ -261,30 +132,6 @@ func (b *Buffer) EvictBefore(tsSec float64) {
 		}
 		b.subs = kept
 	}
-}
-
-// ReadPCMRange returns a copy of the contiguous PCM bytes whose anchoring tsSec
-// falls in [fromSec, toSec). ok is false when no PCM entry intersects the range.
-//
-// ADDITIVE (not in the frozen set): exposed for the ASR driver (asr.go) to pull
-// the PCM span it needs to transcribe. Documented in the worker-buffer handoff.
-func (b *Buffer) ReadPCMRange(fromSec, toSec float64) (data []byte, ok bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	var out []byte
-	for _, e := range b.pcm {
-		if e.tsSec < fromSec {
-			continue
-		}
-		if e.tsSec >= toSec {
-			break
-		}
-		out = append(out, e.bytes...)
-	}
-	if len(out) == 0 {
-		return nil, false
-	}
-	return out, true
 }
 
 // ReadContiguousPCMFrom returns the LEADING CONTIGUOUS run of buffered PCM
@@ -392,25 +239,109 @@ func (b *Buffer) ReadSubtitlesAfterSeq(afterSeq int64, headSec float64) (events 
 	return events, lastSeq
 }
 
-// --- ordering helpers (callers hold b.mu) ---
+// ReadPCMFrom returns PCM bytes beginning from the position at or before
+// fromTsSec, up to maxBytes of contiguous bytes, along with startTsSec (the
+// actual timeline position of the first returned byte) and nextTsSec (the
+// timeline position to request next).
+//
+// When no PCM data is buffered it returns (nil, 0, fromTsSec) so the caller can
+// retry from the same position once data arrives. nextTsSec is the position
+// just past the last returned byte.
+func (b *Buffer) ReadPCMFrom(fromTsSec float64, maxBytes int) (data []byte, startTsSec float64, nextTsSec float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
-// pcmInsertIndex returns the index at which an entry with the given tsSec should
-// be inserted to keep b.pcm ascending (stable: after equal tsSec).
-func pcmInsertIndex(s []pcmEntry, tsSec float64) int {
+	if len(b.pcm) == 0 {
+		return nil, 0, fromTsSec
+	}
+
+	// Find the entry at or before fromTsSec.
+	idx := pcmIndexAtOrBefore(b.pcm, fromTsSec)
+	entry := b.pcm[idx]
+
+	// Calculate byte offset within this entry for fromTsSec.
+	byteOffset := int((fromTsSec - entry.tsSec) * pcmBytesPerSec)
+	if byteOffset < 0 {
+		byteOffset = 0
+	}
+
+	// If offset is past this entry, try the next one.
+	if byteOffset >= len(entry.bytes) {
+		if idx+1 < len(b.pcm) {
+			idx++
+			entry = b.pcm[idx]
+			byteOffset = 0
+		} else {
+			return nil, entry.tsSec, fromTsSec
+		}
+	}
+
+	startTsSec = entry.tsSec + float64(byteOffset)/float64(pcmBytesPerSec)
+
+	var out []byte
+	remaining := maxBytes
+	i := idx
+	for ; i < len(b.pcm) && remaining > 0; i++ {
+		e := b.pcm[i]
+		off := 0
+		if i == idx {
+			off = byteOffset
+		}
+		take := len(e.bytes) - off
+		if take > remaining {
+			take = remaining
+		}
+		if take > 0 {
+			out = append(out, e.bytes[off:off+take]...)
+			remaining -= take
+		}
+	}
+
+	if len(out) == 0 {
+		return nil, startTsSec, fromTsSec
+	}
+
+	// PCM is continuous (no frame boundaries), so the next position is always the
+	// byte position immediately after the returned data.
+	nextTsSec = startTsSec + float64(len(out))/float64(pcmBytesPerSec)
+	return out, startTsSec, nextTsSec
+}
+
+// PCMFrameBoundaryAtOrBefore returns the timeline position of the earliest PCM
+// entry boundary at or before posSec, or the earliest available if none is at
+// or before posSec. Returns 0 when no PCM data is buffered.
+func (b *Buffer) PCMFrameBoundaryAtOrBefore(posSec float64) float64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.pcm) == 0 {
+		return 0
+	}
+	return b.pcm[pcmIndexAtOrBefore(b.pcm, posSec)].tsSec
+}
+
+// pcmIndexAtOrBefore returns the index of the latest PCM entry whose
+// tsSec <= posSec, or 0 if every entry is after posSec. Requires len(s) > 0.
+func pcmIndexAtOrBefore(s []pcmEntry, posSec float64) int {
 	lo, hi := 0, len(s)
 	for lo < hi {
 		mid := (lo + hi) / 2
-		if s[mid].tsSec <= tsSec {
+		if s[mid].tsSec <= posSec {
 			lo = mid + 1
 		} else {
 			hi = mid
 		}
 	}
-	return lo
+	if lo == 0 {
+		return 0
+	}
+	return lo - 1
 }
 
-// mp3InsertIndex mirrors pcmInsertIndex for the MP3 track.
-func mp3InsertIndex(s []mp3Entry, tsSec float64) int {
+// --- ordering helpers (callers hold b.mu) ---
+
+// pcmInsertIndex returns the index at which an entry with the given tsSec should
+// be inserted to keep b.pcm ascending (stable: after equal tsSec).
+func pcmInsertIndex(s []pcmEntry, tsSec float64) int {
 	lo, hi := 0, len(s)
 	for lo < hi {
 		mid := (lo + hi) / 2
@@ -438,22 +369,3 @@ func subInsertIndex(s []subEntry, start float64) int {
 	return lo
 }
 
-// mp3BoundaryIndexAtOrBefore returns the index of the latest MP3 entry whose
-// tsSec <= posSec, or 0 if every entry is after posSec. Requires len(s) > 0.
-func mp3BoundaryIndexAtOrBefore(s []mp3Entry, posSec float64) int {
-	// Binary search for the last index with tsSec <= posSec.
-	lo, hi := 0, len(s)
-	for lo < hi {
-		mid := (lo + hi) / 2
-		if s[mid].tsSec <= posSec {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
-	}
-	// lo is the count of entries with tsSec <= posSec.
-	if lo == 0 {
-		return 0 // posSec older than the buffer; use earliest.
-	}
-	return lo - 1
-}

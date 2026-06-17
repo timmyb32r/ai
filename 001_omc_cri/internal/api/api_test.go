@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,6 +20,7 @@ import (
 type fakeBroadcaster struct {
 	audio  chan []byte
 	subs   chan broadcast.SubtitleEvent
+	ctrl   chan any
 	status broadcast.Status
 	// cancelCalled is incremented each time the cancel func returned by
 	// Subscribe is invoked, letting tests assert ref-count release.
@@ -29,13 +31,19 @@ func newFake(status broadcast.Status) *fakeBroadcaster {
 	return &fakeBroadcaster{
 		audio:  make(chan []byte, 8),
 		subs:   make(chan broadcast.SubtitleEvent, 8),
+		ctrl:   make(chan any, 1),
 		status: status,
 	}
 }
 
-func (f *fakeBroadcaster) Subscribe() (<-chan []byte, <-chan broadcast.SubtitleEvent, func()) {
+func (f *fakeBroadcaster) Subscribe() (<-chan []byte, <-chan broadcast.SubtitleEvent, <-chan any, func()) {
 	cancel := func() { f.cancelCalled.Add(1) }
-	return f.audio, f.subs, cancel
+	return f.audio, f.subs, f.ctrl, cancel
+}
+
+func (f *fakeBroadcaster) SubscribeOpus() (<-chan []byte, <-chan broadcast.SubtitleEvent, <-chan any, func()) {
+	cancel := func() { f.cancelCalled.Add(1) }
+	return f.audio, f.subs, f.ctrl, cancel
 }
 
 func (f *fakeBroadcaster) Status() broadcast.Status { return f.status }
@@ -88,8 +96,8 @@ func TestStatusMethodNotAllowed(t *testing.T) {
 	}
 }
 
-// TestAudioStream verifies GET /v1/stream/audio returns 200, audio/mpeg
-// Content-Type and streams the bytes pushed on the fake audio channel.
+// TestAudioStream verifies GET /v1/stream/audio returns 200,
+// audio/L16;rate=16000;channels=1 Content-Type and streams the PCM data.
 func TestAudioStream(t *testing.T) {
 	fake := newFake(broadcast.Status{State: "running"})
 	mux := api.NewMux(fake)
@@ -97,8 +105,8 @@ func TestAudioStream(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	chunk1 := []byte("MP3FRAME1")
-	chunk2 := []byte("MP3FRAME2")
+	chunk1 := []byte("PCMDATA1")
+	chunk2 := []byte("PCMDATA2")
 	fake.audio <- chunk1
 	fake.audio <- chunk2
 
@@ -112,11 +120,10 @@ func TestAudioStream(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	ct := resp.Header.Get("Content-Type")
-	if ct != "audio/mpeg" {
-		t.Fatalf("expected audio/mpeg, got %q", ct)
+	if ct != "audio/L16;rate=16000;channels=1" {
+		t.Fatalf("expected audio/L16;rate=16000;channels=1, got %q", ct)
 	}
 
-	// Read exactly len(chunk1)+len(chunk2) bytes then close the connection.
 	buf := make([]byte, len(chunk1)+len(chunk2))
 	if _, err := io.ReadFull(resp.Body, buf); err != nil {
 		t.Fatalf("read body: %v", err)
@@ -125,15 +132,47 @@ func TestAudioStream(t *testing.T) {
 		t.Fatalf("body mismatch: got %q want %q", buf, string(chunk1)+string(chunk2))
 	}
 
-	// Close the connection to trigger client disconnect / cancel.
 	resp.Body.Close()
-
-	// Allow handler goroutine time to notice disconnect and call cancel.
 	time.Sleep(50 * time.Millisecond)
 
 	if n := fake.cancelCalled.Load(); n < 1 {
 		t.Fatalf("expected cancel to be called at least once, got %d", n)
 	}
+}
+
+// TestAudioStreamHeaders verifies X-Audio-Timeline-Start and X-Audio-Bitrate
+// are present when a SyncEvent is received.
+func TestAudioStreamHeaders(t *testing.T) {
+	fake := newFake(broadcast.Status{State: "running"})
+	mux := api.NewMux(fake)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	fake.ctrl <- broadcast.SyncEvent{AudioTimelineStart: 50.0}
+	fake.audio <- []byte("PCMDUMMY")
+
+	resp, err := http.Get(srv.URL + "/v1/stream/audio")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "audio/L16;rate=16000;channels=1" {
+		t.Fatalf("expected audio/L16;rate=16000;channels=1, got %q", ct)
+	}
+	if ts := resp.Header.Get("X-Audio-Timeline-Start"); ts != "50" {
+		t.Fatalf("expected X-Audio-Timeline-Start: 50, got %q", ts)
+	}
+	// PCM bitrate is 256 kbps (32000 B/s * 8 / 1000).
+	if br := resp.Header.Get("X-Audio-Bitrate"); br != "256" {
+		t.Fatalf("expected X-Audio-Bitrate: 256, got %q", br)
+	}
+
+	close(fake.audio)
 }
 
 // TestAudioStreamMethodNotAllowed verifies POST /v1/stream/audio returns 405.
@@ -151,8 +190,9 @@ func TestAudioStreamMethodNotAllowed(t *testing.T) {
 }
 
 // TestSubtitleStream verifies GET /v1/stream/subtitles returns text/event-stream
-// and emits `data: {json}` frames for events pushed on the fake subs channel.
-// It also asserts that Last-Event-ID is ignored (client still receives live events).
+// and emits `event: sync` followed by `event: subtitle` frames for events pushed
+// on the fake channels. It also asserts that Last-Event-ID is ignored (client
+// still receives live events).
 func TestSubtitleStream(t *testing.T) {
 	fake := newFake(broadcast.Status{State: "running"})
 	mux := api.NewMux(fake)
@@ -160,10 +200,12 @@ func TestSubtitleStream(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	want := broadcast.SubtitleEvent{Start: 1.0, End: 3.5, TextZh: "你好世界"}
+	wantSync := broadcast.SyncEvent{AudioTimelineStart: 100.0}
+	wantSub := broadcast.SubtitleEvent{Start: 1.0, End: 3.5, TextZh: "你好世界"}
 
-	// Push the event before the client connects so it's buffered.
-	fake.subs <- want
+	// Push the events before the client connects so they're buffered.
+	fake.ctrl <- wantSync
+	fake.subs <- wantSub
 
 	// Send Last-Event-ID header — handler must ignore it and still deliver live events.
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/stream/subtitles", nil)
@@ -186,26 +228,47 @@ func TestSubtitleStream(t *testing.T) {
 		t.Fatalf("expected text/event-stream, got %q", ct)
 	}
 
-	// Read lines until we find a `data:` line then decode the JSON.
+	// Read lines; expect event:sync + data, then event:subtitle + data.
 	scanner := bufio.NewScanner(resp.Body)
-	var gotEvent broadcast.SubtitleEvent
-	found := false
+	var gotSync broadcast.SyncEvent
+	var gotSub broadcast.SubtitleEvent
+	syncFound, subFound := false, false
+	currentEvent := ""
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			currentEvent = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
 			payload := strings.TrimPrefix(line, "data: ")
-			if err := json.Unmarshal([]byte(payload), &gotEvent); err != nil {
-				t.Fatalf("unmarshal: %v", err)
+			switch currentEvent {
+			case "sync":
+				if err := json.Unmarshal([]byte(payload), &gotSync); err != nil {
+					t.Fatalf("unmarshal sync: %v", err)
+				}
+				syncFound = true
+			case "subtitle":
+				if err := json.Unmarshal([]byte(payload), &gotSub); err != nil {
+					t.Fatalf("unmarshal subtitle: %v", err)
+				}
+				subFound = true
 			}
-			found = true
+		}
+		if syncFound && subFound {
 			break
 		}
 	}
-	if !found {
-		t.Fatal("no data: line received")
+	if !syncFound {
+		t.Fatal("no event:sync received")
 	}
-	if gotEvent != want {
-		t.Fatalf("event mismatch: got %+v want %+v", gotEvent, want)
+	if !subFound {
+		t.Fatal("no event:subtitle received")
+	}
+	if gotSync != wantSync {
+		t.Fatalf("sync mismatch: got %+v want %+v", gotSync, wantSync)
+	}
+	if !reflect.DeepEqual(gotSub, wantSub) {
+		t.Fatalf("subtitle mismatch: got %+v want %+v", gotSub, wantSub)
 	}
 
 	// Close connection; cancel should be called.
@@ -258,8 +321,8 @@ func TestAudioChannelClose(t *testing.T) {
 	}
 }
 
-// TestSubtitleChannelClose verifies that when the subs channel closes the
-// handler ends cleanly.
+// TestSubtitleChannelClose verifies that when both the sync and subs channels
+// are closed the handler ends cleanly.
 func TestSubtitleChannelClose(t *testing.T) {
 	fake := newFake(broadcast.Status{State: "stopped"})
 	mux := api.NewMux(fake)
@@ -267,6 +330,7 @@ func TestSubtitleChannelClose(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
+	close(fake.ctrl)
 	close(fake.subs)
 
 	resp, err := http.Get(srv.URL + "/v1/stream/subtitles")

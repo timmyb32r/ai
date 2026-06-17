@@ -11,11 +11,9 @@ package chineseasr
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/timmyb32r/001_omc_cri/internal/audio"
 	"github.com/timmyb32r/001_omc_cri/internal/engine"
@@ -68,12 +66,16 @@ type Config struct {
 	TempDir string
 }
 
-// Result is the transcription output. It is intentionally minimal in v1 but
-// designed to grow without breaking callers (e.g. future Segments []Segment
-// or DetectedLanguage string fields).
+// Result is the transcription output.
 type Result struct {
 	// Text is the recognized Simplified-Chinese text, with punctuation in v1.
 	Text string
+	// Timestamps are per-token start times (seconds) from the SenseVoice model,
+	// parallel to Tokens. Length matches Tokens; Timestamps[i] corresponds to
+	// the start time of Tokens[i] within the transcribed audio.
+	Timestamps []float64
+	// Tokens are the individual character tokens as output by SenseVoice.
+	Tokens []string
 }
 
 // Transcriber transcribes audio files using the configured external tools.
@@ -185,55 +187,6 @@ func (t *Transcriber) setRunner(r runner.Runner) {
 	t.run = r
 }
 
-// Probe is the recommended startup check: the caller supplies a known-good
-// sample WAV (sampleWavPath, an existing regular file already in 16 kHz mono
-// form), and Probe runs the configured engine once against it and asserts that
-// its output still parses into a transcript. It is a startup-time guard against
-// sherpa-onnx version/schema drift: when the binary produces output the parser
-// no longer understands, Probe reports ErrSchemaMismatch.
-//
-// Probe deliberately skips the ffmpeg decode step and feeds the sample straight
-// to the engine. It returns:
-//   - nil on a successful, parseable transcript;
-//   - ctx.Err() if ctx is already done or is cancelled during the run;
-//   - ErrAudioNotFound if sampleWavPath is not an existing regular file;
-//   - ErrSchemaMismatch if the engine ran but its output could not be parsed
-//     into a transcript (ErrParseFailed / ErrEmptyTranscript drift);
-//   - the underlying error otherwise (e.g. the binary failing to launch, which
-//     surfaces as ErrToolFailed).
-func (t *Transcriber) Probe(ctx context.Context, sampleWavPath string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	// The sample must be an existing regular file; a missing path or a
-	// directory is a caller error surfaced as ErrAudioNotFound.
-	if err := requireFile(sampleWavPath); err != nil {
-		return fmt.Errorf("%w: %s", ErrAudioNotFound, sampleWavPath)
-	}
-
-	args, err := engine.Build(string(t.cfg.Model), t.cfg.ModelDir, t.cfg.Language, t.punctuationEnabled(), t.cfg.NumThreads, sampleWavPath)
-	if err != nil {
-		return err
-	}
-
-	_, err = engine.Recognize(ctx, t.run, t.cfg.SherpaOfflinePath, args)
-	if err != nil {
-		if ce := ctx.Err(); ce != nil {
-			return ce
-		}
-		// A parse/empty result here means the output schema no longer matches
-		// what the parser expects: surface it as a schema-drift signal, keeping
-		// the underlying error attached via the dual-%w form. A tool/exec
-		// failure (ErrToolFailed) is surfaced as-is.
-		if errorsIsSchemaDrift(err) {
-			return fmt.Errorf("%w: %w", ErrSchemaMismatch, err)
-		}
-		return err
-	}
-	return nil
-}
-
 // Transcribe converts audioPath to 16 kHz mono WAV with ffmpeg, runs the
 // configured model via sherpa-onnx-offline, and returns the recognized text.
 //
@@ -265,7 +218,7 @@ func (t *Transcriber) Transcribe(ctx context.Context, audioPath string) (*Result
 		return nil, err
 	}
 
-	text, err := engine.Recognize(ctx, t.run, t.cfg.SherpaOfflinePath, args)
+	res, err := engine.Recognize(ctx, t.run, t.cfg.SherpaOfflinePath, args)
 	if err != nil {
 		// Surface a cancelled/expired context as the context error rather than
 		// the wrapped tool failure it manifested as.
@@ -275,173 +228,8 @@ func (t *Transcriber) Transcribe(ctx context.Context, audioPath string) (*Result
 		return nil, err
 	}
 
-	if text == "" {
+	if res.Text == "" {
 		return nil, ErrEmptyTranscript
 	}
-	return &Result{Text: text}, nil
-}
-
-// errorsIsSchemaDrift reports whether err indicates the engine output failed to
-// parse into a transcript (the schema-drift signals that Probe maps to
-// ErrSchemaMismatch).
-func errorsIsSchemaDrift(err error) bool {
-	return errors.Is(err, ErrParseFailed) || errors.Is(err, ErrEmptyTranscript)
-}
-
-// Segment is one silence-bounded speech region of a wav, transcribed to
-// Simplified-Chinese text. Start and End are seconds within the wav (the
-// region's playback offsets); Text is the recognized transcript for that
-// region (with punctuation in v1). Segments are silence-bounded by
-// construction, so there are no mid-utterance cuts.
-type Segment struct {
-	// Start is the region start, in seconds from the beginning of the wav.
-	Start float64
-	// End is the region end, in seconds from the beginning of the wav.
-	End float64
-	// Text is the recognized Simplified-Chinese transcript for the region.
-	Text string
-}
-
-// Silence-detection defaults for TranscribeSegments. They are unexported
-// consts for v1 (a Config knob is out of scope): noise threshold and the
-// minimum silence duration that separates speech regions.
-const (
-	// silenceNoiseDB is the silencedetect noise floor (anything quieter counts
-	// as silence). Passed as silencedetect=noise=<silenceNoiseDB>dB.
-	silenceNoiseDB = -30
-	// silenceMinDurSec is the minimum silence run (seconds) that splits two
-	// speech regions. Passed as silencedetect=d=<silenceMinDurSec>.
-	silenceMinDurSec = 0.5
-)
-
-// TranscribeSegments segments wavPath at silence boundaries (via ffmpeg
-// silencedetect) and transcribes each speech region offline with the existing
-// Transcribe path, returning one Segment per silence-bounded region with its
-// timeline offsets. It is the additive, segment-aware companion to Transcribe
-// used by the broadcast ASR driver; it stays fully offline/file-based and does
-// not change Transcribe or the single-block parser in internal/engine.
-//
-// It runs ffmpeg once for silencedetect, then for each silence-bounded region
-// cuts a temp wav slice (-ss/-to) and feeds it to the existing Transcribe.
-// Empty-text regions are skipped. A trailing region that is not
-// silence-terminated (End == 0, per engine.SpeechRegion's convention) is left
-// unsegmented for the caller's next pass — it is neither sliced nor returned.
-//
-// TODO(worker-seg): this runs ffmpeg twice per region (the slice cut here plus
-// Transcribe's own decode). A future optimization is in-process PCM slicing of
-// the already-16kHz-mono wav to avoid the extra ffmpeg invocations and temp
-// files.
-func (t *Transcriber) TranscribeSegments(ctx context.Context, wavPath string) ([]Segment, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := requireFile(wavPath); err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrAudioNotFound, wavPath)
-	}
-
-	// 1. Run silencedetect over the whole wav, capturing stderr (the filter
-	// logs its markers there, not on stdout). A non-zero ffmpeg exit is a
-	// decode failure.
-	detectArgs := []string{
-		"-hide_banner",
-		"-nostdin",
-		"-protocol_whitelist", "file,pipe",
-		"-i", wavPath,
-		"-af", fmt.Sprintf("silencedetect=noise=%ddB:d=%s", silenceNoiseDB, strconv.FormatFloat(silenceMinDurSec, 'f', -1, 64)),
-		"-f", "null",
-		"-",
-	}
-	_, stderr, runErr := t.run.Run(ctx, t.cfg.FFmpegPath, detectArgs...)
-	if runErr != nil {
-		if ce := ctx.Err(); ce != nil {
-			return nil, ce
-		}
-		return nil, fmt.Errorf("%w: %s: %w", ErrDecodeFailed, stderrTail(stderr, 500), runErr)
-	}
-
-	regions := engine.ParseSilence(stderr)
-
-	// 2. For each silence-bounded region, cut a slice and transcribe it.
-	var segments []Segment
-	for _, region := range regions {
-		// A not-silence-terminated tail (End == 0) is left for the caller's
-		// next pass: do not slice or transcribe an open-ended region.
-		if region.End <= region.Start {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		text, err := t.transcribeRegion(ctx, wavPath, region.Start, region.End)
-		if err != nil {
-			// An empty slice transcript is expected for marginal regions; skip
-			// it rather than failing the whole call.
-			if errors.Is(err, ErrEmptyTranscript) {
-				continue
-			}
-			return nil, err
-		}
-		if text == "" {
-			continue
-		}
-		segments = append(segments, Segment{Start: region.Start, End: region.End, Text: text})
-	}
-
-	return segments, nil
-}
-
-// transcribeRegion cuts [start,end] seconds out of wavPath into a temp wav with
-// ffmpeg (via the injected runner) and transcribes the slice with the existing
-// Transcribe path. The temp slice is always removed before returning.
-func (t *Transcriber) transcribeRegion(ctx context.Context, wavPath string, start, end float64) (string, error) {
-	tmpFile, err := os.CreateTemp(t.cfg.TempDir, "chineseasr-seg-*.wav")
-	if err != nil {
-		return "", fmt.Errorf("chineseasr: create slice temp file: %w", err)
-	}
-	slicePath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(slicePath) //nolint:errcheck
-
-	// Cut the region. -ss/-to are in seconds; -c copy would risk inexact cuts
-	// on a re-encode boundary, so re-encode the slice to the same 16 kHz mono
-	// pcm_s16le wav the engine expects.
-	cutArgs := []string{
-		"-hide_banner",
-		"-nostdin",
-		"-protocol_whitelist", "file,pipe",
-		"-ss", strconv.FormatFloat(start, 'f', -1, 64),
-		"-to", strconv.FormatFloat(end, 'f', -1, 64),
-		"-i", wavPath,
-		"-ar", "16000",
-		"-ac", "1",
-		"-c:a", "pcm_s16le",
-		"-f", "wav",
-		"-y",
-		slicePath,
-	}
-	_, stderr, runErr := t.run.Run(ctx, t.cfg.FFmpegPath, cutArgs...)
-	if runErr != nil {
-		if ce := ctx.Err(); ce != nil {
-			return "", ce
-		}
-		return "", fmt.Errorf("%w: %s: %w", ErrDecodeFailed, stderrTail(stderr, 500), runErr)
-	}
-
-	// Transcribe the slice through the existing path. Transcribe re-decodes the
-	// slice with ffmpeg (the documented double-ffmpeg cost noted above).
-	res, err := t.Transcribe(ctx, slicePath)
-	if err != nil {
-		return "", err
-	}
-	return res.Text, nil
-}
-
-// stderrTail returns at most maxBytes from the end of b, as a string. It
-// mirrors the helper in internal/audio for wrapping ffmpeg stderr context.
-func stderrTail(b []byte, maxBytes int) string {
-	if len(b) > maxBytes {
-		b = b[len(b)-maxBytes:]
-	}
-	return string(b)
+	return &Result{Text: res.Text, Timestamps: res.Timestamps, Tokens: res.Tokens}, nil
 }

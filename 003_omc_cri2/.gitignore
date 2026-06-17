@@ -1,0 +1,43 @@
+# ── Binaries ────────────────────────────────────────────────────────────
+server/server
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ── Model files (too large for git) ─────────────────────────────────────
+*.bin
+*.onnx
+*.tar.bz2
+*.tar.gz
+*.zip
+.docker-cache/
+docker-cache/
+
+# ── IDE / OS ────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Build artifacts ─────────────────────────────────────────────────────
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+*.jks
+
+# ── Go ──────────────────────────────────────────────────────────────────
+*.test
+*.out
+vendor/
+
+# ── Temp files ──────────────────────────────────────────────────────────
+/tmp/
+*.tmp
+*.log

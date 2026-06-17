@@ -21,35 +21,35 @@ func goldenStdout(t *testing.T) []byte {
 	return data
 }
 
-// TestParseText_Golden verifies the happy path against the realistic fixture.
-func TestParseText_Golden(t *testing.T) {
+// TestParse_Golden verifies the happy path against the realistic fixture.
+func TestParse_Golden(t *testing.T) {
 	stdout := goldenStdout(t)
 
-	text, err := ParseText(stdout, nil)
+	r, err := Parse(stdout, nil)
 	if err != nil {
-		t.Fatalf("ParseText returned unexpected error: %v", err)
+		t.Fatalf("Parse returned unexpected error: %v", err)
 	}
 
 	want := "今天天气很好，我们去公园吧。"
-	if text != want {
-		t.Errorf("text = %q; want %q", text, want)
+	if r.Text != want {
+		t.Errorf("text = %q; want %q", r.Text, want)
 	}
 
 	// Must contain at least one CJK punctuation mark.
-	hasPunct := strings.ContainsAny(text, "，。？！")
+	hasPunct := strings.ContainsAny(r.Text, "，。？！")
 	if !hasPunct {
-		t.Errorf("text %q contains none of ，。？！", text)
+		t.Errorf("text %q contains none of ，。？！", r.Text)
 	}
 
 	// Must be valid UTF-8 (no re-encoding mangling).
-	if !utf8.ValidString(text) {
+	if !utf8.ValidString(r.Text) {
 		t.Error("text is not valid UTF-8")
 	}
 }
 
-// TestParseText_JSONAmongNoise verifies that noise lines around the JSON block
+// TestParse_JSONAmongNoise verifies that noise lines around the JSON block
 // are ignored and the correct transcript is still extracted.
-func TestParseText_JSONAmongNoise(t *testing.T) {
+func TestParse_JSONAmongNoise(t *testing.T) {
 	golden := strings.TrimSpace(string(goldenStdout(t)))
 
 	noise := strings.Join([]string{
@@ -62,41 +62,41 @@ func TestParseText_JSONAmongNoise(t *testing.T) {
 		"[status] done",
 	}, "\n")
 
-	text, err := ParseText([]byte(noise), nil)
+	r, err := Parse([]byte(noise), nil)
 	if err != nil {
-		t.Fatalf("ParseText with surrounding noise returned error: %v", err)
+		t.Fatalf("Parse with surrounding noise returned error: %v", err)
 	}
 
 	want := "今天天气很好，我们去公园吧。"
-	if text != want {
-		t.Errorf("text = %q; want %q", text, want)
+	if r.Text != want {
+		t.Errorf("text = %q; want %q", r.Text, want)
 	}
 }
 
-// TestParseText_ZeroBlocks verifies that stdout with no JSON block returns
+// TestParse_ZeroBlocks verifies that stdout with no JSON block returns
 // ErrParseFailed.
-func TestParseText_ZeroBlocks(t *testing.T) {
+func TestParse_ZeroBlocks(t *testing.T) {
 	stdout := []byte("loading...\ndone\n")
-	_, err := ParseText(stdout, []byte("some stderr output"))
+	_, err := Parse(stdout, []byte("some stderr output"))
 	if !errors.Is(err, asrerr.ErrParseFailed) {
 		t.Errorf("expected ErrParseFailed, got: %v", err)
 	}
 }
 
-// TestParseText_EmptyText verifies that a JSON result block with an empty text
+// TestParse_EmptyText verifies that a JSON result block with an empty text
 // field returns ErrEmptyTranscript.
-func TestParseText_EmptyText(t *testing.T) {
+func TestParse_EmptyText(t *testing.T) {
 	stdout := []byte(`{"lang":"<|zh|>","text":"","tokens":[],"words":[]}`)
-	_, err := ParseText(stdout, nil)
+	_, err := Parse(stdout, nil)
 	if !errors.Is(err, asrerr.ErrEmptyTranscript) {
 		t.Errorf("expected ErrEmptyTranscript, got: %v", err)
 	}
 }
 
-// TestParseText_MultiLineFallback verifies that a pretty-printed (multi-line)
+// TestParse_MultiLineFallback verifies that a pretty-printed (multi-line)
 // JSON object — which the fast per-line scan cannot match — is recovered by the
 // streaming json.Decoder fallback, returning the exact transcript.
-func TestParseText_MultiLineFallback(t *testing.T) {
+func TestParse_MultiLineFallback(t *testing.T) {
 	stdout := []byte(`{
   "lang": "<|zh|>",
   "text": "多行解析测试。",
@@ -104,13 +104,13 @@ func TestParseText_MultiLineFallback(t *testing.T) {
   "words": []
 }`)
 
-	text, err := ParseText(stdout, nil)
+	r, err := Parse(stdout, nil)
 	if err != nil {
-		t.Fatalf("ParseText on multi-line JSON returned error: %v", err)
+		t.Fatalf("Parse on multi-line JSON returned error: %v", err)
 	}
 	want := "多行解析测试。"
-	if text != want {
-		t.Errorf("text = %q; want %q", text, want)
+	if r.Text != want {
+		t.Errorf("text = %q; want %q", r.Text, want)
 	}
 }
 
@@ -179,7 +179,7 @@ func TestRecognize_Success(t *testing.T) {
 	}
 
 	want := "今天天气很好，我们去公园吧。"
-	if text != want {
-		t.Errorf("text = %q; want %q", text, want)
+	if text.Text != want {
+		t.Errorf("text = %q; want %q", text.Text, want)
 	}
 }

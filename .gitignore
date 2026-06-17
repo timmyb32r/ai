@@ -1,8 +1,13 @@
 # jetbrains IDE
 .idea
+.gradle/
+*.properties
+*.omc
 
 # OSX
 .DS_Store
+
+001_omc_cri/server
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

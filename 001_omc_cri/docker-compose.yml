@@ -1,12 +1,21 @@
-# One-command run:  docker compose up --build
+# Workflow:
+#   ./download-cache.sh                          # one-time: populate ~/tmp/docker-cache/
+#   ./docker-build.sh                            # builds base (once) + server
+#   docker compose up                            # start
+#
+# Or step-by-step:
+#   ./download-cache.sh
+#   docker build -f Dockerfile.base -t criradio-base:latest .   # one-time
+#   docker compose up --build                                    # rebuilds server only
+#
 # Then on the host (needs ffplay):  go run ./cmd/client -server http://localhost:8080
 services:
   criradio:
     build:
       context: .
+      # docker-compose uses Dockerfile (server-only, FROM criradio-base:latest)
       # args:
       #   GO_VERSION: "1.24"
-      #   MODEL_NAME: sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
     image: criradio-server
     ports:
       - "8080:8080"
