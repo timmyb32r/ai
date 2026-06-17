@@ -170,48 +170,82 @@ private fun BottomControl(
     onRecenter: () -> Unit
 ) {
     Surface(color = Surface, modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxWidth().padding(16.dp)
         ) {
-            when (state) {
-                PlaybackState.PLAYING -> {
-                    IconButton(onClick = onPause, modifier = Modifier.size(80.dp)) {
-                        Icon(Icons.Default.Pause, "Pause", Modifier.size(64.dp), tint = TextPrimary)
-                    }
+            val totalW = maxWidth
+            val playW = 80.dp
+            val recenterW = 56.dp
+            // d = distance(play.right, recenter.left) = distance(recenter.right, screen.right)
+            // Derivation: totalW/2 + 96dp + 2d = totalW  →  d = totalW/4 − 48dp
+            val d = totalW / 4 - 48.dp
+            val spaceLeft = totalW / 2 - playW / 2  // to center play button
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (d > 0.dp) {
+                    Spacer(Modifier.width(spaceLeft))
+                    // Play / Pause — centered
+                    PlayPauseButton(state, onPlay, onPause, onResume)
+                    Spacer(Modifier.width(d))
+                    // Recenter — equidistant: play.right→recenter.left = recenter.right→screen.right
+                    RecenterButton(onRecenter)
+                } else {
+                    // Narrow screen fallback: center the group
+                    Spacer(Modifier.weight(1f))
+                    PlayPauseButton(state, onPlay, onPause, onResume)
+                    Spacer(Modifier.width(8.dp))
+                    RecenterButton(onRecenter)
+                    Spacer(Modifier.weight(1f))
                 }
-                PlaybackState.LOADING -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(48.dp),
-                        color = Amber, strokeWidth = 3.dp
-                    )
-                }
-                PlaybackState.IDLE, PlaybackState.PAUSED -> {
-                    IconButton(
-                        onClick = if (state == PlaybackState.IDLE) onPlay else onResume,
-                        modifier = Modifier.size(80.dp)
-                    ) {
-                        Icon(Icons.Default.PlayArrow, "Play", Modifier.size(64.dp), tint = TextPrimary)
-                    }
-                }
-                PlaybackState.ERROR -> {
-                    IconButton(onClick = onPlay, modifier = Modifier.size(80.dp)) {
-                        Icon(Icons.Default.Refresh, "Retry", Modifier.size(64.dp), tint = Color.Red)
-                    }
-                }
-            }
-            // Recenter button — restarts scroll loop via LaunchedEffect key change
-            Spacer(Modifier.width(16.dp))
-            IconButton(onClick = onRecenter, modifier = Modifier.size(56.dp)) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_recenter),
-                    contentDescription = "Recenter",
-                    modifier = Modifier.size(40.dp),
-                    tint = TextSecondary
-                )
             }
         }
+    }
+}
+
+@Composable
+private fun PlayPauseButton(
+    state: PlaybackState,
+    onPlay: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit
+) {
+    when (state) {
+        PlaybackState.PLAYING -> {
+            IconButton(onClick = onPause, modifier = Modifier.size(80.dp)) {
+                Icon(Icons.Default.Pause, "Pause", Modifier.size(64.dp), tint = TextPrimary)
+            }
+        }
+        PlaybackState.LOADING -> {
+            CircularProgressIndicator(
+                modifier = Modifier.size(48.dp),
+                color = Amber, strokeWidth = 3.dp
+            )
+        }
+        PlaybackState.IDLE, PlaybackState.PAUSED -> {
+            IconButton(
+                onClick = if (state == PlaybackState.IDLE) onPlay else onResume,
+                modifier = Modifier.size(80.dp)
+            ) {
+                Icon(Icons.Default.PlayArrow, "Play", Modifier.size(64.dp), tint = TextPrimary)
+            }
+        }
+        PlaybackState.ERROR -> {
+            IconButton(onClick = onPlay, modifier = Modifier.size(80.dp)) {
+                Icon(Icons.Default.Refresh, "Retry", Modifier.size(64.dp), tint = Color.Red)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecenterButton(onRecenter: () -> Unit) {
+    IconButton(onClick = onRecenter, modifier = Modifier.size(56.dp)) {
+        Icon(
+            painter = painterResource(id = R.drawable.ic_recenter),
+            contentDescription = "Recenter",
+            modifier = Modifier.size(40.dp),
+            tint = TextSecondary
+        )
     }
 }
 
