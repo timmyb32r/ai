@@ -1,6 +1,6 @@
 module github.com/criradio/server
 
-go 1.24
+go 1.22
 
 require github.com/go-ego/gse v1.0.2
 
