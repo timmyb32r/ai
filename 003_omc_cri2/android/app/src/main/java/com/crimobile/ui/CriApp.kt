@@ -65,6 +65,9 @@ private val TextPinyin = Color(0xFFAAAAAA)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
+    // Shared across Scaffold slots: changing key restarts LaunchedEffect → recenter + re-enable scroll.
+    val recenterGeneration = remember { mutableIntStateOf(0) }
+
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = Amber, secondary = Green,
@@ -118,7 +121,8 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                 BottomControl(state.playbackState, state.subtitleDelaySec,
                     onPlay = { onAction(CriAction.Play(ServerConfig.defaultUrl)) },
                     onPause = { onAction(CriAction.Pause) },
-                    onResume = { onAction(CriAction.Resume) }
+                    onResume = { onAction(CriAction.Resume) },
+                    onRecenter = { recenterGeneration.intValue++ }
                 )
             }
         ) { padding ->
@@ -132,11 +136,13 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                     else -> SubtitleList(
                         segments = state.segments,
                         activeWord = state.activeWord,
+                        lastActiveWord = state.lastActiveWord,
                         playbackState = state.playbackState,
                         isPronouncing = state.isPronouncing,
                         showPinyin = state.showPinyin,
                         fontSizeSp = state.fontSizeSp,
                         showWordBoundaries = state.showWordBoundaries,
+                        recenterGeneration = recenterGeneration.intValue,
                         onWordTapped = { onAction(CriAction.WordTapped(it)) }
                     )
                 }
@@ -160,7 +166,8 @@ private fun BottomControl(
     subtitleDelay: Double,
     onPlay: () -> Unit,
     onPause: () -> Unit,
-    onResume: () -> Unit
+    onResume: () -> Unit,
+    onRecenter: () -> Unit
 ) {
     Surface(color = Surface, modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -193,6 +200,16 @@ private fun BottomControl(
                         Icon(Icons.Default.Refresh, "Retry", Modifier.size(64.dp), tint = Color.Red)
                     }
                 }
+            }
+            // Recenter button — restarts scroll loop via LaunchedEffect key change
+            Spacer(Modifier.width(16.dp))
+            IconButton(onClick = onRecenter, modifier = Modifier.size(56.dp)) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_recenter),
+                    contentDescription = "Recenter",
+                    modifier = Modifier.size(40.dp),
+                    tint = TextSecondary
+                )
             }
         }
     }
@@ -333,11 +350,13 @@ private fun ErrorScreen(msg: String) {
 private fun SubtitleList(
     segments: List<SubtitleSegment>,
     activeWord: WordEntry?,
+    lastActiveWord: WordEntry?,
     playbackState: PlaybackState,
     isPronouncing: Boolean,
     showPinyin: Boolean,
     fontSizeSp: Int,
     showWordBoundaries: Boolean,
+    recenterGeneration: Int,
     onWordTapped: (WordEntry) -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -346,16 +365,20 @@ private fun SubtitleList(
 
     // Snapshot-aware: rememberUpdatedState даёт State-обёртки
     val currentWord by rememberUpdatedState(activeWord)
+    val currentLastWord by rememberUpdatedState(lastActiveWord)
     val currentSegments by rememberUpdatedState(segments)
     val currentPlaybackState by rememberUpdatedState(playbackState)
     val currentIsPronouncing by rememberUpdatedState(isPronouncing)
 
-    // Плавный скролл, синхронизированный с кадрами дисплея.
-    // При каждом переходе пауза→play перецентрируем выделенное слово
-    // и пересчитываем init_speed — чтобы play продолжался с правильной позиции.
-    LaunchedEffect(Unit) {
+    // Architecture decision (deep-interview Round 4):
+    //   Do NOT send signals into a living coroutine — let Compose recreate it
+    //   by changing the LaunchedEffect KEY. recenterGeneration++ → old coroutine
+    //   cancelled by Compose (no snapshot conflict) → new coroutine starts →
+    //   init phase centers word → scroll continues.
+    //   This avoids ALL 11 documented failure modes in SCROLL.md.
+    LaunchedEffect(recenterGeneration) {
         var initialized = false
-        var initSpeedPxPerSec = 0f  // пикселей/сек
+        var initSpeedPxPerSec = 0f
         var lastFrameNanos = 0L
         var totalScrolledPx = 0f
         var lastLogNanos = 0L
@@ -375,32 +398,11 @@ private fun SubtitleList(
                 if (segs.isEmpty()) return@withFrameNanos
 
                 val playing = currentPlaybackState == PlaybackState.PLAYING
-                if (!playing || currentIsPronouncing) {
-                    // Log the pause transition once
-                    if (wasPlaying) {
-                        Log.i("CRIRadio:scroll", "PAUSE — stopping scroll (loop=$loopIterations)")
-                    }
-                    wasPlaying = false
-                    lastFrameNanos = 0L
-                    return@withFrameNanos
-                }
-                if (!playing || currentIsPronouncing) {
-                    wasPlaying = false
-                    lastFrameNanos = 0L
-                    return@withFrameNanos
-                }
-
-                // Переход пауза → play: переинициализируем
-                if (!wasPlaying) {
-                    Log.i("CRIRadio:scroll", "RESUME — reinitializing scroll")
-                    initialized = false
-                    wasPlaying = true
-                }
 
                 // Heartbeat: log that scroll loop is alive (every 5s)
                 if (frameNanos - lastLogNanos > 5_000_000_000L) {
                     lastLogNanos = frameNanos
-                    Log.d("CRIRadio:scroll", "alive word=${word?.text} segs=${segs.size} init=$initialized wasPlaying=$wasPlaying")
+                    Log.d("CRIRadio:scroll", "alive word=${word?.text} segs=${segs.size} init=$initialized wasPlaying=$wasPlaying gen=$recenterGeneration")
                 }
 
                 val viewportHeightPx = with(density) {
@@ -411,22 +413,31 @@ private fun SubtitleList(
                 val visibleItems = listState.layoutInfo.visibleItemsInfo
                 if (visibleItems.isEmpty()) return@withFrameNanos
 
-                // ── Нет активного слова (тишина/пропуск сегментов) — скроллим с base_speed ──
-                if (word == null) {
-                    if (initialized && initSpeedPxPerSec > 0f) {
+                // ── Effective word: fall back to lastActiveWord during silence gaps ──
+                val effectiveWord = word ?: currentLastWord
+
+                if (effectiveWord == null) {
+                    // No word at all — smooth scroll with initSpeed if playing
+                    if (playing && initialized && initSpeedPxPerSec > 0f) {
                         val rawDt = if (lastFrameNanos > 0) (frameNanos - lastFrameNanos) / 1_000_000_000f else 0.016f
                         val dt = rawDt.coerceAtMost(0.033f)
                         lastFrameNanos = frameNanos
                         val px = initSpeedPxPerSec * dt
                         scrollAction = { listState.scrollBy(px); totalScrolledPx += px }
                     }
+                    wasPlaying = playing
                     return@withFrameNanos
                 }
 
-                val activeIdx = segs.indexOfFirst { it.words.any { w -> w === word } }
-                if (activeIdx < 0) return@withFrameNanos
+                val activeIdx = segs.indexOfFirst { it.words.any { w -> w === effectiveWord } }
+                if (activeIdx < 0) {
+                    wasPlaying = playing
+                    return@withFrameNanos
+                }
 
-                // ── Фаза инициализации: центрируем + считаем init_speed ──
+                // ── INIT PHASE: center word (~25% from top), regardless of play state ──
+                // Runs on: first frame after LaunchedEffect start (recenter or app launch),
+                // and on pause→play transitions within the same coroutine.
                 if (!initialized) {
                     val firstIdx = (activeIdx - (viewportHeightPx * 0.25f / (visibleItems.first().size.toFloat())).toInt())
                         .coerceAtLeast(0)
@@ -434,10 +445,7 @@ private fun SubtitleList(
                         try { listState.scrollToItem(firstIdx, 0) } catch (_: Exception) { }
                     }
 
-                    // init_speed по формуле пользователя:
-                    // total_visible_pixel_height / delta_t
-                    //   где delta_t = time(last_word_of_last_visible_line) - time(first_word_of_first_visible_line)
-                    //   результат = px/sec — скорость чтобы пролистать видимые строки ровно за их временной интервал
+                    // init_speed: total_visible_pixel_height / delta_t
                     val firstVisibleIdx = visibleItems.first().index
                     val lastVisibleIdx = visibleItems.last().index
                     if (firstVisibleIdx in segs.indices && lastVisibleIdx in segs.indices) {
@@ -446,10 +454,7 @@ private fun SubtitleList(
                         val firstWordTime = firstSeg.words.firstOrNull()?.start_sec ?: firstSeg.timeline_start_sec
                         val lastWordTime = lastSeg.words.lastOrNull()?.end_sec ?: lastSeg.timeline_end_sec
                         val deltaSec = (lastWordTime - firstWordTime).toFloat()
-
-                        // Суммарная высота всех видимых строк в пикселях
                         val totalVisiblePx = visibleItems.sumOf { it.size }.toFloat()
-
                         if (deltaSec > 0f && totalVisiblePx > 0f) {
                             initSpeedPxPerSec = totalVisiblePx / deltaSec
                         }
@@ -458,23 +463,42 @@ private fun SubtitleList(
                         "INIT segs=${segs.size} activeIdx=$activeIdx initSpeed=%.1f px/sec firstVis=$firstVisibleIdx lastVis=$lastVisibleIdx".format(
                             initSpeedPxPerSec))
                     initialized = true
-                    lastFrameNanos = 0L  // reset — first dt after init uses default 0.016s
+                    lastFrameNanos = 0L
+                    wasPlaying = playing
                     return@withFrameNanos
                 }
 
-                // ── dt с прошлого кадра, capped чтобы дропнутые кадры не дёргали ──
+                // ── PAUSE / PRONOUNCING: stop scrolling, wait for resume ──
+                if (!playing || currentIsPronouncing) {
+                    if (wasPlaying) {
+                        Log.i("CRIRadio:scroll", "PAUSE — stopping scroll (loop=$loopIterations)")
+                    }
+                    wasPlaying = false
+                    lastFrameNanos = 0L
+                    return@withFrameNanos
+                }
+
+                // ── Pause→Play transition (within same coroutine): force re-init ──
+                if (!wasPlaying) {
+                    Log.i("CRIRadio:scroll", "RESUME — reinitializing scroll")
+                    initialized = false
+                    wasPlaying = true
+                    return@withFrameNanos
+                }
+
+                // ── Normal scroll dt, capped to avoid dropped-frame jerks ──
                 val rawDt = if (lastFrameNanos > 0) (frameNanos - lastFrameNanos) / 1_000_000_000f else 0.016f
-                val dt = rawDt.coerceAtMost(0.033f)  // max 2 frames at 60fps
+                val dt = rawDt.coerceAtMost(0.033f)
                 lastFrameNanos = frameNanos
 
-                // ── Позиция слова на экране ──
+                // ── Active word position on screen → scroll correction ──
                 val position = speedController.getActiveWordVerticalPosition(
-                    listState, segs, word, viewportHeightPx
+                    listState, segs, effectiveWord, viewportHeightPx
                 )
 
                 when {
                     position == 0f || position == 1f -> {
-                        // Instant jump — let scrollBy loop handle smooth movement after
+                        // Word off-screen — instant jump to bring it back
                         scrollAction = {
                             try {
                                 listState.scrollToItem(activeIdx.coerceAtMost(segs.size - 1), 0)
@@ -483,18 +507,13 @@ private fun SubtitleList(
                     }
                     position != null -> {
                         val multiplier = speedController.getMultiplier(position)
-
-                        // Continuously recalculate speed from CURRENT visible items.
-                        // Falls back to initSpeed only when visible window is too small.
                         val visibleSpeed = speedController.calculateBaseSpeed(segs, listState)
                         val baseSpeedPxPerSec = if (visibleSpeed > 0f) {
-                            // Convert lines/sec → px/sec using visible line height
                             val lh = visibleItems.firstOrNull()?.size?.toFloat() ?: 0f
                             if (lh > 0f) visibleSpeed * lh else initSpeedPxPerSec
                         } else {
                             initSpeedPxPerSec
                         }
-
                         val px = baseSpeedPxPerSec * multiplier * dt
                         if (px != 0f) {
                             scrollAction = {
@@ -505,19 +524,18 @@ private fun SubtitleList(
                     }
                 }
 
-                // Лог каждые 2с
+                // Log every 2s
                 if (frameNanos - lastLogNanos > 2_000_000_000L) {
                     lastLogNanos = frameNanos
                     val posStr = if (position != null) "%.2f".format(position) else "null"
                     val mult = if (position != null) speedController.getMultiplier(position) else 0f
-                    val curPxPerSec = initSpeedPxPerSec * mult
                     Log.i("CRIRadio:scroll",
                         "pos=$posStr mult=%.2f speed=%.1f px/s pxFrame=%.2f dt=%.0fms totalPx=%.0f initSpeed=%.1f".format(
-                            mult, curPxPerSec, initSpeedPxPerSec * mult * dt, dt * 1000, totalScrolledPx, initSpeedPxPerSec))
+                            mult, initSpeedPxPerSec * mult, initSpeedPxPerSec * mult * dt, dt * 1000, totalScrolledPx, initSpeedPxPerSec))
                 }
             }
 
-            // Выполняем suspend-операции снаружи withFrameNanos
+            // Execute suspend actions outside withFrameNanos to avoid snapshot conflicts
             scrollAction?.invoke()
         }
     }

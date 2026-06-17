@@ -33,7 +33,8 @@ data class CriViewState(
     val isPronouncing: Boolean = false,  // true while PronounceWord audio plays
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val error: String? = null,
-    val subtitleDelaySec: Double = 0.0  // how far behind live are subtitles
+    val subtitleDelaySec: Double = 0.0,  // how far behind live are subtitles
+    val lastActiveWord: WordEntry? = null  // remembered for recenter during silence gaps
 )
 
 sealed class CriAction {
@@ -93,7 +94,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     _state.value = _state.value.copy(
                         activeSegment = activeSegment,
                         activeWord = activeWord,
-                        subtitleDelaySec = delay
+                        subtitleDelaySec = delay,
+                        lastActiveWord = if (activeWord != null) activeWord else _state.value.lastActiveWord
                     )
 
                     if (activeSegment != null && activeSegment.segment_id != lastActiveSegId) {
