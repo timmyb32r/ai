@@ -1,0 +1,29 @@
+services:
+  criradio:
+    image: criradio-server:latest
+    container_name: criradio
+    ports:
+      - "8080:8080"
+      - "6060:6060"
+    env_file:
+      - .env
+    environment:
+      - ADDR=:8080
+      - GSE_DICT_PATH=/opt/gse-dict
+      - CEDICT_PATH=/opt/cedict_ts.u8
+      - CHANNEL_URL=https://sk.cri.cn/905.m3u8
+      - OUTPUT_DIR=/tmp/china_radio_international
+      - DELAY=180s
+      - LOG_LEVEL=info
+    volumes:
+      - criradio_data:/tmp/china_radio_international
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  criradio_data:

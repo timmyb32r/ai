@@ -1,0 +1,107 @@
+# Base image: ffmpeg + ASR engine (whisper.cpp or sherpa-onnx) + model + CC-CEDICT + gse.
+# Build ONCE — rebuild only when model/engine/CEDICT versions change.
+#
+# Select engine and model via build args:
+#   docker build -f Dockerfile.base --build-arg ASR_ENGINE=sherpa-onnx --build-arg ASR_MODEL=sense-voice-2024 -t criradio-base:latest .
+#   docker build -f Dockerfile.base --build-arg ASR_ENGINE=whisper --build-arg ASR_MODEL=ggml-small -t criradio-base:latest .
+
+FROM debian:bookworm-slim
+
+# Base tools: ffmpeg, TLS, fetch utils.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ffmpeg ca-certificates wget curl bzip2 unzip libgomp1 libmp3lame0 \
+ && rm -rf /var/lib/apt/lists/*
+
+# ── ASR engine selection ──────────────────────────────────────────────────
+ARG ASR_ENGINE=whisper
+ARG ASR_MODEL=ggml-small
+
+# ── whisper.cpp path ──────────────────────────────────────────────────────
+# Only built when ASR_ENGINE=whisper. Requires build tools.
+RUN if [ "${ASR_ENGINE}" = "whisper" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends git build-essential cmake libgomp1 \
+      && rm -rf /var/lib/apt/lists/* \
+      && git clone --depth 1 --branch v1.8.7 https://github.com/ggml-org/whisper.cpp.git /tmp/whisper.cpp \
+      && cd /tmp/whisper.cpp \
+      && cmake -B build -DGGML_NATIVE=OFF \
+      && cmake --build build --config Release -j"$(nproc)" \
+      && cmake --install build --prefix /usr/local \
+      && cd / && rm -rf /tmp/whisper.cpp \
+      && ldconfig \
+      && /usr/local/bin/whisper-cli --help 2>&1 | head -3 ; \
+    fi
+
+# ── sherpa-onnx path ──────────────────────────────────────────────────────
+# Only installed when ASR_ENGINE=sherpa-onnx. Uses pip wheel (no compilation).
+RUN if [ "${ASR_ENGINE}" = "sherpa-onnx" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends python3 python3-pip \
+      && rm -rf /var/lib/apt/lists/* \
+      && pip3 install --no-cache-dir --break-system-packages sherpa-onnx-bin \
+      && command -v sherpa-onnx-offline ; \
+    fi
+
+# ── ASR model — copied from .docker-cache/ into /opt/models/ ──────────────
+# The download-cache.sh script should pre-fetch models to .docker-cache/.
+# We use a single COPY of the entire .docker-cache/ directory (if it exists),
+# then a RUN script moves what's there. Models not present are silently skipped.
+ARG MODEL_PATH=/opt/models
+RUN mkdir -p /opt/models
+
+# Copy the entire cache directory — Docker will fail if .docker-cache/ doesn't
+# exist, so create an empty placeholder first.
+COPY .docker-cache/ /tmp/docker-cache/
+
+RUN set -e; \
+    # ── whisper models (.bin files) ──
+    for f in ggml-small.bin ggml-large-v3.bin ggml-medium.bin ggml-tiny.bin; do \
+      if [ -f "/tmp/docker-cache/$f" ]; then \
+        cp "/tmp/docker-cache/$f" /opt/models/ && echo "Copied $f"; \
+      fi; \
+    done; \
+    # ── sherpa-onnx models (directories) ──
+    for d in sense-voice-2024 sense-voice-v1 paraformer-zh sherpa-whisper; do \
+      if [ -d "/tmp/docker-cache/$d" ]; then \
+        cp -r "/tmp/docker-cache/$d" "/opt/models/$d" && echo "Copied $d/"; \
+      fi; \
+    done; \
+    rm -rf /tmp/docker-cache; \
+    if [ -z "$(ls -A /opt/models/ 2>/dev/null)" ]; then \
+      echo "WARNING: no model files in /opt/models/ — mount or download before running" >&2; \
+    else \
+      echo "Models: $(ls /opt/models/)"; \
+    fi
+
+# ── CC-CEDICT Chinese-English dictionary ────────────────────────────────
+COPY .docker-cache/cedict_ts.u8 /opt/cedict_ts.u8
+RUN test -s /opt/cedict_ts.u8 \
+ && echo "CEDICT entries: $(wc -l < /opt/cedict_ts.u8)"
+
+# ── gse Chinese word segmentation dictionaries ──────────────────────────
+COPY .docker-cache/gse-dict/ /opt/gse-dict/
+RUN test -f /opt/gse-dict/zh/s_1.txt \
+ && test -f /opt/gse-dict/zh/t_1.txt \
+ && test -f /opt/gse-dict/zh/stop_word.txt
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENV ADDR=:8080 \
+    ASR_ENGINE=${ASR_ENGINE} \
+    ASR_MODEL=${ASR_MODEL} \
+    MODEL_PATH=/opt/models \
+    GSE_DICT_PATH=/opt/gse-dict \
+    CEDICT_PATH=/opt/cedict_ts.u8 \
+    CHANNEL_URL=https://sk.cri.cn/905.m3u8 \
+    OUTPUT_DIR=/tmp/china_radio_international \
+    DELAY=180s \
+    LOG_LEVEL=info
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- "http://127.0.0.1:8080/api/status" >/dev/null 2>&1 || exit 1
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

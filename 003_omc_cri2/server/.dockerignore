@@ -1,0 +1,22 @@
+# Binaries
+server
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Test output
+testdata/
+*.test
+
+# Docs
+*.md
