@@ -2,6 +2,9 @@
 # Download models, dictionary, and gse into .docker-cache/ for offline Docker build.
 # Run ONCE before docker-build.sh.  Pass the short model name as the only argument.
 #
+# Prerequisites: curl, tar, bzip2, unzip
+#   sudo apt-get install -y curl bzip2 unzip  # Debian/Ubuntu
+#
 # Usage:
 #   ./download-cache.sh sense-voice-2024   # sherpa-onnx + SenseVoice
 #   ./download-cache.sh ggml-small          # whisper.cpp + ggml-small

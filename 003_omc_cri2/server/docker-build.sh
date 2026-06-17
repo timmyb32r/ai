@@ -69,7 +69,7 @@ fi
 # ── build Go binary natively ─────────────────────────────────────────────
 echo "==> Building Go binary (native)..."
 cd "$SCRIPT_DIR"
-GOOS=linux CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o criradio-server ./cmd/server
+GOTOOLCHAIN=local GOOS=linux CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o criradio-server ./cmd/server
 echo "   binary: $(ls -lh criradio-server | awk '{print $5}')"
 
 # ── build server image ───────────────────────────────────────────────────
