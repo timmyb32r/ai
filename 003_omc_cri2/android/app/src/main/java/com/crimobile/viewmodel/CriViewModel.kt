@@ -73,6 +73,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var lastSyncLog = 0L
     private var lastActiveSegId = -1
     private var lastActiveWord: WordEntry? = null
+    private var initialDelaySeekDone = false  // one-shot seek behind live edge after connect
 
     init {
         viewModelScope.launch {
@@ -123,6 +124,23 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             "word=${activeWord?.text} wTL=[${activeWord?.start_sec}-${activeWord?.end_sec}] " +
                             "delay=${delay.toInt()}s")
                     }
+
+                    // ── One-shot delay seek: rewind player behind live edge ──
+                    // Server sends ~20 segments of history via SSE on connect.
+                    // We seek the player back into this buffer so there is always
+                    // content ahead — no more stalling at live edge waiting for ASR.
+                    if (!initialDelaySeekDone && playerMs > 0 && segments.size >= MIN_BUFFER_FOR_DELAY_SEEK) {
+                        val newest = segments.last().timeline_start_sec
+                        val oldest = segments.first().timeline_start_sec
+                        val availableSec = newest - oldest
+                        if (availableSec > 5.0) {
+                            val targetDelay = minOf(DELAY_TARGET_SEC.toDouble(), availableSec * 0.8)
+                            val seekTargetMs = ((newest - targetDelay) * 1000).toLong()
+                            player.seekTo(seekTargetMs)
+                            initialDelaySeekDone = true
+                            Log.i(VM, "⏪ DELAY seek → ${targetDelay.toInt()}s behind live (buffer=${availableSec.toInt()}s, seekTarget=${"%.1f".format(newest - targetDelay)}s)")
+                        }
+                    }
                 }
                 delay(100)
             }
@@ -165,6 +183,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     currentServerUrl = action.serverUrl
                     subtitleSource.connect(action.serverUrl)
                     player.play(url)
+                    initialDelaySeekDone = false  // will seek behind live edge once buffer arrives
                 }
                 _state.value = _state.value.copy(isPronouncing = false)
             }
@@ -233,7 +252,11 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    companion object { private const val VM = "CRIRadio:vm" }
+    companion object {
+        private const val VM = "CRIRadio:vm"
+        private const val DELAY_TARGET_SEC = 45     // target buffer behind live edge
+        private const val MIN_BUFFER_FOR_DELAY_SEEK = 5  // segments needed before initial seek
+    }
 
     override fun onCleared() {
         super.onCleared()
