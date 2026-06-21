@@ -251,6 +251,7 @@ func isTerminal(f *os.File) bool {
 // autoDockerWrap re-launches the current binary inside a Docker container.
 // It picks a random host port and maps it to the container's viewer port (9876).
 // The Docker image is only rebuilt when Go source files have changed.
+// Works from any directory — finds the project root via the binary location.
 func autoDockerWrap() {
 	// Pick a free host port.
 	hostPort, err := rawlog.GetFreePort()
@@ -258,36 +259,43 @@ func autoDockerWrap() {
 		hostPort = 9876 // fallback
 	}
 
-	if _, statErr := os.Stat("Dockerfile"); statErr != nil {
-		fmt.Fprintln(os.Stderr, "Error: Dockerfile not found in current directory.")
-		fmt.Fprintln(os.Stderr, "Run from the timmy-code project root where Dockerfile exists.")
-		os.Exit(1)
-	}
-
-	// Smart rebuild: only rebuild when source changed or image missing.
-	curHash, hashErr := sourceHash()
-	needRebuild := true
-	if hashErr == nil && imageExists("timmy-code:latest") {
-		if stored, readErr := os.ReadFile(".timmy-code/.docker-image-hash"); readErr == nil {
-			if string(stored) == curHash {
-				needRebuild = false
-			}
-		}
-	}
-
-	if needRebuild {
-		fmt.Fprintln(os.Stderr, "Building Docker image timmy-code...")
-		buildCmd := exec.Command("docker", "build", "-t", "timmy-code", ".")
-		buildCmd.Stdout = os.Stderr
-		buildCmd.Stderr = os.Stderr
-		if buildErr := buildCmd.Run(); buildErr != nil {
-			fmt.Fprintf(os.Stderr, "Error: docker build failed: %v\n", buildErr)
+	// Find the timmy-code project root (where Dockerfile lives).
+	projectRoot, rootErr := findProjectRoot()
+	if rootErr != nil {
+		// No project root found — just try to run the existing image.
+		if !imageExists("timmy-code:latest") {
+			fmt.Fprintln(os.Stderr, "Error: Docker image 'timmy-code' not found.")
+			fmt.Fprintln(os.Stderr, "Build it first: cd <timmy-code-project> && docker build -t timmy-code .")
 			os.Exit(1)
 		}
-		// Persist the source hash so we can skip the next build.
-		if hashErr == nil {
-			os.MkdirAll(".timmy-code", 0755)
-			os.WriteFile(".timmy-code/.docker-image-hash", []byte(curHash), 0644)
+	} else {
+		// Smart rebuild: only rebuild when source changed or image missing.
+		curHash, hashErr := sourceHash(projectRoot)
+		needRebuild := true
+		if hashErr == nil && imageExists("timmy-code:latest") {
+			hashFile := filepath.Join(projectRoot, ".timmy-code", ".docker-image-hash")
+			if stored, readErr := os.ReadFile(hashFile); readErr == nil {
+				if string(stored) == curHash {
+					needRebuild = false
+				}
+			}
+		}
+
+		if needRebuild {
+			fmt.Fprintln(os.Stderr, "Building Docker image timmy-code...")
+			buildCmd := exec.Command("docker", "build", "-t", "timmy-code", projectRoot)
+			buildCmd.Stdout = os.Stderr
+			buildCmd.Stderr = os.Stderr
+			if buildErr := buildCmd.Run(); buildErr != nil {
+				fmt.Fprintf(os.Stderr, "Error: docker build failed: %v\n", buildErr)
+				os.Exit(1)
+			}
+			// Persist the source hash so we can skip the next build.
+			if hashErr == nil {
+				hashDir := filepath.Join(projectRoot, ".timmy-code")
+				os.MkdirAll(hashDir, 0755)
+				os.WriteFile(filepath.Join(hashDir, ".docker-image-hash"), []byte(curHash), 0644)
+			}
 		}
 	}
 
@@ -321,11 +329,11 @@ func autoDockerWrap() {
 
 // sourceHash computes a SHA-256 hash over all files that affect the binary:
 // Go source, go.mod, go.sum, and embedded web UI assets.
-func sourceHash() (string, error) {
+func sourceHash(root string) (string, error) {
 	h := sha256.New()
 	// Hash go.mod and go.sum first.
 	for _, f := range []string{"go.mod", "go.sum"} {
-		data, err := os.ReadFile(f)
+		data, err := os.ReadFile(filepath.Join(root, f))
 		if err != nil {
 			continue
 		}
@@ -333,7 +341,7 @@ func sourceHash() (string, error) {
 		h.Write(data)
 	}
 	// Hash all .go files and embedded web UI assets.
-	err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -344,12 +352,14 @@ func sourceHash() (string, error) {
 			}
 			return nil
 		}
+		// Relative path for hashing (stable across machines).
+		relPath, _ := filepath.Rel(root, path)
 		// Go source or embedded web UI files.
-		if !strings.HasSuffix(path, ".go") &&
-			!strings.HasPrefix(path, "internal/rawlog/webui/") {
+		if !strings.HasSuffix(relPath, ".go") &&
+			!strings.HasPrefix(relPath, "internal/rawlog/webui/") {
 			return nil
 		}
-		io.WriteString(h, path)
+		io.WriteString(h, relPath)
 		f, err := os.Open(path)
 		if err != nil {
 			return err
@@ -362,6 +372,41 @@ func sourceHash() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// findProjectRoot locates the timmy-code project root by walking up from the
+// binary's directory (or cwd as fallback for go run) until it finds a Dockerfile.
+func findProjectRoot() (string, error) {
+	// Try binary location first.
+	if exe, err := os.Executable(); err == nil {
+		if exe, err = filepath.EvalSymlinks(exe); err == nil {
+			if root := walkUp(filepath.Dir(exe)); root != "" {
+				return root, nil
+			}
+		}
+	}
+	// Fallback: try current working directory (covers go run).
+	if cwd, err := os.Getwd(); err == nil {
+		if root := walkUp(cwd); root != "" {
+			return root, nil
+		}
+	}
+	return "", fmt.Errorf("project root not found")
+}
+
+func walkUp(dir string) string {
+	dir, _ = filepath.Abs(dir)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
 }
 
 // imageExists returns true if a Docker image is present locally.
