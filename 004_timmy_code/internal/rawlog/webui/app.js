@@ -240,6 +240,10 @@ async function loadContent(logPath, spanEl) {
           if (choices && choices.length > 0) {
             const delta = choices[0].delta;
             if (delta) {
+              // DeepSeek reasoner → reasoning_content, regular → content.
+              if (delta.reasoning_content) {
+                assembled += delta.reasoning_content;
+              }
               if (delta.content) {
                 assembled += delta.content;
               }
