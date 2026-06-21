@@ -126,7 +126,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		case chunk, ok := <-pcmCh:
 			if !ok {
 				close(asrQueue)
-				return nil
+				return fmt.Errorf("ingest stream ended unexpectedly")
 			}
 			if chunk.Error != nil {
 				p.Logger.Warn("pipeline", "pcm_error", "id", segmentID, "err", chunk.Error)

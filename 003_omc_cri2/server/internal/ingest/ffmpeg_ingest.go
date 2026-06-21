@@ -62,8 +62,14 @@ func (f *ffmpegIngestor) Start(ctx context.Context) (<-chan models.PCMChunk, err
 	// Exactly the 001_omc_cri proven-working ffmpeg command:
 	//   PCM s16le, 16kHz, mono → stdout
 	// No HLS output — we generate HLS segments ourselves from PCM.
+	//
+	// -rw_timeout prevents ffmpeg from hanging forever when the
+	// upstream HLS server stalls mid-connection. Without it, ffmpeg
+	// blocks in recv() indefinitely, the stdout pipe stays empty,
+	// and the entire pipeline deadlocks.
 	args := []string{
 		"-hide_banner", "-nostdin", "-nostats",
+		"-rw_timeout", "30000000", // 30s network I/O timeout
 		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
 		"-i", f.config.ChannelURL,
 		"-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "s16le",
@@ -96,6 +102,11 @@ func (f *ffmpegIngestor) Start(ctx context.Context) (<-chan models.PCMChunk, err
 		floatChunk := make([]float32, samplesPerChunk)
 		segmentID := 0
 
+		// readTimeout is how long we wait for a single chunk before
+		// deciding ffmpeg is hung. 3× segment duration is generous
+		// enough for transient slowness but catches a dead stream.
+		readTimeout := time.Duration(f.config.HLSTime*3) * time.Second
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -103,7 +114,24 @@ func (f *ffmpegIngestor) Start(ctx context.Context) (<-chan models.PCMChunk, err
 			default:
 			}
 
-			if err := readS16LEChunk(buf, int16Chunk); err != nil {
+			// Read a full chunk with a timeout. If ffmpeg hangs on
+			// network I/O, we detect it here instead of blocking the
+			// entire pipeline forever.
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- readS16LEChunk(buf, int16Chunk)
+			}()
+
+			var readErr error
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(readTimeout):
+				return // ffmpeg hung — abandon stream
+			case readErr = <-errCh:
+			}
+
+			if readErr != nil {
 				return
 			}
 
