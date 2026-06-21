@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Logger is the root of the logging hierarchy. It owns the base directory
@@ -76,7 +77,7 @@ func (s *SessionLogger) NewMessage() *MessageLogger {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counter++
-	msgDir := filepath.Join(s.dir, fmt.Sprintf("msg-%02d", s.counter))
+	msgDir := filepath.Join(s.dir, fmt.Sprintf("msg-%02d_%s", s.counter, time.Now().Format("2006-01-02_15-04-05")))
 	_ = os.MkdirAll(msgDir, 0755)
 	return &MessageLogger{dir: msgDir}
 }
@@ -87,7 +88,7 @@ func (m *MessageLogger) NewRound() *RoundLogger {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.counter++
-	roundDir := filepath.Join(m.dir, fmt.Sprintf("round-%d", m.counter))
+	roundDir := filepath.Join(m.dir, fmt.Sprintf("round-%d_%s", m.counter, time.Now().Format("2006-01-02_15-04-05")))
 	_ = os.MkdirAll(roundDir, 0755)
 
 	requestPath := filepath.Join(roundDir, "request.json")
@@ -153,7 +154,7 @@ func (r *RoundLogger) CloseResponse() error {
 // <round-dir>/sub-agent-<name>. The returned logger can be used recursively
 // via StartSession / NewMessage / NewRound to produce nested hierarchies.
 func (r *RoundLogger) CreateSubAgent(name string) *SubAgentLogger {
-	dir := filepath.Join(r.dir, "sub-agent-"+name)
+	dir := filepath.Join(r.dir, fmt.Sprintf("sub-agent-%s_%s", name, time.Now().Format("2006-01-02_15-04-05")))
 	_ = os.MkdirAll(dir, 0755)
 	return &SubAgentLogger{
 		Logger: Logger{baseDir: dir},

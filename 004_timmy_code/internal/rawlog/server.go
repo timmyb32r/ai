@@ -105,7 +105,7 @@ func (s *Server) handleSessionTree(w http.ResponseWriter, r *http.Request) {
 	sessionID := parts[0]
 
 	sessionDir := filepath.Join(s.baseDir, "sessions", sessionID)
-	root := walkSessionDir(sessionDir, "session", sessionID)
+	root := walkSessionDir(s.baseDir, sessionDir, "session", sessionID)
 	if root == nil {
 		http.NotFound(w, r)
 		return
@@ -144,7 +144,7 @@ type treeNode struct {
 	Children []*treeNode `json:"children,omitempty"`
 }
 
-func walkSessionDir(dir, nodeType, name string) *treeNode {
+func walkSessionDir(baseDir, dir, nodeType, name string) *treeNode {
 	node := &treeNode{Type: nodeType, Name: name}
 
 	entries, err := os.ReadDir(dir)
@@ -156,13 +156,13 @@ func walkSessionDir(dir, nodeType, name string) *treeNode {
 		ePath := filepath.Join(dir, e.Name())
 		if e.IsDir() {
 			childType := detectNodeType(e.Name())
-			child := walkSessionDir(ePath, childType, e.Name())
+			child := walkSessionDir(baseDir, ePath, childType, e.Name())
 			if child != nil {
 				node.Children = append(node.Children, child)
 			}
 		} else {
 			// File node — compute relative path for API lookup.
-			relPath, _ := filepath.Rel(filepath.Dir(filepath.Dir(dir)), ePath) // relative to baseDir
+			relPath, _ := filepath.Rel(baseDir, ePath)
 			fileType := "file"
 			if strings.HasSuffix(e.Name(), ".json") {
 				fileType = "request"

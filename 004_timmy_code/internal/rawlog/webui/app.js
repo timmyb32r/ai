@@ -220,6 +220,17 @@ async function loadContent(logPath, spanEl) {
       text = highlightUserRole(text);
     }
 
+    // For JSONL files, pretty-print each line as JSON.
+    if (logPath.endsWith('.jsonl')) {
+      const lines = text.trim().split('\n');
+      const prettyLines = lines.map(line => {
+        try {
+          return JSON.stringify(JSON.parse(line), null, 2);
+        } catch (_) { return line; }
+      });
+      text = highlightUserRole(prettyLines.join('\n'));
+    }
+
     document.getElementById('content-placeholder').style.display = 'none';
     const viewer = document.getElementById('content-viewer');
     viewer.style.display = 'block';

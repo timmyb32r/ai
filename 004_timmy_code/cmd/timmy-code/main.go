@@ -109,7 +109,7 @@ func main() {
 	// --- Interactive mode: start raw log server ---
 	logBaseDir := workDir + "/.timmy-code/raw_llm_io_log"
 	rawLogger := rawlog.NewLogger(logBaseDir)
-	sessionID := fmt.Sprintf("session-%s", time.Now().Format("20060102T150405"))
+	sessionID := fmt.Sprintf("session-%s", time.Now().Format("2006-01-02_15-04-05"))
 
 	newEngine := func() *query.QueryEngine {
 		return query.New(query.Config{
