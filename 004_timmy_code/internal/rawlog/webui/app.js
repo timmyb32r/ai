@@ -232,6 +232,10 @@ async function loadContent(logPath, spanEl) {
     if (logPath.endsWith('.jsonl')) {
       const lines = text.trim().split('\n');
       let assembled = '';
+      let hasReasoning = false;
+      let hasContent = false;
+      // Accumulate tool-call fragments by index (arguments arrive across many chunks).
+      const toolCalls = {};
 
       for (const line of lines) {
         try {
@@ -240,31 +244,54 @@ async function loadContent(logPath, spanEl) {
           if (choices && choices.length > 0) {
             const delta = choices[0].delta;
             if (delta) {
-              // DeepSeek reasoner → reasoning_content, regular → content.
+              // DeepSeek reasoner → reasoning_content, then content.
               if (delta.reasoning_content) {
                 assembled += delta.reasoning_content;
+                hasReasoning = true;
               }
               if (delta.content) {
+                if (hasReasoning && !hasContent) {
+                  assembled += '\n\n━━━ Response ━━━\n\n';
+                }
                 assembled += delta.content;
+                hasContent = true;
               }
               if (delta.tool_calls) {
                 for (const tc of delta.tool_calls) {
+                  const idx = tc.index || 0;
+                  if (!toolCalls[idx]) {
+                    toolCalls[idx] = { name: '', id: '', args: '' };
+                  }
+                  if (tc.id) toolCalls[idx].id = tc.id;
                   if (tc.function) {
-                    assembled += '\n\n🔧 Tool: ' + tc.function.name + '\n';
-                    if (tc.function.arguments) {
-                      try {
-                        const args = JSON.parse(tc.function.arguments);
-                        assembled += JSON.stringify(args, null, 2) + '\n';
-                      } catch (_) {
-                        assembled += tc.function.arguments + '\n';
-                      }
-                    }
+                    if (tc.function.name) toolCalls[idx].name = tc.function.name;
+                    if (tc.function.arguments) toolCalls[idx].args += tc.function.arguments;
                   }
                 }
               }
             }
           }
         } catch (_) { /* skip unparseable lines */ }
+      }
+
+      // Render accumulated tool calls at the end.
+      const tcIndices = Object.keys(toolCalls).sort();
+      if (tcIndices.length > 0) {
+        assembled += '\n\n━━━ Tools ━━━\n';
+        for (const idx of tcIndices) {
+          const tc = toolCalls[idx];
+          assembled += '\n🔧 ' + (tc.name || 'tool_' + idx);
+          if (tc.args) {
+            assembled += '\n';
+            try {
+              const args = JSON.parse(tc.args);
+              assembled += JSON.stringify(args, null, 2);
+            } catch (_) {
+              assembled += tc.args;
+            }
+          }
+          assembled += '\n';
+        }
       }
 
       cachedPretty = escapeHtml(assembled || '(empty response)');

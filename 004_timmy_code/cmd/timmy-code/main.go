@@ -319,7 +319,8 @@ func autoDockerWrap() {
 	os.Exit(0)
 }
 
-// sourceHash computes a SHA-256 hash over all Go source files, go.mod and go.sum.
+// sourceHash computes a SHA-256 hash over all files that affect the binary:
+// Go source, go.mod, go.sum, and embedded web UI assets.
 func sourceHash() (string, error) {
 	h := sha256.New()
 	// Hash go.mod and go.sum first.
@@ -331,7 +332,7 @@ func sourceHash() (string, error) {
 		io.WriteString(h, f)
 		h.Write(data)
 	}
-	// Hash all .go files.
+	// Hash all .go files and embedded web UI assets.
 	err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -343,7 +344,9 @@ func sourceHash() (string, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") {
+		// Go source or embedded web UI files.
+		if !strings.HasSuffix(path, ".go") &&
+			!strings.HasPrefix(path, "internal/rawlog/webui/") {
 			return nil
 		}
 		io.WriteString(h, path)
