@@ -11,6 +11,16 @@ if [ -z "$DEEPSEEK_API_KEY" ]; then
     exit 1
 fi
 
+# Default mode
+CLI_MODE="client-server"
+
+# Parse --mode flag if present.
+# The first argument to timmy can be --mode <mode> or the prompt.
+if [ "$1" = "--mode" ]; then
+    CLI_MODE="$2"
+    shift 2
+fi
+
 # --- Smart rebuild logic ---
 need_rebuild() {
     # 1. Image doesn't exist
@@ -46,27 +56,78 @@ build_if_needed() {
 
 build_if_needed
 
-# Pick a free port on host for the raw log viewer web UI.
+# Pick free ports on host.
 get_free_port() {
     python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null \
     || echo 9876
 }
 
-HOST_PORT=$(get_free_port)
-INTERNAL_PORT=9876
-VIEWER_URL="http://localhost:${HOST_PORT}"
+HOST_VIEWER_PORT=$(get_free_port)
+HOST_CONTROL_PORT=0
 
-# Common Docker flags
+INTERNAL_VIEWER_PORT=9876
+INTERNAL_CONTROL_PORT=9877
+
+VIEWER_URL="http://localhost:${HOST_VIEWER_PORT}"
+
+# Common Docker flags.
 DOCKER_FLAGS="--rm -v \"$PWD:/work\" \
     -e DEEPSEEK_API_KEY \
-    -e TIMKY_VIEW_PORT=${INTERNAL_PORT} \
-    -e TIMKY_VIEWER_URL=${VIEWER_URL} \
-    -p ${HOST_PORT}:${INTERNAL_PORT}"
+    -e TIMKY_VIEW_PORT=${INTERNAL_VIEWER_PORT} \
+    -e TIMKY_VIEWER_URL=${VIEWER_URL}"
 
-if [ $# -gt 0 ]; then
-    printf '%s\n' "$*" | eval exec docker run ${DOCKER_FLAGS} -i timmy-code
-elif [ -t 0 ]; then
-    eval exec docker run ${DOCKER_FLAGS} -it timmy-code
+if [ "$CLI_MODE" = "client-server" ]; then
+    # Client-server mode: map both viewer and control ports.
+    HOST_CONTROL_PORT=$(get_free_port)
+    DOCKER_FLAGS="$DOCKER_FLAGS \
+        -e TIMKY_CONTROL_PORT=${INTERNAL_CONTROL_PORT} \
+        -p ${HOST_VIEWER_PORT}:${INTERNAL_VIEWER_PORT} \
+        -p ${HOST_CONTROL_PORT}:${INTERNAL_CONTROL_PORT}"
+
+    echo "[timmy] Starting server in client-server mode..."
+    echo "[timmy] Control port: ${HOST_CONTROL_PORT}  |  Log viewer: ${VIEWER_URL}"
+
+    # Launch Docker in background.
+    if [ $# -gt 0 ]; then
+        printf '%s\n' "$*" | eval exec docker run ${DOCKER_FLAGS} -i --name timmy-server timmy-code --cli-mode client-server &
+    elif [ -t 0 ]; then
+        eval exec docker run ${DOCKER_FLAGS} -it --name timmy-server timmy-code --cli-mode client-server &
+    else
+        eval exec docker run ${DOCKER_FLAGS} -i --name timmy-server timmy-code --cli-mode client-server &
+    fi
+
+    DOCKER_PID=$!
+
+    # Wait for control port to be ready.
+    echo "[timmy] Waiting for server to be ready..."
+    for i in $(seq 1 30); do
+        if nc -z localhost ${HOST_CONTROL_PORT} 2>/dev/null; then
+            break
+        fi
+        sleep 0.5
+    done
+
+    # Launch the rich UI client.
+    TIMKY_CLIENT_BIN="${TIMKY_HOME}/bin/timmy-client"
+    if [ -x "$TIMKY_CLIENT_BIN" ]; then
+        exec "$TIMKY_CLIENT_BIN" --connect "localhost:${HOST_CONTROL_PORT}"
+    elif command -v timmy-client >/dev/null 2>&1; then
+        exec timmy-client --connect "localhost:${HOST_CONTROL_PORT}"
+    else
+        echo "[timmy] timmy-client binary not found." >&2
+        echo "[timmy] Server is running. Connect with: nc localhost ${HOST_CONTROL_PORT}" >&2
+        echo "[timmy] Or build the client: cd ${TIMKY_HOME} && make build-client" >&2
+        wait $DOCKER_PID
+    fi
 else
-    eval exec docker run ${DOCKER_FLAGS} -i timmy-code
+    # Pipes mode: current behavior.
+    DOCKER_FLAGS="$DOCKER_FLAGS -p ${HOST_VIEWER_PORT}:${INTERNAL_VIEWER_PORT}"
+
+    if [ $# -gt 0 ]; then
+        printf '%s\n' "$*" | eval exec docker run ${DOCKER_FLAGS} -i timmy-code --cli-mode pipes
+    elif [ -t 0 ]; then
+        eval exec docker run ${DOCKER_FLAGS} -it timmy-code --cli-mode pipes
+    else
+        eval exec docker run ${DOCKER_FLAGS} -i timmy-code --cli-mode pipes
+    fi
 fi

@@ -6,8 +6,8 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.crimobile.model.*
-import com.crimobile.player.ExoRadioPlayer
 import com.crimobile.player.RadioPlayer
+import com.crimobile.player.RadioPlayerHolder
 import com.crimobile.pronounce.PronunciationPlayer
 import com.crimobile.subtitles.SseSubtitleSource
 import com.crimobile.subtitles.SubtitleSource
@@ -17,7 +17,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -52,10 +51,13 @@ sealed class CriAction {
 
 class CriViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val player: RadioPlayer = ExoRadioPlayer(application)
+    // Player is now owned by PlayerService (foreground service).
+    // We obtain it via the singleton holder — same StateFlow, zero IPC latency.
+    private lateinit var player: RadioPlayer
+
     private val subtitleSource: SubtitleSource = SseSubtitleSource()
-    private val pronunciationPlayer = PronunciationPlayer(player, viewModelScope)
     private val vocabularyStore = VocabularyStore(application)
+    private val pronunciationPlayer by lazy { PronunciationPlayer(player, viewModelScope) }
 
     private val prefs = application.getSharedPreferences("cri_prefs", Context.MODE_PRIVATE)
 
@@ -76,7 +78,31 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var initialDelaySeekDone = false  // one-shot seek behind live edge after connect
 
     init {
+        // Non-player-dependent — start immediately
         viewModelScope.launch {
+            subtitleSource.connected.collect { status ->
+                _state.value = _state.value.copy(connectionStatus = status)
+            }
+        }
+        viewModelScope.launch {
+            subtitleSource.segments.collect { segs ->
+                _state.value = _state.value.copy(segments = segs)
+            }
+        }
+
+        // ── Wait for the player (owned by PlayerService) then start player-dependent flows ──
+        viewModelScope.launch {
+            player = RadioPlayerHolder.awaitPlayer()
+            Log.i(VM, "player obtained from RadioPlayerHolder")
+
+            // Forward playback state (player must be initialised first)
+            launch {
+                player.playbackState.collect { ps ->
+                    _state.value = _state.value.copy(playbackState = ps)
+                }
+            }
+
+            // Main sync loop — subtitle ↔ audio alignment at ~10 Hz
             while (isActive) {
                 val segments = subtitleSource.segments.value
                 if (segments.isNotEmpty()) {
@@ -145,30 +171,15 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 delay(100)
             }
         }
-
-        // Forward connection status
-        viewModelScope.launch {
-            subtitleSource.connected.collect { status ->
-                _state.value = _state.value.copy(connectionStatus = status)
-            }
-        }
-
-        // Forward segments
-        viewModelScope.launch {
-            subtitleSource.segments.collect { segs ->
-                _state.value = _state.value.copy(segments = segs)
-            }
-        }
-
-        // Forward playback state
-        viewModelScope.launch {
-            player.playbackState.collect { ps ->
-                _state.value = _state.value.copy(playbackState = ps)
-            }
-        }
     }
 
     fun dispatch(action: CriAction) {
+        // Ignore actions until the player is obtained from RadioPlayerHolder.
+        // (PlayerService starts before the first Activity, so this is only
+        // a guard against a theoretical race; in practice ::player is always
+        // initialized by the time the user can tap anything.)
+        if (!::player.isInitialized) return
+
         when (action) {
             is CriAction.Play -> {
                 Log.i(VM, "play server=${action.serverUrl}")
@@ -262,6 +273,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
         pronunciationPlayer.stop()
         subtitleSource.disconnect()
-        player.release()
+        // Player is owned by PlayerService — do NOT release it here.
+        // The service survives Activity destruction and keeps audio alive.
     }
 }

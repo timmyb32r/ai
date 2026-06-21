@@ -19,6 +19,7 @@ import (
 
 	ctxpkg "github.com/timmy/timmy-code/internal/context"
 	"github.com/timmy/timmy-code/internal/llm"
+	"github.com/timmy/timmy-code/internal/output"
 	"github.com/timmy/timmy-code/internal/prompts"
 	"github.com/timmy/timmy-code/internal/query"
 	"github.com/timmy/timmy-code/internal/rawlog"
@@ -32,6 +33,7 @@ func main() {
 	dumpPromptFlag := flag.Bool("dump-prompt", false, "Print system prompt to stderr before sending")
 	executeFlag := flag.String("execute", "", "Non-interactive mode: execute a single prompt autonomously")
 	maxTokensFlag := flag.Int("max-tokens", 0, "Limit max output tokens (0 = default)")
+	cliModeFlag := flag.String("cli-mode", "client-server", "CLI mode: 'pipes' (plain text) or 'client-server' (rich UI)")
 	flag.Parse()
 
 	inDocker := isInDocker()
@@ -102,7 +104,7 @@ func main() {
 		defer engine.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 		defer cancel()
-		runQuery(ctx, engine, *executeFlag)
+		runQueryPlain(ctx, engine, *executeFlag)
 		return
 	}
 
@@ -126,17 +128,32 @@ func main() {
 	engine := newEngine()
 	defer engine.Close()
 
+	// Factory for model switching (recreates engine with current modelCfg).
+	recreateEngine := func() *query.QueryEngine {
+		engine.Close()
+		engine = query.New(query.Config{
+			Tools:        registry,
+			LLMClient:    llmClient,
+			CtxService:   ctxService,
+			ModelCfg:     modelCfg,
+			WorkDir:      workDir,
+			SystemPrompt: systemPrompt,
+			RawLogger:    rawLogger,
+			SessionID:    sessionID,
+		})
+		return engine
+	}
+
 	// Determine viewer port.
 	viewerPort := 9876 // default internal port
 	if envPort := os.Getenv("TIMKY_VIEW_PORT"); envPort != "" {
 		fmt.Sscanf(envPort, "%d", &viewerPort)
 	}
 
-	// Start the HTTP server.
+	// Start the HTTP server for raw log viewer.
 	server := rawlog.NewServer(logBaseDir)
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", viewerPort))
 	if err != nil {
-		// Fall back to random port.
 		ln, viewerPort, err = rawlog.ListenDynamicPort()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cannot start viewer server: %v\n", err)
@@ -158,11 +175,23 @@ func main() {
 		viewerURL = fmt.Sprintf("http://localhost:%d", viewerPort)
 	}
 
-	// Interactive REPL
+	switch *cliModeFlag {
+	case "pipes":
+		runPipesMode(inDocker, viewerURL, &modelCfg, newEngine, recreateEngine, engine)
+	case "client-server":
+		runClientServerMode(viewerURL, &modelCfg, newEngine, recreateEngine, engine)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown --cli-mode: %s (expected 'pipes' or 'client-server')\n", *cliModeFlag)
+		os.Exit(1)
+	}
+}
+
+// runPipesMode runs the existing plain-text REPL (backward compatible).
+func runPipesMode(inDocker bool, viewerURL string, modelCfg *llm.ModelConfig, newEngine func() *query.QueryEngine, recreateEngine func() *query.QueryEngine, engine *query.QueryEngine) {
 	if inDocker {
-		fmt.Println("timmy-code v0.3 — DeepSeek CLI assistant (Docker container)")
+		fmt.Println("timmy-code v0.4 — DeepSeek CLI assistant (Docker container)")
 	} else {
-		fmt.Println("timmy-code v0.3 — DeepSeek CLI assistant")
+		fmt.Println("timmy-code v0.4 — DeepSeek CLI assistant")
 	}
 	fmt.Printf("Raw Log Viewer: %s\n", viewerURL)
 	fmt.Println("Commands: /help, /model [pro|flash], /clear, exit, Ctrl+C")
@@ -195,8 +224,7 @@ func main() {
 		}
 		firstLine = strings.TrimRight(firstLine, "\n")
 
-		// Drain any immediately buffered data (e.g. from a multi-line paste).
-		// This prevents residual lines from auto-feeding subsequent prompts.
+		// Drain any immediately buffered data.
 		var extraLines []string
 		for reader.Buffered() > 0 {
 			b, err := reader.ReadString('\n')
@@ -219,17 +247,61 @@ func main() {
 			break
 		}
 		if strings.HasPrefix(line, "/") {
-			handleSlash(line, &modelCfg, &engine, newEngine)
+			handleSlash(line, modelCfg, &engine, newEngine)
 			continue
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
 		msgCancel = cancel
 		inQuery = true
-		runQuery(ctx, engine, line)
+		runQueryPlain(ctx, engine, line)
 		cancel()
 		inQuery = false
 		msgCancel = nil
+	}
+}
+
+// runClientServerMode starts the TCP control server and waits for client connections.
+func runClientServerMode(viewerURL string, modelCfg *llm.ModelConfig, newEngine func() *query.QueryEngine, recreateEngine func() *query.QueryEngine, engine *query.QueryEngine) {
+	controlPort := 9877
+	if envPort := os.Getenv("TIMKY_CONTROL_PORT"); envPort != "" {
+		fmt.Sscanf(envPort, "%d", &controlPort)
+	}
+
+	// Build a factory that returns a fresh engine for each client session.
+	engineFactory := func() *query.QueryEngine {
+		return newEngine()
+	}
+
+	// Recreate engine factory (for model switches — updates the shared modelCfg).
+	recreateFactory := func() *query.QueryEngine {
+		return recreateEngine()
+	}
+
+	cs, err := output.NewControlServer(controlPort, engineFactory, recreateFactory)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting control server: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "timmy-code server v0.4\n")
+	fmt.Fprintf(os.Stderr, "Control:    tcp://localhost:%d\n", cs.Port())
+	fmt.Fprintf(os.Stderr, "Log viewer: %s\n", viewerURL)
+	fmt.Fprintf(os.Stderr, "Waiting for client connection...\n")
+
+	// Handle SIGINT/SIGTERM for graceful shutdown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Fprintf(os.Stderr, "\nShutting down...\n")
+		cs.Shutdown()
+		os.Exit(0)
+	}()
+
+	if err := cs.Serve(); err != nil {
+		fmt.Fprintf(os.Stderr, "Control server error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -249,27 +321,25 @@ func isTerminal(f *os.File) bool {
 }
 
 // autoDockerWrap re-launches the current binary inside a Docker container.
-// It picks a random host port and maps it to the container's viewer port (9876).
-// The Docker image is only rebuilt when Go source files have changed.
-// Works from any directory — finds the project root via the binary location.
 func autoDockerWrap() {
-	// Pick a free host port.
 	hostPort, err := rawlog.GetFreePort()
 	if err != nil {
-		hostPort = 9876 // fallback
+		hostPort = 9876
 	}
 
-	// Find the timmy-code project root (where Dockerfile lives).
+	controlPort, err := rawlog.GetFreePort()
+	if err != nil {
+		controlPort = 9877
+	}
+
 	projectRoot, rootErr := findProjectRoot()
 	if rootErr != nil {
-		// No project root found — just try to run the existing image.
 		if !imageExists("timmy-code:latest") {
 			fmt.Fprintln(os.Stderr, "Error: Docker image 'timmy-code' not found.")
 			fmt.Fprintln(os.Stderr, "Build it first: cd <timmy-code-project> && docker build -t timmy-code .")
 			os.Exit(1)
 		}
 	} else {
-		// Smart rebuild: only rebuild when source changed or image missing.
 		curHash, hashErr := sourceHash(projectRoot)
 		needRebuild := true
 		if hashErr == nil && imageExists("timmy-code:latest") {
@@ -290,7 +360,6 @@ func autoDockerWrap() {
 				fmt.Fprintf(os.Stderr, "Error: docker build failed: %v\n", buildErr)
 				os.Exit(1)
 			}
-			// Persist the source hash so we can skip the next build.
 			if hashErr == nil {
 				hashDir := filepath.Join(projectRoot, ".timmy-code")
 				os.MkdirAll(hashDir, 0755)
@@ -301,7 +370,6 @@ func autoDockerWrap() {
 
 	workDir, _ := os.Getwd()
 
-	// Use -it only when stdin is a real terminal.
 	ttyFlag := "-i"
 	if isTerminal(os.Stdin) {
 		ttyFlag = "-it"
@@ -314,7 +382,9 @@ func autoDockerWrap() {
 		"-e", "DEEPSEEK_API_KEY",
 		"-e", fmt.Sprintf("TIMKY_VIEW_PORT=%d", 9876),
 		"-e", fmt.Sprintf("TIMKY_VIEWER_URL=%s", viewerURL),
+		"-e", fmt.Sprintf("TIMKY_CONTROL_PORT=%d", 9877),
 		"-p", fmt.Sprintf("%d:9876", hostPort),
+		"-p", fmt.Sprintf("%d:9877", controlPort),
 		"timmy-code",
 	)
 	runCmd.Stdin = os.Stdin
@@ -327,11 +397,9 @@ func autoDockerWrap() {
 	os.Exit(0)
 }
 
-// sourceHash computes a SHA-256 hash over all files that affect the binary:
-// Go source, go.mod, go.sum, and embedded web UI assets.
+// sourceHash computes a SHA-256 hash over all files that affect the binary.
 func sourceHash(root string) (string, error) {
 	h := sha256.New()
-	// Hash go.mod and go.sum first.
 	for _, f := range []string{"go.mod", "go.sum"} {
 		data, err := os.ReadFile(filepath.Join(root, f))
 		if err != nil {
@@ -340,7 +408,6 @@ func sourceHash(root string) (string, error) {
 		io.WriteString(h, f)
 		h.Write(data)
 	}
-	// Hash all .go files and embedded web UI assets.
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -352,9 +419,7 @@ func sourceHash(root string) (string, error) {
 			}
 			return nil
 		}
-		// Relative path for hashing (stable across machines).
 		relPath, _ := filepath.Rel(root, path)
-		// Go source or embedded web UI files.
 		if !strings.HasSuffix(relPath, ".go") &&
 			!strings.HasPrefix(relPath, "internal/rawlog/webui/") {
 			return nil
@@ -374,10 +439,8 @@ func sourceHash(root string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// findProjectRoot locates the timmy-code project root by walking up from the
-// binary's directory (or cwd as fallback for go run) until it finds a Dockerfile.
+// findProjectRoot locates the timmy-code project root.
 func findProjectRoot() (string, error) {
-	// Try binary location first.
 	if exe, err := os.Executable(); err == nil {
 		if exe, err = filepath.EvalSymlinks(exe); err == nil {
 			if root := walkUp(filepath.Dir(exe)); root != "" {
@@ -385,7 +448,6 @@ func findProjectRoot() (string, error) {
 			}
 		}
 	}
-	// Fallback: try current working directory (covers go run).
 	if cwd, err := os.Getwd(); err == nil {
 		if root := walkUp(cwd); root != "" {
 			return root, nil
@@ -417,8 +479,9 @@ func imageExists(name string) bool {
 	return cmd.Run() == nil
 }
 
-// runQuery sends one prompt and displays events with spinner + token counts.
-func runQuery(ctx context.Context, engine *query.QueryEngine, prompt string) {
+// runQueryPlain sends one prompt and displays events with spinner + token counts.
+// Used by both pipes mode and non-interactive execution.
+func runQueryPlain(ctx context.Context, engine *query.QueryEngine, prompt string) {
 	start := time.Now()
 	eventCh := engine.SubmitMessage(ctx, prompt)
 	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -457,7 +520,7 @@ func runQuery(ctx context.Context, engine *query.QueryEngine, prompt string) {
 			}
 			fmt.Printf("\n⏺ Done%s · %s\n", tokPart, elapsed)
 		}
-		// Spinner while waiting
+		// Spinner while waiting.
 		if !gotText && event.Type != query.EventDone {
 			fmt.Fprintf(os.Stderr, "\r\033[K%s Thinking...", spinner[si%len(spinner)])
 			si++
