@@ -9,6 +9,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
 
+	"github.com/timmy/timmy-code/internal/rawlog"
 	"github.com/timmy/timmy-code/internal/schema"
 )
 
@@ -36,6 +37,12 @@ func NewDeepSeekClient(apiKey string) (*DeepSeekClient, error) {
 // Uses GenerateContent (non-streaming for tool call reliability) then emits
 // the full text content followed by any tool calls.
 func (c *DeepSeekClient) StreamChat(ctx context.Context, params StreamParams) (<-chan StreamEvent, error) {
+	return c.StreamChatWithLog(ctx, params, nil)
+}
+
+// StreamChatWithLog is like StreamChat but logs raw I/O via logger if non-nil.
+// Note: langchaingo path does not expose raw HTTP body, so logging is limited.
+func (c *DeepSeekClient) StreamChatWithLog(ctx context.Context, params StreamParams, logger *rawlog.RoundLogger) (<-chan StreamEvent, error) {
 	msgs := toLLMMessages(params.Messages)
 	opts := []llms.CallOption{
 		llms.WithModel(params.ModelConfig.ModelName),
@@ -45,9 +52,23 @@ func (c *DeepSeekClient) StreamChat(ctx context.Context, params StreamParams) (<
 		opts = append(opts, llms.WithTools(toLLMTools(params.Tools)))
 	}
 
+	// Log request if logger is present (limited: we log what we have).
+	if logger != nil {
+		reqData, _ := json.Marshal(map[string]any{
+			"model":      params.ModelConfig.ModelName,
+			"messages":   msgs,
+			"tools":      params.Tools,
+			"max_tokens": params.ModelConfig.MaxTokens,
+		})
+		_ = logger.LogRequest(reqData)
+	}
+
 	ch := make(chan StreamEvent, 8)
 	go func() {
 		defer close(ch)
+		if logger != nil {
+			defer logger.CloseResponse()
+		}
 
 		resp, err := c.llm.GenerateContent(ctx, msgs, opts...)
 		if err != nil {
@@ -67,6 +88,11 @@ func (c *DeepSeekClient) StreamChat(ctx context.Context, params StreamParams) (<
 		// Emit text content
 		if choice.Content != "" {
 			ch <- StreamEvent{Type: StreamEventTextDelta, TextDelta: choice.Content}
+			// Log response content.
+			if logger != nil {
+				respData, _ := json.Marshal(map[string]any{"content": choice.Content})
+				_ = logger.LogResponseLine(respData)
+			}
 		}
 
 		// Emit tool calls

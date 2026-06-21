@@ -7,6 +7,7 @@ import (
 	"github.com/timmy/timmy-code/internal/agent"
 	"github.com/timmy/timmy-code/internal/llm"
 	"github.com/timmy/timmy-code/internal/prompts"
+	"github.com/timmy/timmy-code/internal/rawlog"
 )
 
 // AgentTool spawns a typed subagent (planner, architect, critic, executor, etc.)
@@ -65,9 +66,28 @@ func (t *AgentTool) Call(ctx context.Context, input map[string]any) (*Result, er
 		modelName = m
 	}
 
-	output, err := agent.RunAgent(ctx, t.client, agentPrompt, prompt, modelName)
+	// If a parent RoundLogger is in context, create a nested SubAgentLogger
+	// so the sub-agent's LLM calls are logged recursively.
+	var subRoundLogger *rawlog.RoundLogger
+	if parentRL := rawlog.RoundLoggerFromContext(ctx); parentRL != nil {
+		subLogger := parentRL.CreateSubAgent(agentType)
+		subSession := subLogger.StartSession("sub")
+		subMsg := subSession.NewMessage()
+		subRoundLogger = subMsg.NewRound()
+	}
+
+	output, err := agent.RunAgent(ctx, t.client, agentPrompt, prompt, modelName, subRoundLogger)
 	if err != nil {
+		// Close the sub-agent round logger on error.
+		if subRoundLogger != nil {
+			subRoundLogger.CloseResponse()
+		}
 		return &Result{ExitCode: 1, Output: fmt.Sprintf("agent error: %v", err)}, err
+	}
+
+	// Close the sub-agent round logger on success.
+	if subRoundLogger != nil {
+		subRoundLogger.CloseResponse()
 	}
 
 	return &Result{Output: output, ExitCode: 0}, nil

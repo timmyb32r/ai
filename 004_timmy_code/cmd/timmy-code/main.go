@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/timmy/timmy-code/internal/llm"
 	"github.com/timmy/timmy-code/internal/prompts"
 	"github.com/timmy/timmy-code/internal/query"
+	"github.com/timmy/timmy-code/internal/rawlog"
 	"github.com/timmy/timmy-code/internal/tools"
 )
 
@@ -83,6 +85,28 @@ func main() {
 		fmt.Fprintf(os.Stderr, "=== System Prompt ===\n%s\n=== End System Prompt ===\n", systemPrompt)
 	}
 
+	// Non-interactive: one shot.
+	if *executeFlag != "" {
+		engine := query.New(query.Config{
+			Tools:        registry,
+			LLMClient:    llmClient,
+			CtxService:   ctxService,
+			ModelCfg:     modelCfg,
+			WorkDir:      workDir,
+			SystemPrompt: systemPrompt,
+		})
+		defer engine.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+		defer cancel()
+		runQuery(ctx, engine, *executeFlag)
+		return
+	}
+
+	// --- Interactive mode: start raw log server ---
+	logBaseDir := workDir + "/.timmy-code/raw_llm_io_log"
+	rawLogger := rawlog.NewLogger(logBaseDir)
+	sessionID := fmt.Sprintf("session-%s", time.Now().Format("20060102T150405"))
+
 	newEngine := func() *query.QueryEngine {
 		return query.New(query.Config{
 			Tools:        registry,
@@ -91,17 +115,43 @@ func main() {
 			ModelCfg:     modelCfg,
 			WorkDir:      workDir,
 			SystemPrompt: systemPrompt,
+			RawLogger:    rawLogger,
+			SessionID:    sessionID,
 		})
 	}
 	engine := newEngine()
 	defer engine.Close()
 
-	// Non-interactive: one shot.
-	if *executeFlag != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-		defer cancel()
-		runQuery(ctx, engine, *executeFlag)
-		return
+	// Determine viewer port.
+	viewerPort := 9876 // default internal port
+	if envPort := os.Getenv("TIMKY_VIEW_PORT"); envPort != "" {
+		fmt.Sscanf(envPort, "%d", &viewerPort)
+	}
+
+	// Start the HTTP server.
+	server := rawlog.NewServer(logBaseDir)
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", viewerPort))
+	if err != nil {
+		// Fall back to random port.
+		ln, viewerPort, err = rawlog.ListenDynamicPort()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot start viewer server: %v\n", err)
+		}
+	}
+	if ln != nil {
+		go func() {
+			if err := server.Serve(ln); err != nil {
+				fmt.Fprintf(os.Stderr, "Viewer server error: %v\n", err)
+			}
+		}()
+	}
+
+	// Build viewer URL.
+	viewerURL := ""
+	if envURL := os.Getenv("TIMKY_VIEWER_URL"); envURL != "" {
+		viewerURL = envURL
+	} else {
+		viewerURL = fmt.Sprintf("http://localhost:%d", viewerPort)
 	}
 
 	// Interactive REPL
@@ -110,6 +160,7 @@ func main() {
 	} else {
 		fmt.Println("timmy-code v0.3 — DeepSeek CLI assistant")
 	}
+	fmt.Printf("Raw Log Viewer: %s\n", viewerURL)
 	fmt.Println("Commands: /help, /model [pro|flash], /clear, exit, Ctrl+C")
 	fmt.Println("Agents: planner, architect, critic, executor, analyst, code-reviewer, verifier")
 	fmt.Println()
@@ -176,24 +227,27 @@ func isTerminal(f *os.File) bool {
 }
 
 // autoDockerWrap re-launches the current binary inside a Docker container.
-// It builds the image if needed, then exec's `docker run`.
+// It picks a random host port and maps it to the container's viewer port (9876).
 func autoDockerWrap() {
-	// Check if Docker image exists; build if not.
-	if err := exec.Command("docker", "image", "inspect", "timmy-code").Run(); err != nil {
-		if _, statErr := os.Stat("Dockerfile"); statErr == nil {
-			fmt.Fprintln(os.Stderr, "Building Docker image timmy-code...")
-			buildCmd := exec.Command("docker", "build", "-t", "timmy-code", ".")
-			buildCmd.Stdout = os.Stderr
-			buildCmd.Stderr = os.Stderr
-			if buildErr := buildCmd.Run(); buildErr != nil {
-				fmt.Fprintf(os.Stderr, "Error: docker build failed: %v\n", buildErr)
-				os.Exit(1)
-			}
-		} else {
-			fmt.Fprintln(os.Stderr, "Error: Docker image 'timmy-code' not found and no Dockerfile in current directory.")
-			fmt.Fprintln(os.Stderr, "Build it first: cd /path/to/timmy-code && docker build -t timmy-code .")
-			os.Exit(1)
-		}
+	// Pick a free host port.
+	hostPort, err := rawlog.GetFreePort()
+	if err != nil {
+		hostPort = 9876 // fallback
+	}
+
+	// Always rebuild Docker image to ensure the binary is fresh.
+	if _, statErr := os.Stat("Dockerfile"); statErr != nil {
+		fmt.Fprintln(os.Stderr, "Error: Dockerfile not found in current directory.")
+		fmt.Fprintln(os.Stderr, "Run from the timmy-code project root where Dockerfile exists.")
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr, "Building Docker image timmy-code...")
+	buildCmd := exec.Command("docker", "build", "-t", "timmy-code", ".")
+	buildCmd.Stdout = os.Stderr
+	buildCmd.Stderr = os.Stderr
+	if buildErr := buildCmd.Run(); buildErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: docker build failed: %v\n", buildErr)
+		os.Exit(1)
 	}
 
 	workDir, _ := os.Getwd()
@@ -204,9 +258,14 @@ func autoDockerWrap() {
 		ttyFlag = "-it"
 	}
 
+	viewerURL := fmt.Sprintf("http://localhost:%d", hostPort)
+
 	runCmd := exec.Command("docker", "run", "--rm", ttyFlag,
 		"-v", workDir+":/work",
 		"-e", "DEEPSEEK_API_KEY",
+		"-e", fmt.Sprintf("TIMKY_VIEW_PORT=%d", 9876),
+		"-e", fmt.Sprintf("TIMKY_VIEWER_URL=%s", viewerURL),
+		"-p", fmt.Sprintf("%d:9876", hostPort),
 		"timmy-code",
 	)
 	runCmd.Stdin = os.Stdin

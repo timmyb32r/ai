@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/timmy/timmy-code/internal/llm"
+	"github.com/timmy/timmy-code/internal/rawlog"
 )
 
 // mockClient implements llm.Client for testing.
@@ -16,6 +17,10 @@ type mockClient struct {
 }
 
 func (m *mockClient) StreamChat(_ context.Context, _ llm.StreamParams) (<-chan llm.StreamEvent, error) {
+	return m.StreamChatWithLog(nil, llm.StreamParams{}, nil)
+}
+
+func (m *mockClient) StreamChatWithLog(_ context.Context, _ llm.StreamParams, _ *rawlog.RoundLogger) (<-chan llm.StreamEvent, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -37,7 +42,7 @@ func TestRunAgent_TextResponse(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := RunAgent(ctx, client, "You are a test agent.", "test prompt", llm.FastModel)
+	result, err := RunAgent(ctx, client, "You are a test agent.", "test prompt", llm.FastModel, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +59,7 @@ func TestRunAgent_EmptyResponse(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel)
+	result, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,7 +76,7 @@ func TestRunAgent_ChannelClose(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel)
+	result, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,7 +91,7 @@ func TestRunAgent_StreamError(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel)
+	_, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -102,7 +107,7 @@ func TestRunAgent_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel)
+	_, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel, nil)
 	if err == nil {
 		t.Fatal("expected context cancellation error")
 	}
@@ -115,7 +120,7 @@ func TestRunAgent_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	_, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel)
+	_, err := RunAgent(ctx, client, "You are a test agent.", "prompt", llm.FastModel, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -125,6 +130,10 @@ func TestRunAgent_Timeout(t *testing.T) {
 type llmClientHanging struct{}
 
 func (h *llmClientHanging) StreamChat(ctx context.Context, _ llm.StreamParams) (<-chan llm.StreamEvent, error) {
+	return h.StreamChatWithLog(ctx, llm.StreamParams{}, nil)
+}
+
+func (h *llmClientHanging) StreamChatWithLog(ctx context.Context, _ llm.StreamParams, _ *rawlog.RoundLogger) (<-chan llm.StreamEvent, error) {
 	ch := make(chan llm.StreamEvent)
 	go func() {
 		<-ctx.Done()

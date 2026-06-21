@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 
+	"github.com/timmy/timmy-code/internal/rawlog"
 	"github.com/timmy/timmy-code/internal/schema"
 )
 
@@ -48,4 +49,5 @@ type StreamParams struct {
 // Client is the interface for LLM API calls.
 type Client interface {
 	StreamChat(ctx context.Context, params StreamParams) (<-chan StreamEvent, error)
+	StreamChatWithLog(ctx context.Context, params StreamParams, logger *rawlog.RoundLogger) (<-chan StreamEvent, error)
 }

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/timmy/timmy-code/internal/rawlog"
 )
 
 // DirectClient implements the Client interface via direct HTTP to DeepSeek API.
@@ -100,6 +102,12 @@ type openAIStreamResponse struct {
 
 // StreamChat implements the Client interface via direct HTTP SSE streaming.
 func (c *DirectClient) StreamChat(ctx context.Context, params StreamParams) (<-chan StreamEvent, error) {
+	return c.StreamChatWithLog(ctx, params, nil)
+}
+
+// StreamChatWithLog is like StreamChat but optionally logs raw request/response
+// to the provided RoundLogger. Pass nil to disable logging.
+func (c *DirectClient) StreamChatWithLog(ctx context.Context, params StreamParams, logger *rawlog.RoundLogger) (<-chan StreamEvent, error) {
 	req := openAIRequest{
 		Model:     params.ModelConfig.ModelName,
 		Stream:    true,
@@ -136,6 +144,11 @@ func (c *DirectClient) StreamChat(ctx context.Context, params StreamParams) (<-c
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// Log the raw request body (pretty-printed) if logger is present.
+	if logger != nil {
+		_ = logger.LogRequest(body)
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -158,6 +171,10 @@ func (c *DirectClient) StreamChat(ctx context.Context, params StreamParams) (<-c
 	go func() {
 		defer close(ch)
 		defer httpResp.Body.Close()
+		// Close logger when stream is done (success or error).
+		if logger != nil {
+			defer logger.CloseResponse()
+		}
 
 		type pendingToolCall struct {
 			index     int
@@ -178,6 +195,11 @@ func (c *DirectClient) StreamChat(ctx context.Context, params StreamParams) (<-c
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
 				break
+			}
+
+			// Log the raw SSE data chunk (JSON content only, no SSE wrapper).
+			if logger != nil {
+				_ = logger.LogResponseLine([]byte(data))
 			}
 
 			var chunk openAIStreamResponse

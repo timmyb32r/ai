@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/timmy/timmy-code/internal/llm"
+	"github.com/timmy/timmy-code/internal/rawlog"
 	"github.com/timmy/timmy-code/internal/schema"
 )
 
@@ -18,6 +19,11 @@ type toolCall struct {
 
 func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<- Event) {
 	defer close(ch)
+
+	// Create a message logger for this SubmitMessage if raw logging is enabled.
+	if e.sessionLogger != nil {
+		e.msgLogger = e.sessionLogger.NewMessage()
+	}
 
 	// On first turn: inject system prompt + context + tools.
 	// On subsequent turns: just append the user message.
@@ -48,12 +54,26 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 		default:
 		}
 
+		// Create a round logger for this LLM call if logging is enabled.
+		var roundLogger *rawlog.RoundLogger
+		if e.msgLogger != nil {
+			e.roundLogger = e.msgLogger.NewRound()
+			roundLogger = e.roundLogger
+		}
+
 		params := llm.StreamParams{
 			Messages:    e.messages,
 			Tools:       e.tools.GetAllDefs(),
 			ModelConfig: e.modelCfg,
 		}
-		eventCh, err := e.llmClient.StreamChat(ctx, params)
+
+		var eventCh <-chan llm.StreamEvent
+		var err error
+		if roundLogger != nil {
+			eventCh, err = e.llmClient.StreamChatWithLog(ctx, params, roundLogger)
+		} else {
+			eventCh, err = e.llmClient.StreamChat(ctx, params)
+		}
 		if err != nil {
 			ch <- Event{Type: EventError, Round: round, Error: err}
 			return
@@ -107,7 +127,12 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 				ch <- Event{Type: EventError, Round: round, Error: fmt.Errorf("tool not found: %s", tc.name)}
 				return
 			}
-			result, err := tool.Call(ctx, tc.input)
+			// Inject round logger into context so sub-agents can use it.
+			toolCtx := ctx
+			if e.roundLogger != nil {
+				toolCtx = rawlog.WithRoundLogger(ctx, e.roundLogger)
+			}
+			result, err := tool.Call(toolCtx, tc.input)
 			toolMsg := schema.Message{Role: "tool", Name: tc.name, ToolCallID: tc.id}
 			if err != nil {
 				errMsg := fmt.Sprintf("Error: %v", err)

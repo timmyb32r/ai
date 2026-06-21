@@ -6,6 +6,7 @@ import (
 
 	ctxpkg "github.com/timmy/timmy-code/internal/context"
 	"github.com/timmy/timmy-code/internal/llm"
+	"github.com/timmy/timmy-code/internal/rawlog"
 	"github.com/timmy/timmy-code/internal/schema"
 	"github.com/timmy/timmy-code/internal/tools"
 )
@@ -14,6 +15,10 @@ import (
 type mockLLM struct{}
 
 func (m *mockLLM) StreamChat(_ context.Context, _ llm.StreamParams) (<-chan llm.StreamEvent, error) {
+	return m.StreamChatWithLog(nil, llm.StreamParams{}, nil)
+}
+
+func (m *mockLLM) StreamChatWithLog(_ context.Context, _ llm.StreamParams, _ *rawlog.RoundLogger) (<-chan llm.StreamEvent, error) {
 	ch := make(chan llm.StreamEvent, 2)
 	ch <- llm.StreamEvent{Type: llm.StreamEventStop, StopReason: "completed"}
 	close(ch)

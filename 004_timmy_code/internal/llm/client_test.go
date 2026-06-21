@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"testing"
+
+	"github.com/timmy/timmy-code/internal/rawlog"
 )
 
 func TestClientInterfaceCompileCheck(t *testing.T) {
@@ -36,6 +38,10 @@ func TestClientInterfaceCompileCheck(t *testing.T) {
 type mockClient struct{}
 
 func (m *mockClient) StreamChat(_ context.Context, _ StreamParams) (<-chan StreamEvent, error) {
+	return m.StreamChatWithLog(nil, StreamParams{}, nil)
+}
+
+func (m *mockClient) StreamChatWithLog(_ context.Context, _ StreamParams, _ *rawlog.RoundLogger) (<-chan StreamEvent, error) {
 	ch := make(chan StreamEvent, 1)
 	ch <- StreamEvent{Type: StreamEventStop, StopReason: "completed"}
 	close(ch)
