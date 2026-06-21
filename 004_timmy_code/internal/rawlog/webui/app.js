@@ -216,19 +216,72 @@ async function loadContent(logPath, spanEl) {
     if (!resp.ok) throw new Error(resp.statusText);
     let text = await resp.text();
 
-    // For JSON files, pretty-print with user-role highlighting.
+    // ── request.json — show Pretty (user input / delta) + Raw tabs ──
     if (logPath.endsWith('.json')) {
+      let obj;
+      try { obj = JSON.parse(text); } catch (_) { obj = null; }
+
+      if (obj && obj.messages && Array.isArray(obj.messages)) {
+        cachedRaw = highlightUserRole(JSON.stringify(obj, null, 2));
+
+        if (obj.messages.length <= 2) {
+          // Round 1: show the user message.
+          const userMsg = obj.messages.find(m => m.role === 'user');
+          cachedPretty = userMsg
+            ? escapeHtml(typeof userMsg.content === 'string' ? userMsg.content : JSON.stringify(userMsg.content, null, 2))
+            : '(no user message)';
+        } else {
+          // Round 2+: show delta — messages accumulated since round 1.
+          let delta = '';
+          for (let i = 2; i < obj.messages.length; i++) {
+            const m = obj.messages[i];
+            let label = m.role.toUpperCase();
+            if (m.name) label += ' (' + m.name + ')';
+            delta += '\n\n━━━ ' + label + ' ━━━\n\n';
+
+            // Render content (string or structured).
+            let body;
+            if (typeof m.content === 'string') {
+              body = m.content;
+            } else if (m.content !== null && m.content !== undefined) {
+              body = JSON.stringify(m.content, null, 2);
+            } else {
+              body = '';
+            }
+
+            // Show tool_calls if present.
+            if (m.tool_calls && m.tool_calls.length > 0) {
+              for (const tc of m.tool_calls) {
+                body += '\n\n🔧 Tool: ' + (tc.function?.name || '?') + '\n';
+                if (tc.function?.arguments) {
+                  try {
+                    body += JSON.stringify(JSON.parse(tc.function.arguments), null, 2);
+                  } catch (_) {
+                    body += tc.function.arguments;
+                  }
+                }
+              }
+            }
+
+            delta += body || '(empty)';
+          }
+          cachedPretty = escapeHtml(delta);
+        }
+
+        document.getElementById('tabs').style.display = 'flex';
+        switchTab('pretty');
+        return;
+      }
+
+      // Generic JSON: no tabs.
       document.getElementById('tabs').style.display = 'none';
-      try {
-        const obj = JSON.parse(text);
-        text = JSON.stringify(obj, null, 2);
-      } catch (_) { /* raw text */ }
+      text = JSON.stringify(obj, null, 2);
       text = highlightUserRole(text);
       showContent(text);
       return;
     }
 
-    // For JSONL files, assemble streaming chunks into a readable response.
+    // ── response.jsonl — Pretty/Raw tabs ──
     if (logPath.endsWith('.jsonl')) {
       const lines = text.trim().split('\n');
       let assembled = '';
@@ -244,7 +297,6 @@ async function loadContent(logPath, spanEl) {
           if (choices && choices.length > 0) {
             const delta = choices[0].delta;
             if (delta) {
-              // DeepSeek reasoner → reasoning_content, then content.
               if (delta.reasoning_content) {
                 assembled += delta.reasoning_content;
                 hasReasoning = true;
@@ -302,7 +354,6 @@ async function loadContent(logPath, spanEl) {
         }).join('\n')
       );
 
-      // Show tabs and default to Pretty.
       document.getElementById('tabs').style.display = 'flex';
       switchTab('pretty');
       return;
