@@ -14,11 +14,11 @@ async function loadSessions() {
   try {
     const resp = await fetch('/api/sessions');
     const sessions = await resp.json();
-    const sel = document.getElementById('session-selector');
-    sel.innerHTML = '';
+    const ctrl = document.getElementById('session-control');
+    ctrl.innerHTML = '';
 
     if (sessions.length === 0) {
-      sel.innerHTML = '<span style="color:var(--text-muted);font-size:13px;">No sessions yet — send a prompt to start.</span>';
+      ctrl.innerHTML = '<span style="color:var(--text-muted);font-size:13px;">No sessions yet — send a prompt to start.</span>';
       return;
     }
 
@@ -42,7 +42,7 @@ async function loadSessions() {
       loadTree(true);
     });
 
-    sel.appendChild(select);
+    ctrl.appendChild(select);
     loadTree(true);
   } catch (e) {
     console.error('Failed to load sessions:', e);
@@ -201,10 +201,15 @@ function renderNodeWithMark(parentEl, node, isNew) {
 }
 
 // --- Content viewing ---
+let cachedPretty = '';
+let cachedRaw = '';
+let currentLogPath = '';
+
 async function loadContent(logPath, spanEl) {
   // Highlight selected.
   document.querySelectorAll('.tree-node.selected').forEach(s => s.classList.remove('selected'));
   if (spanEl) spanEl.classList.add('selected');
+  currentLogPath = logPath;
 
   try {
     const resp = await fetch(`/api/log/${logPath}`);
@@ -213,32 +218,91 @@ async function loadContent(logPath, spanEl) {
 
     // For JSON files, pretty-print with user-role highlighting.
     if (logPath.endsWith('.json')) {
+      document.getElementById('tabs').style.display = 'none';
       try {
         const obj = JSON.parse(text);
         text = JSON.stringify(obj, null, 2);
       } catch (_) { /* raw text */ }
       text = highlightUserRole(text);
+      showContent(text);
+      return;
     }
 
-    // For JSONL files, pretty-print each line as JSON.
+    // For JSONL files, assemble streaming chunks into a readable response.
     if (logPath.endsWith('.jsonl')) {
       const lines = text.trim().split('\n');
-      const prettyLines = lines.map(line => {
+      let assembled = '';
+
+      for (const line of lines) {
         try {
-          return JSON.stringify(JSON.parse(line), null, 2);
-        } catch (_) { return line; }
-      });
-      text = highlightUserRole(prettyLines.join('\n'));
+          const obj = JSON.parse(line);
+          const choices = obj.choices;
+          if (choices && choices.length > 0) {
+            const delta = choices[0].delta;
+            if (delta) {
+              if (delta.content) {
+                assembled += delta.content;
+              }
+              if (delta.tool_calls) {
+                for (const tc of delta.tool_calls) {
+                  if (tc.function) {
+                    assembled += '\n\n🔧 Tool: ' + tc.function.name + '\n';
+                    if (tc.function.arguments) {
+                      try {
+                        const args = JSON.parse(tc.function.arguments);
+                        assembled += JSON.stringify(args, null, 2) + '\n';
+                      } catch (_) {
+                        assembled += tc.function.arguments + '\n';
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (_) { /* skip unparseable lines */ }
+      }
+
+      cachedPretty = escapeHtml(assembled || '(empty response)');
+      cachedRaw = highlightUserRole(
+        lines.map(l => {
+          try { return JSON.stringify(JSON.parse(l), null, 2); }
+          catch (_) { return l; }
+        }).join('\n')
+      );
+
+      // Show tabs and default to Pretty.
+      document.getElementById('tabs').style.display = 'flex';
+      switchTab('pretty');
+      return;
     }
 
-    document.getElementById('content-placeholder').style.display = 'none';
-    const viewer = document.getElementById('content-viewer');
-    viewer.style.display = 'block';
-    viewer.innerHTML = text;
+    // Other files: hide tabs, show raw.
+    document.getElementById('tabs').style.display = 'none';
+    showContent(highlightUserRole(text));
   } catch (e) {
     document.getElementById('content-placeholder').textContent = `Error: ${e.message}`;
   }
 }
+
+function switchTab(mode) {
+  document.getElementById('tab-pretty').classList.toggle('active', mode === 'pretty');
+  document.getElementById('tab-raw').classList.toggle('active', mode === 'raw');
+  showContent(mode === 'pretty' ? cachedPretty : cachedRaw);
+}
+
+function showContent(html) {
+  document.getElementById('content-placeholder').style.display = 'none';
+  const viewer = document.getElementById('content-viewer');
+  viewer.style.display = 'block';
+  viewer.innerHTML = html;
+}
+
+// Wire up tab clicks.
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('tab-pretty').addEventListener('click', () => switchTab('pretty'));
+  document.getElementById('tab-raw').addEventListener('click', () => switchTab('raw'));
+});
 
 function highlightUserRole(jsonText) {
   // Split by lines; wrap lines containing "role": "user" in a highlight span.

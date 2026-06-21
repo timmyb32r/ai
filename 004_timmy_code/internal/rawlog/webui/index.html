@@ -9,10 +9,17 @@
 <body>
 <div id="app">
   <aside id="tree-panel">
-    <div id="session-selector"></div>
+    <div id="session-selector">
+      <div id="session-label">Sessions</div>
+      <div id="session-control"></div>
+    </div>
     <ul id="tree"></ul>
   </aside>
   <main id="content-panel">
+    <div id="tabs" style="display:none;">
+      <button id="tab-pretty" class="tab active">Pretty</button>
+      <button id="tab-raw" class="tab">Raw</button>
+    </div>
     <div id="content-placeholder">Select a node to view its content.</div>
     <pre id="content-viewer" style="display:none;"></pre>
   </main>

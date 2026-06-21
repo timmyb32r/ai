@@ -3,12 +3,15 @@ package rawlog
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 //go:embed webui/*
@@ -89,9 +92,16 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	var sessions []sessionInfo
 	for _, e := range entries {
-		if e.IsDir() {
-			sessions = append(sessions, sessionInfo{ID: e.Name(), Name: e.Name()})
+		if !e.IsDir() {
+			continue
 		}
+		// Skip empty sessions (no messages logged yet).
+		sessionDir := filepath.Join(sessionsDir, e.Name())
+		subEntries, subErr := os.ReadDir(sessionDir)
+		if subErr != nil || len(subEntries) == 0 {
+			continue
+		}
+		sessions = append(sessions, sessionInfo{ID: e.Name(), Name: humanizeName(e.Name(), "session")})
 	}
 	writeJSON(w, sessions)
 }
@@ -145,7 +155,7 @@ type treeNode struct {
 }
 
 func walkSessionDir(baseDir, dir, nodeType, name string) *treeNode {
-	node := &treeNode{Type: nodeType, Name: name}
+	node := &treeNode{Type: nodeType, Name: humanizeName(name, nodeType)}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -197,4 +207,76 @@ func detectNodeType(name string) string {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+// humanizeName converts a raw directory name into a human-readable display name.
+// It parses the timestamp embedded in log directory names and formats them nicely.
+func humanizeName(raw, nodeType string) string {
+	switch nodeType {
+	case "session":
+		// "session-20260621T152345" or "session-2026-06-21_15-04-05"
+		ts := strings.TrimPrefix(raw, "session-")
+		if t, err := parseLogTimestamp(ts); err == nil {
+			return fmt.Sprintf("Session — %s", t.Format("2006-01-02 15:04:05"))
+		}
+	case "message":
+		// "msg-01_2026-06-21_15-04-05" → "Message 1 — 2026-06-21 15:04:05"
+		// "msg-01" → "Message 1"
+		rest := strings.TrimPrefix(raw, "msg-")
+		num, tsPart := splitNumTS(rest)
+		if t, err := parseLogTimestamp(tsPart); err == nil {
+			return fmt.Sprintf("Message %d — %s", num, t.Format("2006-01-02 15:04:05"))
+		}
+		return fmt.Sprintf("Message %d", num)
+	case "round":
+		// "round-2_2026-06-21_15-04-05" → "Round 2 — 2026-06-21 15:04:05"
+		// "round-2" → "Round 2"
+		rest := strings.TrimPrefix(raw, "round-")
+		num, tsPart := splitNumTS(rest)
+		if t, err := parseLogTimestamp(tsPart); err == nil {
+			return fmt.Sprintf("Round %d — %s", num, t.Format("2006-01-02 15:04:05"))
+		}
+		return fmt.Sprintf("Round %d", num)
+	case "subagent":
+		// "sub-agent-executor_2026-06-21_15-04-05" → "executor — 2026-06-21 15:04:05"
+		// "sub-agent-executor" → "executor"
+		name := strings.TrimPrefix(raw, "sub-agent-")
+		if idx := strings.LastIndex(name, "_20"); idx >= 0 {
+			agentName := name[:idx]
+			tsPart := name[idx+1:]
+			if t, err := parseLogTimestamp(tsPart); err == nil {
+				return fmt.Sprintf("%s — %s", agentName, t.Format("2006-01-02 15:04:05"))
+			}
+		}
+		return name
+	}
+	return raw
+}
+
+// parseLogTimestamp tries to parse a timestamp string in all formats used by the logger.
+func parseLogTimestamp(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty")
+	}
+	formats := []string{
+		"2006-01-02_15-04-05", // new human-readable format
+		"20060102T150405",      // old compact format
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unknown timestamp: %s", s)
+}
+
+// splitNumTS splits a string like "01_2006-01-02_15-04-05" into number and timestamp.
+func splitNumTS(s string) (int, string) {
+	idx := strings.Index(s, "_")
+	if idx < 0 {
+		num, _ := strconv.Atoi(s)
+		return num, ""
+	}
+	num, _ := strconv.Atoi(s[:idx])
+	return num, s[idx+1:]
 }
