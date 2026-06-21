@@ -26,6 +26,21 @@ func NewDirectClient(apiKey string) *DirectClient {
 	if apiKey == "" {
 		apiKey = os.Getenv("DEEPSEEK_API_KEY")
 	}
+	// Diagnostic: show key prefix to catch whitespace / Bearer prefix issues.
+	keyLen := len(apiKey)
+	prefix := apiKey
+	suffix := ""
+	if keyLen > 12 {
+		prefix = apiKey[:7]
+		suffix = apiKey[keyLen-4:]
+	}
+	fmt.Fprintf(os.Stderr, "[llm] API key: len=%d prefix=%q suffix=%q\n", keyLen, prefix, suffix)
+	if strings.HasPrefix(apiKey, "Bearer ") {
+		fmt.Fprintf(os.Stderr, "[llm] ⚠ API key has 'Bearer ' prefix — this will double-prefix the auth header!\n")
+	}
+	if strings.TrimSpace(apiKey) != apiKey {
+		fmt.Fprintf(os.Stderr, "[llm] ⚠ API key has leading/trailing whitespace — this will break auth!\n")
+	}
 	return &DirectClient{
 		apiKey:  apiKey,
 		baseURL: "https://api.deepseek.com/v1",
@@ -102,12 +117,16 @@ type openAIStreamResponse struct {
 
 // StreamChat implements the Client interface via direct HTTP SSE streaming.
 func (c *DirectClient) StreamChat(ctx context.Context, params StreamParams) (<-chan StreamEvent, error) {
+	fmt.Fprintf(os.Stderr, "[llm] StreamChat called: model=%s\n", params.ModelConfig.ModelName)
 	return c.StreamChatWithLog(ctx, params, nil)
 }
 
 // StreamChatWithLog is like StreamChat but optionally logs raw request/response
 // to the provided RoundLogger. Pass nil to disable logging.
 func (c *DirectClient) StreamChatWithLog(ctx context.Context, params StreamParams, logger *rawlog.RoundLogger) (<-chan StreamEvent, error) {
+	fmt.Fprintf(os.Stderr, "[llm] StreamChatWithLog: model=%s url=%s keyLen=%d\n",
+		params.ModelConfig.ModelName, c.baseURL+"/chat/completions", len(c.apiKey))
+
 	req := openAIRequest{
 		Model:     params.ModelConfig.ModelName,
 		Stream:    true,
@@ -156,6 +175,13 @@ func (c *DirectClient) StreamChatWithLog(ctx context.Context, params StreamParam
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
+
+	// Diagnostic: print auth header masked.
+	authVal := "Bearer " + c.apiKey
+	if len(authVal) > 20 {
+		authVal = authVal[:14] + "..." + authVal[len(authVal)-4:]
+	}
+	fmt.Fprintf(os.Stderr, "[llm] → %s %s  Authorization: %s\n", httpReq.Method, httpReq.URL.String(), authVal)
 
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {

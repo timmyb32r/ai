@@ -72,7 +72,7 @@ VIEWER_URL="http://localhost:${HOST_VIEWER_PORT}"
 
 # Common Docker flags.
 DOCKER_FLAGS="--rm -v \"$PWD:/work\" \
-    -e DEEPSEEK_API_KEY \
+    -e \"DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY\" \
     -e TIMKY_VIEW_PORT=${INTERNAL_VIEWER_PORT} \
     -e TIMKY_VIEWER_URL=${VIEWER_URL}"
 

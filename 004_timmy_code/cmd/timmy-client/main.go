@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 	"unicode"
+
+	"github.com/timmy/timmy-code/internal/docker"
 )
 
 // ANSI formatting constants.
@@ -53,7 +56,9 @@ type usageInfo struct {
 
 // CLI flags.
 var (
-	connectAddr = flag.String("connect", "localhost:9877", "Server address to connect to")
+	connectAddr = flag.String("connect", "127.0.0.1:9877", "Server address to connect to")
+	noDocker    = flag.Bool("no-docker", false, "Skip Docker image rebuild and server start")
+	rebuild     = flag.Bool("rebuild", false, "Force rebuild of the Docker image before connecting")
 )
 
 // Spinner frames.
@@ -61,6 +66,102 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 func main() {
 	flag.Parse()
+
+	// --- Docker smart rebuild + server start ---
+	if !*noDocker {
+		projectRoot, rootErr := docker.FindProjectRoot()
+		if rootErr != nil {
+			if !docker.ImageExists("timmy-code:latest") {
+				fmt.Fprintf(os.Stderr, "%s⚠ Docker image 'timmy-code' not found and project root not detected.%s\n", yellow, reset)
+				fmt.Fprintf(os.Stderr, "%s  Build it: cd <timmy-code-project> && docker build -t timmy-code .%s\n", dim, reset)
+				fmt.Fprintf(os.Stderr, "%s  Or run with --no-docker to skip.%s\n", dim, reset)
+				os.Exit(1)
+			}
+		} else {
+			if *rebuild {
+				// Force rebuild: wipe the cached hash so EnsureImage sees a mismatch.
+				hashFile := projectRoot + "/.timmy-code/.docker-image-hash"
+				os.Remove(hashFile)
+				fmt.Fprintf(os.Stderr, "%sForcing rebuild of Docker image...%s\n", dim, reset)
+			}
+			if err := docker.EnsureImage(projectRoot); err != nil {
+				fmt.Fprintf(os.Stderr, "%s✖ %v%s\n", red, err, reset)
+				os.Exit(1)
+			}
+		}
+
+		// Kill any previous server container — we always start fresh.
+		exec.Command("docker", "stop", "timmy-server").Run()
+		exec.Command("docker", "rm", "timmy-server").Run()
+
+		controlPort := 9877
+		if _, portStr, err := net.SplitHostPort(*connectAddr); err == nil {
+			fmt.Sscanf(portStr, "%d", &controlPort)
+		}
+
+		viewerPort, _ := docker.GetFreePort()
+		if viewerPort == 0 {
+			viewerPort = 9876
+		}
+
+		apiKey := os.Getenv("DEEPSEEK_API_KEY")
+		if apiKey == "" {
+			fmt.Fprintf(os.Stderr, "%s✖ DEEPSEEK_API_KEY is not set — server needs it to call the LLM API.%s\n", red, reset)
+			fmt.Fprintf(os.Stderr, "%s  Set it: export DEEPSEEK_API_KEY=sk-...%s\n", dim, reset)
+			os.Exit(1)
+		}
+
+		workDir, _ := os.Getwd()
+		viewerURL := fmt.Sprintf("http://localhost:%d", viewerPort)
+
+		fmt.Fprintf(os.Stderr, "%sStarting timmy-code server in Docker...%s\n", dim, reset)
+		fmt.Fprintf(os.Stderr, "%s  Control: %s  |  Log viewer: %s%s\n", dim, *connectAddr, viewerURL, reset)
+
+		// Detached container — no -it flags, just -d.
+		bgCmd := exec.Command("docker", "run", "--rm", "-d",
+			"--name", "timmy-server",
+			"-v", workDir+":/work",
+			"-e", fmt.Sprintf("DEEPSEEK_API_KEY=%s", apiKey),
+			"-e", fmt.Sprintf("TIMKY_VIEW_PORT=%d", 9876),
+			"-e", fmt.Sprintf("TIMKY_VIEWER_URL=%s", viewerURL),
+			"-e", fmt.Sprintf("TIMKY_CONTROL_PORT=%d", 9877),
+			"-p", fmt.Sprintf("%d:9877", controlPort),
+			"-p", fmt.Sprintf("%d:9876", viewerPort),
+			"timmy-code",
+			"--cli-mode", "client-server",
+		)
+		// Capture stderr so we can show Docker errors.
+		var dockerErr strings.Builder
+		bgCmd.Stderr = &dockerErr
+
+		if err := bgCmd.Run(); err != nil {
+			errMsg := strings.TrimSpace(dockerErr.String())
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			fmt.Fprintf(os.Stderr, "%s✖ Failed to start Docker: %s%s\n", red, errMsg, reset)
+			fmt.Fprintf(os.Stderr, "%s  Try --no-docker or start the server manually.%s\n", dim, reset)
+			os.Exit(1)
+		}
+
+		// Wait for the control port to be ready.
+		fmt.Fprintf(os.Stderr, "%sWaiting for server to be ready...%s", dim, reset)
+		ready := false
+		for i := 0; i < 30; i++ {
+			time.Sleep(500 * time.Millisecond)
+			if testConn, err := net.DialTimeout("tcp", *connectAddr, 200*time.Millisecond); err == nil {
+				testConn.Close()
+				ready = true
+				break
+			}
+			fmt.Fprint(os.Stderr, ".")
+		}
+		if ready {
+			fmt.Fprintf(os.Stderr, "\n%sServer ready.%s\n", green, reset)
+		} else {
+			fmt.Fprintf(os.Stderr, "\n%s⚠ Server did not respond in time. Connecting anyway...%s\n", yellow, reset)
+		}
+	}
 
 	conn, err := net.Dial("tcp", *connectAddr)
 	if err != nil {
@@ -107,13 +208,14 @@ func main() {
 
 	// State.
 	var (
-		spinning     bool
-		spinnerIdx   int
-		spinnerMsg   string
-		spinnerStop  = make(chan struct{})
-		codeBlock    bool
-		codeLang     string
-		codeBuf      []string
+		spinning      bool
+		spinnerIdx    int
+		spinnerMsg    string
+		spinnerStop   = make(chan struct{})
+		codeBlock     bool
+		codeLang      string
+		codeBuf       []string
+		queryInFlight bool // true when waiting for server response
 	)
 
 	// Start spinner goroutine.
@@ -176,7 +278,7 @@ func main() {
 		fmt.Fprint(os.Stderr, fmt.Sprintf("\r\033[K%s>%s ", bold, reset))
 	}
 
-	printPrompt()
+	bannerShown := false
 
 	for {
 		select {
@@ -188,6 +290,15 @@ func main() {
 				fmt.Printf("\n%s╭─ %s%s%s ─╮%s\n", gray, bold, brightCyan, ev.Text, reset)
 				fmt.Printf("%s│%s %s%s %s│%s\n", gray, reset, dim, "DeepSeek-powered code assistant", gray, reset)
 				fmt.Printf("%s╰──────%s\n", gray, reset)
+				if !bannerShown {
+					bannerShown = true
+					// Show prompt after banner+info settle (info arrives right after banner).
+					time.AfterFunc(200*time.Millisecond, func() {
+						if !queryInFlight {
+							printPrompt()
+						}
+					})
+				}
 
 			case "info":
 				stopSpinner()
@@ -284,12 +395,14 @@ func main() {
 					parts = append(parts, fmt.Sprintf("%s· %s%s", dim, formatElapsed(ev.ElapsedMs), reset))
 				}
 				fmt.Printf("\n%s\n", strings.Join(parts, " "))
+				queryInFlight = false
 				printPrompt()
 
 			case "error":
 				stopSpinner()
 				flushCodeBlock()
 				fmt.Fprintf(os.Stderr, "\r\033[K%s✖%s %s%s%s\n", brightRed, reset, red, ev.Text, reset)
+				queryInFlight = false
 				printPrompt()
 			}
 
@@ -344,6 +457,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "\r\033[K%s✖ Connection lost: %v%s\n", red, err, reset)
 				return
 			}
+			queryInFlight = true
 			// Clear the prompt line before output starts.
 			fmt.Fprint(os.Stderr, "\r\033[K")
 
@@ -356,13 +470,15 @@ func main() {
 		case sig := <-sigCh:
 			stopSpinner()
 			flushCodeBlock()
-			if sig == syscall.SIGINT {
-				// Send cancel to server on first Ctrl+C.
+			if sig == syscall.SIGINT && queryInFlight {
+				// First Ctrl+C while query is running: cancel query.
 				fmt.Fprintf(conn, `{"type":"cancel"}`+"\n")
 				fmt.Fprintf(os.Stderr, "\r\033[K%sCancelled.%s\n", dim, reset)
+				queryInFlight = false
 				printPrompt()
 				continue
 			}
+			// Second Ctrl+C (or SIGTERM): exit.
 			fmt.Fprintf(os.Stderr, "\r\033[K%sGoodbye!%s\n", dim, reset)
 			return
 		}

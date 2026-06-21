@@ -3,21 +3,18 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	ctxpkg "github.com/timmy/timmy-code/internal/context"
+	"github.com/timmy/timmy-code/internal/docker"
 	"github.com/timmy/timmy-code/internal/llm"
 	"github.com/timmy/timmy-code/internal/output"
 	"github.com/timmy/timmy-code/internal/prompts"
@@ -36,7 +33,7 @@ func main() {
 	cliModeFlag := flag.String("cli-mode", "client-server", "CLI mode: 'pipes' (plain text) or 'client-server' (rich UI)")
 	flag.Parse()
 
-	inDocker := isInDocker()
+	inDocker := docker.IsInDocker()
 
 	// Auto-wrap: on host with no arguments → re-launch inside Docker.
 	if !inDocker && len(os.Args) == 1 {
@@ -305,73 +302,44 @@ func runClientServerMode(viewerURL string, modelCfg *llm.ModelConfig, newEngine 
 	}
 }
 
-// isInDocker returns true if running inside a Docker container.
-func isInDocker() bool {
-	_, err := os.Stat("/.dockerenv")
-	return err == nil
-}
-
-// isTerminal returns true if f is a character device (real terminal).
-func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
-}
-
 // autoDockerWrap re-launches the current binary inside a Docker container.
 func autoDockerWrap() {
-	hostPort, err := rawlog.GetFreePort()
+	// Validate API key BEFORE launching Docker — gives a clear error early.
+	apiKey := os.Getenv("DEEPSEEK_API_KEY")
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, "Error: DEEPSEEK_API_KEY environment variable is required")
+		fmt.Fprintln(os.Stderr, "Set it with: export DEEPSEEK_API_KEY=sk-...")
+		os.Exit(1)
+	}
+
+	hostPort, err := docker.GetFreePort()
 	if err != nil {
 		hostPort = 9876
 	}
 
-	controlPort, err := rawlog.GetFreePort()
+	controlPort, err := docker.GetFreePort()
 	if err != nil {
 		controlPort = 9877
 	}
 
-	projectRoot, rootErr := findProjectRoot()
+	projectRoot, rootErr := docker.FindProjectRoot()
 	if rootErr != nil {
-		if !imageExists("timmy-code:latest") {
+		if !docker.ImageExists("timmy-code:latest") {
 			fmt.Fprintln(os.Stderr, "Error: Docker image 'timmy-code' not found.")
 			fmt.Fprintln(os.Stderr, "Build it first: cd <timmy-code-project> && docker build -t timmy-code .")
 			os.Exit(1)
 		}
 	} else {
-		curHash, hashErr := sourceHash(projectRoot)
-		needRebuild := true
-		if hashErr == nil && imageExists("timmy-code:latest") {
-			hashFile := filepath.Join(projectRoot, ".timmy-code", ".docker-image-hash")
-			if stored, readErr := os.ReadFile(hashFile); readErr == nil {
-				if string(stored) == curHash {
-					needRebuild = false
-				}
-			}
-		}
-
-		if needRebuild {
-			fmt.Fprintln(os.Stderr, "Building Docker image timmy-code...")
-			buildCmd := exec.Command("docker", "build", "-t", "timmy-code", projectRoot)
-			buildCmd.Stdout = os.Stderr
-			buildCmd.Stderr = os.Stderr
-			if buildErr := buildCmd.Run(); buildErr != nil {
-				fmt.Fprintf(os.Stderr, "Error: docker build failed: %v\n", buildErr)
-				os.Exit(1)
-			}
-			if hashErr == nil {
-				hashDir := filepath.Join(projectRoot, ".timmy-code")
-				os.MkdirAll(hashDir, 0755)
-				os.WriteFile(filepath.Join(hashDir, ".docker-image-hash"), []byte(curHash), 0644)
-			}
+		if err := docker.EnsureImage(projectRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
 	workDir, _ := os.Getwd()
 
 	ttyFlag := "-i"
-	if isTerminal(os.Stdin) {
+	if docker.IsTerminal(os.Stdin) {
 		ttyFlag = "-it"
 	}
 
@@ -379,7 +347,7 @@ func autoDockerWrap() {
 
 	runCmd := exec.Command("docker", "run", "--rm", ttyFlag,
 		"-v", workDir+":/work",
-		"-e", "DEEPSEEK_API_KEY",
+		"-e", fmt.Sprintf("DEEPSEEK_API_KEY=%s", apiKey),
 		"-e", fmt.Sprintf("TIMKY_VIEW_PORT=%d", 9876),
 		"-e", fmt.Sprintf("TIMKY_VIEWER_URL=%s", viewerURL),
 		"-e", fmt.Sprintf("TIMKY_CONTROL_PORT=%d", 9877),
@@ -395,88 +363,6 @@ func autoDockerWrap() {
 		os.Exit(1)
 	}
 	os.Exit(0)
-}
-
-// sourceHash computes a SHA-256 hash over all files that affect the binary.
-func sourceHash(root string) (string, error) {
-	h := sha256.New()
-	for _, f := range []string{"go.mod", "go.sum"} {
-		data, err := os.ReadFile(filepath.Join(root, f))
-		if err != nil {
-			continue
-		}
-		io.WriteString(h, f)
-		h.Write(data)
-	}
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			switch info.Name() {
-			case ".git", ".timmy-code", "vendor":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		relPath, _ := filepath.Rel(root, path)
-		if !strings.HasSuffix(relPath, ".go") &&
-			!strings.HasPrefix(relPath, "internal/rawlog/webui/") {
-			return nil
-		}
-		io.WriteString(h, relPath)
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		io.Copy(h, f)
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// findProjectRoot locates the timmy-code project root.
-func findProjectRoot() (string, error) {
-	if exe, err := os.Executable(); err == nil {
-		if exe, err = filepath.EvalSymlinks(exe); err == nil {
-			if root := walkUp(filepath.Dir(exe)); root != "" {
-				return root, nil
-			}
-		}
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		if root := walkUp(cwd); root != "" {
-			return root, nil
-		}
-	}
-	return "", fmt.Errorf("project root not found")
-}
-
-func walkUp(dir string) string {
-	dir, _ = filepath.Abs(dir)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return ""
-}
-
-// imageExists returns true if a Docker image is present locally.
-func imageExists(name string) bool {
-	cmd := exec.Command("docker", "image", "inspect", name)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run() == nil
 }
 
 // runQueryPlain sends one prompt and displays events with spinner + token counts.
