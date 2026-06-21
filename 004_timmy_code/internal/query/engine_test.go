@@ -89,6 +89,64 @@ func TestQueryEngineEventTypes(t *testing.T) {
 	}
 }
 
+func TestQueryEngineMessageAccumulation(t *testing.T) {
+	// Verifies that e.messages grows across SubmitMessage calls — context is preserved.
+	cfg := Config{
+		Tools:        tools.NewRegistry(),
+		LLMClient:    &mockLLM{},
+		CtxService:   &mockCtxSvc{},
+		ModelCfg:     llm.ModelConfig{ModelName: llm.DefaultModel, MaxTokens: llm.DefaultMaxTokens},
+		WorkDir:      ".",
+		SystemPrompt: "You are test.",
+	}
+	engine := New(cfg)
+
+	// Turn 1
+	ch1 := engine.SubmitMessage(context.Background(), "turn 1")
+	for range ch1 {
+	}
+	msgCount1 := len(engine.messages)
+	t.Logf("After turn 1: %d messages", msgCount1)
+	if msgCount1 < 2 {
+		t.Fatalf("expected at least system+user+assistant messages, got %d", msgCount1)
+	}
+
+	// Turn 2
+	ch2 := engine.SubmitMessage(context.Background(), "turn 2")
+	for range ch2 {
+	}
+	msgCount2 := len(engine.messages)
+	t.Logf("After turn 2: %d messages", msgCount2)
+	if msgCount2 <= msgCount1 {
+		t.Fatalf("CONTEXT LOST: messages did not grow from turn 1 (%d) to turn 2 (%d)", msgCount1, msgCount2)
+	}
+	if msgCount2 != msgCount1+2 {
+		t.Errorf("expected +2 messages (user+assistant), got %d -> %d", msgCount1, msgCount2)
+	}
+
+	// Verify system prompt only injected once
+	sysCount := 0
+	for _, m := range engine.messages {
+		if m.Role == "system" {
+			sysCount++
+		}
+	}
+	if sysCount != 1 {
+		t.Errorf("expected exactly 1 system message, got %d", sysCount)
+	}
+
+	// Turn 3
+	ch3 := engine.SubmitMessage(context.Background(), "turn 3")
+	for range ch3 {
+	}
+	msgCount3 := len(engine.messages)
+	if msgCount3 <= msgCount2 {
+		t.Fatalf("CONTEXT LOST: messages did not grow from turn 2 (%d) to turn 3 (%d)", msgCount2, msgCount3)
+	}
+	t.Logf("After turn 3: %d messages — context preserved ✓", msgCount3)
+	engine.Close()
+}
+
 func TestQueryEngineCancelContext(t *testing.T) {
 	cfg := Config{
 		Tools:        tools.NewRegistry(),

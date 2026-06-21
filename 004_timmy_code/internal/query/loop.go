@@ -16,32 +16,28 @@ type toolCall struct {
 	input map[string]any
 }
 
-// queryLoop is the core agentic loop executed in a goroutine.
-// It assembles context, calls the LLM, relays stream events, executes tools,
-// and repeats until no more tool calls are requested or an error occurs.
 func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<- Event) {
 	defer close(ch)
 
-	// assemble context
-	uc, _ := e.ctxService.GetUserContext(e.workDir)
-	sc, _ := e.ctxService.GetSystemContext(e.workDir)
+	// On first turn: inject system prompt + context + tools.
+	// On subsequent turns: just append the user message.
+	if len(e.messages) == 0 {
+		uc, _ := e.ctxService.GetUserContext(e.workDir)
+		sc, _ := e.ctxService.GetSystemContext(e.workDir)
 
-	// build system message with context
-	sysMsg := e.systemPrompt
-	if uc != nil {
-		sysMsg += fmt.Sprintf("\n\n# Context\n- Current date: %s\n- Working directory: %s\n- TIMMY.md:\n%s\n",
-			uc.CurrentDate, e.workDir, uc.TIMMYmd)
+		sysMsg := e.systemPrompt
+		if uc != nil {
+			sysMsg += fmt.Sprintf("\n\n# Context\n- Current date: %s\n- Working directory: %s\n- TIMMY.md:\n%s\n",
+				uc.CurrentDate, e.workDir, uc.TIMMYmd)
+		}
+		if sc != nil {
+			sysMsg += fmt.Sprintf("\n# Git Status\nBranch: %s\nStatus:\n%s\nRecent:\n%s\n",
+				sc.GitBranch, sc.GitStatus, sc.RecentCommits)
+		}
+		sysMsg += "\n\n# Available Tools\n" + e.formatToolDefs()
+		e.messages = append(e.messages, schema.Message{Role: "system", Content: sysMsg})
 	}
-	if sc != nil {
-		sysMsg += fmt.Sprintf("\n# Git Status\nBranch: %s\nStatus:\n%s\nRecent:\n%s\n",
-			sc.GitBranch, sc.GitStatus, sc.RecentCommits)
-	}
-	sysMsg += "\n\n# Available Tools\n" + e.formatToolDefs()
-
-	messages := []schema.Message{
-		{Role: "system", Content: sysMsg},
-		{Role: "user", Content: userInput},
-	}
+	e.messages = append(e.messages, schema.Message{Role: "user", Content: userInput})
 
 	round := 0
 	for {
@@ -52,9 +48,8 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 		default:
 		}
 
-		// call LLM
 		params := llm.StreamParams{
-			Messages:    messages,
+			Messages:    e.messages,
 			Tools:       e.tools.GetAllDefs(),
 			ModelConfig: e.modelCfg,
 		}
@@ -91,6 +86,7 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 			}
 		}
 
+		// Build assistant message with tool calls if any.
 		assistantMsg := schema.Message{Role: "assistant", Content: textBuf.String()}
 		for _, tc := range toolCalls {
 			args, _ := json.Marshal(tc.input)
@@ -98,14 +94,13 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 				ID: tc.id, Name: tc.name, Arguments: string(args),
 			})
 		}
-		messages = append(messages, assistantMsg)
+		e.messages = append(e.messages, assistantMsg)
 
 		if len(toolCalls) == 0 {
 			ch <- Event{Type: EventDone, Round: round, Usage: lastUsage}
 			return
 		}
 
-		// execute tools — always emit result event (success or error)
 		for _, tc := range toolCalls {
 			tool, found := e.tools.FindByName(tc.name)
 			if !found {
@@ -118,7 +113,7 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 				errMsg := fmt.Sprintf("Error: %v", err)
 				ch <- Event{Type: EventToolResult, Round: round, Text: errMsg}
 				toolMsg.Content = errMsg
-				messages = append(messages, toolMsg)
+				e.messages = append(e.messages, toolMsg)
 				continue
 			}
 			resultText := result.Output
@@ -127,7 +122,7 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 			}
 			ch <- Event{Type: EventToolResult, Round: round, Text: resultText}
 			toolMsg.Content = resultText
-			messages = append(messages, toolMsg)
+			e.messages = append(e.messages, toolMsg)
 		}
 		round++
 	}

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -24,7 +25,16 @@ func main() {
 	_ = flag.Bool("debug", false, "Enable debug output")
 	dumpPromptFlag := flag.Bool("dump-prompt", false, "Print system prompt to stderr before sending")
 	executeFlag := flag.String("execute", "", "Non-interactive mode: execute a single prompt autonomously")
+	maxTokensFlag := flag.Int("max-tokens", 0, "Limit max output tokens (0 = default)")
 	flag.Parse()
+
+	inDocker := isInDocker()
+
+	// Auto-wrap: on host with no arguments → re-launch inside Docker.
+	if !inDocker && len(os.Args) == 1 {
+		autoDockerWrap()
+		return
+	}
 
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
@@ -41,6 +51,9 @@ func main() {
 	modelCfg := llm.ModelConfig{
 		ModelName: llm.DefaultModel,
 		MaxTokens: llm.DefaultMaxTokens,
+	}
+	if *maxTokensFlag > 0 {
+		modelCfg.MaxTokens = *maxTokensFlag
 	}
 	if *fastFlag {
 		modelCfg.ModelName = llm.FastModel
@@ -91,7 +104,12 @@ func main() {
 		return
 	}
 
-	fmt.Println("timmy-code v0.3 — DeepSeek CLI assistant")
+	// Interactive REPL
+	if inDocker {
+		fmt.Println("timmy-code v0.3 — DeepSeek CLI assistant (Docker container)")
+	} else {
+		fmt.Println("timmy-code v0.3 — DeepSeek CLI assistant")
+	}
 	fmt.Println("Commands: /help, /model [pro|flash], /clear, exit, Ctrl+C")
 	fmt.Println("Agents: planner, architect, critic, executor, analyst, code-reviewer, verifier")
 	fmt.Println()
@@ -140,6 +158,65 @@ func main() {
 		inQuery = false
 		msgCancel = nil
 	}
+}
+
+// isInDocker returns true if running inside a Docker container.
+func isInDocker() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
+}
+
+// isTerminal returns true if f is a character device (real terminal).
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// autoDockerWrap re-launches the current binary inside a Docker container.
+// It builds the image if needed, then exec's `docker run`.
+func autoDockerWrap() {
+	// Check if Docker image exists; build if not.
+	if err := exec.Command("docker", "image", "inspect", "timmy-code").Run(); err != nil {
+		if _, statErr := os.Stat("Dockerfile"); statErr == nil {
+			fmt.Fprintln(os.Stderr, "Building Docker image timmy-code...")
+			buildCmd := exec.Command("docker", "build", "-t", "timmy-code", ".")
+			buildCmd.Stdout = os.Stderr
+			buildCmd.Stderr = os.Stderr
+			if buildErr := buildCmd.Run(); buildErr != nil {
+				fmt.Fprintf(os.Stderr, "Error: docker build failed: %v\n", buildErr)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "Error: Docker image 'timmy-code' not found and no Dockerfile in current directory.")
+			fmt.Fprintln(os.Stderr, "Build it first: cd /path/to/timmy-code && docker build -t timmy-code .")
+			os.Exit(1)
+		}
+	}
+
+	workDir, _ := os.Getwd()
+
+	// Use -it only when stdin is a real terminal.
+	ttyFlag := "-i"
+	if isTerminal(os.Stdin) {
+		ttyFlag = "-it"
+	}
+
+	runCmd := exec.Command("docker", "run", "--rm", ttyFlag,
+		"-v", workDir+":/work",
+		"-e", "DEEPSEEK_API_KEY",
+		"timmy-code",
+	)
+	runCmd.Stdin = os.Stdin
+	runCmd.Stdout = os.Stdout
+	runCmd.Stderr = os.Stderr
+	if err := runCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: docker run failed: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 // runQuery sends one prompt and displays events with spinner + token counts.
