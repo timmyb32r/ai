@@ -7,11 +7,20 @@ type ToolDef struct {
 	Parameters  map[string]any // JSON Schema
 }
 
+// ToolCall in an assistant message.
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments string // JSON-encoded
+}
+
 // Message represents a chat message.
 type Message struct {
-	Role    string // "system" | "user" | "assistant" | "tool"
-	Content string
-	Name    string // tool name for tool results
+	Role       string     // "system" | "user" | "assistant" | "tool"
+	Content    string
+	Name       string     // tool name
+	ToolCallID string     // tool call ID, required for "tool" role messages
+	ToolCalls  []ToolCall // present when assistant calls tools
 }
 
 // EventType for query engine events.

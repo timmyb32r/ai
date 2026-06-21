@@ -26,4 +26,12 @@ type Event struct {
 	Text    string
 	ToolUse *ToolUseEvent
 	Error   error
+	Usage   *TokenUsage // set on Done events, nil otherwise
+}
+
+// TokenUsage carries token counts from the LLM API.
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }

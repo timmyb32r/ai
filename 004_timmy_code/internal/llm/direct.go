@@ -33,10 +33,21 @@ func NewDirectClient(apiKey string) *DirectClient {
 
 // OpenAI-compatible request/response types for the Chat Completions API.
 
+type openAIToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Name    string `json:"name,omitempty"`
+	Role       string            `json:"role"`
+	Content    string            `json:"content,omitempty"`
+	Name       string            `json:"name,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
+	ToolCalls  []openAIToolCall  `json:"tool_calls,omitempty"`
 }
 
 type openAITool struct {
@@ -76,8 +87,15 @@ type openAIToolCallDelta struct {
 	} `json:"function"`
 }
 
+type openAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type openAIStreamResponse struct {
 	Choices []openAIStreamChoice `json:"choices"`
+	Usage   *openAIUsage         `json:"usage,omitempty"`
 }
 
 // StreamChat implements the Client interface via direct HTTP SSE streaming.
@@ -88,11 +106,19 @@ func (c *DirectClient) StreamChat(ctx context.Context, params StreamParams) (<-c
 		MaxTokens: params.ModelConfig.MaxTokens,
 	}
 	for _, m := range params.Messages {
-		req.Messages = append(req.Messages, openAIMessage{
-			Role:    m.Role,
-			Content: m.Content,
-			Name:    m.Name,
-		})
+		oam := openAIMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			Name:       m.Name,
+			ToolCallID: m.ToolCallID,
+		}
+		for _, tc := range m.ToolCalls {
+			oatc := openAIToolCall{ID: tc.ID, Type: "function"}
+			oatc.Function.Name = tc.Name
+			oatc.Function.Arguments = tc.Arguments
+			oam.ToolCalls = append(oam.ToolCalls, oatc)
+		}
+		req.Messages = append(req.Messages, oam)
 	}
 	for _, t := range params.Tools {
 		req.Tools = append(req.Tools, openAITool{
@@ -140,6 +166,8 @@ func (c *DirectClient) StreamChat(ctx context.Context, params StreamParams) (<-c
 			arguments string
 		}
 		var pendingToolCalls []*pendingToolCall
+			var lastUsage *TokenUsage
+
 
 		scanner := bufio.NewScanner(httpResp.Body)
 		for scanner.Scan() {
@@ -188,6 +216,15 @@ func (c *DirectClient) StreamChat(ctx context.Context, params StreamParams) (<-c
 				}
 			}
 
+				// Capture usage from any chunk that provides it
+				if chunk.Usage != nil {
+					lastUsage = &TokenUsage{
+						PromptTokens:     chunk.Usage.PromptTokens,
+						CompletionTokens: chunk.Usage.CompletionTokens,
+						TotalTokens:      chunk.Usage.TotalTokens,
+					}
+				}
+
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				for _, pt := range pendingToolCalls {
 					payload := &ToolUsePayload{ID: pt.id, Name: pt.name, Input: make(map[string]any)}
@@ -196,7 +233,7 @@ func (c *DirectClient) StreamChat(ctx context.Context, params StreamParams) (<-c
 					}
 					ch <- StreamEvent{Type: StreamEventToolUse, ToolUse: payload}
 				}
-				ch <- StreamEvent{Type: StreamEventStop, StopReason: *choice.FinishReason}
+				ch <- StreamEvent{Type: StreamEventStop, StopReason: *choice.FinishReason, Usage: lastUsage}
 				return
 			}
 		}

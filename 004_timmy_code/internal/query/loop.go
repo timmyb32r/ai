@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -28,10 +29,12 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 	// build system message with context
 	sysMsg := e.systemPrompt
 	if uc != nil {
-		sysMsg += fmt.Sprintf("\n\n# Context\n- Current date: %s\n- TIMMY.md:\n%s\n", uc.CurrentDate, uc.TIMMYmd)
+		sysMsg += fmt.Sprintf("\n\n# Context\n- Current date: %s\n- Working directory: %s\n- TIMMY.md:\n%s\n",
+			uc.CurrentDate, e.workDir, uc.TIMMYmd)
 	}
 	if sc != nil {
-		sysMsg += fmt.Sprintf("\n# Git Status\nBranch: %s\nStatus:\n%s\nRecent:\n%s\n", sc.GitBranch, sc.GitStatus, sc.RecentCommits)
+		sysMsg += fmt.Sprintf("\n# Git Status\nBranch: %s\nStatus:\n%s\nRecent:\n%s\n",
+			sc.GitBranch, sc.GitStatus, sc.RecentCommits)
 	}
 	sysMsg += "\n\n# Available Tools\n" + e.formatToolDefs()
 
@@ -41,8 +44,7 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 	}
 
 	round := 0
-	stream := true
-	for stream {
+	for {
 		select {
 		case <-ctx.Done():
 			ch <- Event{Type: EventError, Round: round, Error: ctx.Err()}
@@ -64,6 +66,7 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 
 		var toolCalls []toolCall
 		var textBuf strings.Builder
+		var lastUsage *TokenUsage
 
 		for ev := range eventCh {
 			switch ev.Type {
@@ -77,19 +80,32 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 				ch <- Event{Type: EventToolCall, Round: round, ToolUse: &ToolUseEvent{
 					Name: ev.ToolUse.Name, Input: ev.ToolUse.Input,
 				}}
+			case "stop":
+				if ev.Usage != nil {
+					lastUsage = &TokenUsage{
+						PromptTokens:     ev.Usage.PromptTokens,
+						CompletionTokens: ev.Usage.CompletionTokens,
+						TotalTokens:      ev.Usage.TotalTokens,
+					}
+				}
 			}
 		}
 
-		// add assistant message
-		messages = append(messages, schema.Message{Role: "assistant", Content: textBuf.String()})
+		assistantMsg := schema.Message{Role: "assistant", Content: textBuf.String()}
+		for _, tc := range toolCalls {
+			args, _ := json.Marshal(tc.input)
+			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, schema.ToolCall{
+				ID: tc.id, Name: tc.name, Arguments: string(args),
+			})
+		}
+		messages = append(messages, assistantMsg)
 
-		// if no tool calls, we're done
 		if len(toolCalls) == 0 {
-			ch <- Event{Type: EventDone, Round: round}
+			ch <- Event{Type: EventDone, Round: round, Usage: lastUsage}
 			return
 		}
 
-		// execute tools
+		// execute tools — always emit result event (success or error)
 		for _, tc := range toolCalls {
 			tool, found := e.tools.FindByName(tc.name)
 			if !found {
@@ -97,16 +113,21 @@ func (e *QueryEngine) queryLoop(ctx context.Context, userInput string, ch chan<-
 				return
 			}
 			result, err := tool.Call(ctx, tc.input)
+			toolMsg := schema.Message{Role: "tool", Name: tc.name, ToolCallID: tc.id}
 			if err != nil {
-				messages = append(messages, schema.Message{
-					Role: "tool", Content: fmt.Sprintf("Error: %v", err), Name: tc.name,
-				})
+				errMsg := fmt.Sprintf("Error: %v", err)
+				ch <- Event{Type: EventToolResult, Round: round, Text: errMsg}
+				toolMsg.Content = errMsg
+				messages = append(messages, toolMsg)
 				continue
 			}
-			ch <- Event{Type: EventToolResult, Round: round, Text: result.Output}
-			messages = append(messages, schema.Message{
-				Role: "tool", Content: result.Output, Name: tc.name,
-			})
+			resultText := result.Output
+			if resultText == "" {
+				resultText = fmt.Sprintf("%s: ok (exit=%d)", tc.name, result.ExitCode)
+			}
+			ch <- Event{Type: EventToolResult, Round: round, Text: resultText}
+			toolMsg.Content = resultText
+			messages = append(messages, toolMsg)
 		}
 		round++
 	}

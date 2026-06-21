@@ -22,12 +22,20 @@ type ToolUsePayload struct {
 	Input map[string]any
 }
 
+// TokenUsage carries API token counts.
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
 // StreamEvent is emitted during streaming responses.
 type StreamEvent struct {
 	Type       StreamEventType
 	TextDelta  string
 	ToolUse    *ToolUsePayload
 	StopReason string
+	Usage      *TokenUsage // populated on Stop event
 }
 
 // StreamParams configures a streaming chat request.

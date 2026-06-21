@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	ctxpkg "github.com/timmy/timmy-code/internal/context"
 	"github.com/timmy/timmy-code/internal/llm"
@@ -20,8 +21,9 @@ import (
 func main() {
 	modelFlag := flag.String("model", "", "Override model name")
 	fastFlag := flag.Bool("fast", false, "Use fast model (deepseek-v4-flash)")
-	debugFlag := flag.Bool("debug", false, "Enable debug output")
+	_ = flag.Bool("debug", false, "Enable debug output")
 	dumpPromptFlag := flag.Bool("dump-prompt", false, "Print system prompt to stderr before sending")
+	executeFlag := flag.String("execute", "", "Non-interactive mode: execute a single prompt autonomously")
 	flag.Parse()
 
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
@@ -36,7 +38,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Model config
 	modelCfg := llm.ModelConfig{
 		ModelName: llm.DefaultModel,
 		MaxTokens: llm.DefaultMaxTokens,
@@ -49,16 +50,8 @@ func main() {
 		modelCfg.ModelName = *modelFlag
 	}
 
-	if *debugFlag {
-		fmt.Fprintf(os.Stderr, "[debug] Using model: %s\n", modelCfg.ModelName)
-	}
-
-	// Initialize components
-	llmClient, err := llm.NewDeepSeekClient(apiKey)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating LLM client: %v\n", err)
-		os.Exit(1)
-	}
+	// Use direct HTTP client for proper SSE streaming + token counting.
+	llmClient := llm.NewDirectClient(apiKey)
 	registry := tools.NewRegistry(
 		&tools.BashTool{},
 		&tools.ReadTool{},
@@ -69,6 +62,10 @@ func main() {
 	ctxService := ctxpkg.NewService()
 
 	systemPrompt := prompts.SystemPrompt
+	if *executeFlag != "" {
+		systemPrompt = prompts.AutonomousPrompt
+		modelCfg.MaxTokens = 32768
+	}
 	if *dumpPromptFlag {
 		fmt.Fprintf(os.Stderr, "=== System Prompt ===\n%s\n=== End System Prompt ===\n", systemPrompt)
 	}
@@ -86,23 +83,25 @@ func main() {
 	engine := newEngine()
 	defer engine.Close()
 
-	fmt.Println("timmy-code v0.2 — Socratic deep-interview agent (Ouroboros-inspired)")
-	fmt.Println("I ask targeted questions to crystallize requirements. Ambiguity scored after every answer.")
-	fmt.Println()
+	// Non-interactive: one shot.
+	if *executeFlag != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+		defer cancel()
+		runQuery(ctx, engine, *executeFlag)
+		return
+	}
+
+	fmt.Println("timmy-code v0.3 — DeepSeek CLI assistant")
 	fmt.Println("Commands: /help, /model [pro|flash], /clear, exit, Ctrl+C")
 	fmt.Println("Agents: planner, architect, critic, executor, analyst, code-reviewer, verifier")
 	fmt.Println()
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT)
-
-	scanner := bufio.NewScanner(os.Stdin)
 	var (
 		inQuery   bool
 		msgCancel context.CancelFunc
 	)
-
-	// Signal handler goroutine
 	go func() {
 		for range sigCh {
 			if inQuery && msgCancel != nil {
@@ -114,6 +113,7 @@ func main() {
 		}
 	}()
 
+	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
 		if !scanner.Scan() {
@@ -127,93 +127,106 @@ func main() {
 			fmt.Println("Goodbye!")
 			break
 		}
-
-		// Handle slash commands locally
 		if strings.HasPrefix(line, "/") {
-			parts := strings.Fields(line)
-			switch parts[0] {
-			case "/help":
-				fmt.Println()
-				fmt.Println("=== timmy-code commands ===")
-				fmt.Println("  /help               — show this help")
-				fmt.Println("  /model pro|flash    — switch model (pro = deepseek-v4-pro, flash = deepseek-v4-flash)")
-				fmt.Println("  /clear              — reset conversation")
-				fmt.Println("  exit, Ctrl+C        — quit")
-				fmt.Println()
-				fmt.Println("=== Agent types (use via Agent tool) ===")
-				fmt.Println("  planner       — creates work plans (.omc/plans/)")
-				fmt.Println("  architect     — architectural analysis (READ-ONLY)")
-				fmt.Println("  critic        — quality gate, finds every flaw (READ-ONLY)")
-				fmt.Println("  executor      — implements code changes")
-				fmt.Println("  analyst       — requirements gap analysis (READ-ONLY)")
-				fmt.Println("  code-reviewer — severity-rated code review (READ-ONLY)")
-				fmt.Println("  verifier      — evidence-based completion checks (READ-ONLY)")
-				fmt.Println()
-				continue
-			case "/model":
-				if len(parts) < 2 {
-					fmt.Printf("Current model: %s\n", modelCfg.ModelName)
-					fmt.Println("Usage: /model pro | /model flash")
-					continue
-				}
-				switch parts[1] {
-				case "pro":
-					modelCfg.ModelName = llm.DefaultModel
-					modelCfg.FastMode = false
-				case "flash":
-					modelCfg.ModelName = llm.FastModel
-					modelCfg.FastMode = true
-				default:
-					fmt.Printf("Unknown model: %s. Use 'pro' or 'flash'.\n", parts[1])
-					continue
-				}
-				engine.Close()
-				engine = newEngine()
-				fmt.Printf("Switched to %s\n", modelCfg.ModelName)
-				continue
-			case "/clear":
-				engine.Close()
-				engine = newEngine()
-				fmt.Println("Conversation reset.")
-				continue
-			default:
-				fmt.Printf("Unknown command: %s. Type /help for available commands.\n", parts[0])
-				continue
-			}
+			handleSlash(line, &modelCfg, &engine, newEngine)
+			continue
 		}
 
-		// Submit to engine
-		msgCtx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
 		msgCancel = cancel
-		eventCh := engine.SubmitMessage(msgCtx, line)
 		inQuery = true
-
-		for event := range eventCh {
-			switch event.Type {
-			case query.EventTextDelta:
-				fmt.Print(event.Text)
-			case query.EventToolCall:
-				fmt.Printf("\n🔧 [tool: %s] ", event.ToolUse.Name)
-				if *debugFlag {
-					fmt.Printf("%v", event.ToolUse.Input)
-				}
-				fmt.Println()
-			case query.EventToolResult:
-				if event.Text != "" {
-					fmt.Printf("→ %s\n", event.Text)
-				}
-			case query.EventError:
-				fmt.Fprintf(os.Stderr, "\nError: %v\n", event.Error)
-			case query.EventDone:
-				if event.Round == 0 {
-					fmt.Println()
-				}
-				fmt.Println()
-			}
-		}
-
-		msgCancel()
+		runQuery(ctx, engine, line)
+		cancel()
 		inQuery = false
 		msgCancel = nil
+	}
+}
+
+// runQuery sends one prompt and displays events with spinner + token counts.
+func runQuery(ctx context.Context, engine *query.QueryEngine, prompt string) {
+	start := time.Now()
+	eventCh := engine.SubmitMessage(ctx, prompt)
+	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	si := 0
+	gotText := false
+
+	for event := range eventCh {
+		switch event.Type {
+		case query.EventTextDelta:
+			if !gotText {
+				gotText = true
+				fmt.Fprint(os.Stderr, "\r\033[K") // clear spinner
+			}
+			fmt.Print(event.Text)
+		case query.EventToolCall:
+			fmt.Printf("\n  ⎿  %s\n", event.ToolUse.Name)
+		case query.EventToolResult:
+			text := strings.TrimSpace(event.Text)
+			if len(text) > 120 {
+				text = text[:120] + "..."
+			}
+			if text != "" {
+				fmt.Printf("     %s\n", text)
+			}
+		case query.EventError:
+			fmt.Fprintf(os.Stderr, "\r\033[K✖ Error: %v\n", event.Error)
+		case query.EventDone:
+			if !gotText {
+				fmt.Fprint(os.Stderr, "\r\033[K")
+			}
+			elapsed := time.Since(start).Round(100 * time.Millisecond)
+			tokPart := ""
+			if event.Usage != nil {
+				tokPart = fmt.Sprintf(" · ⬇%d tok · ⬆%d tok",
+					event.Usage.PromptTokens, event.Usage.CompletionTokens)
+			}
+			fmt.Printf("\n⏺ Done%s · %s\n", tokPart, elapsed)
+		}
+		// Spinner while waiting
+		if !gotText && event.Type != query.EventDone {
+			fmt.Fprintf(os.Stderr, "\r\033[K%s Thinking...", spinner[si%len(spinner)])
+			si++
+		}
+	}
+	fmt.Fprint(os.Stderr, "\r\033[K") // final spinner cleanup
+}
+
+func handleSlash(line string, modelCfg *llm.ModelConfig, engine **query.QueryEngine, newEngine func() *query.QueryEngine) {
+	parts := strings.Fields(line)
+	switch parts[0] {
+	case "/help":
+		fmt.Println()
+		fmt.Println("  /help               — this help")
+		fmt.Println("  /model pro|flash    — switch model")
+		fmt.Println("  /clear              — reset conversation")
+		fmt.Println("  exit, Ctrl+C        — quit")
+		fmt.Println()
+		fmt.Println("Agent types: planner, architect, critic, executor, analyst, code-reviewer, verifier")
+		fmt.Println()
+	case "/model":
+		if len(parts) < 2 {
+			fmt.Printf("Current: %s. Usage: /model pro|flash\n", modelCfg.ModelName)
+			return
+		}
+		switch parts[1] {
+		case "pro":
+			modelCfg.ModelName = llm.DefaultModel
+			modelCfg.FastMode = false
+		case "flash":
+			modelCfg.ModelName = llm.FastModel
+			modelCfg.FastMode = true
+		default:
+			fmt.Printf("Unknown model: %s\n", parts[1])
+			return
+		}
+		(*engine).Close()
+		*engine = newEngine()
+		fmt.Printf("Switched to %s\n", modelCfg.ModelName)
+	case "/clear":
+		(*engine).Close()
+		*engine = newEngine()
+		fmt.Println("Conversation reset.")
+	default:
+		fmt.Printf("Unknown: %s. Type /help\n", parts[0])
 	}
 }

@@ -33,6 +33,8 @@ func NewDeepSeekClient(apiKey string) (*DeepSeekClient, error) {
 }
 
 // StreamChat implements the Client interface.
+// Uses GenerateContent (non-streaming for tool call reliability) then emits
+// the full text content followed by any tool calls.
 func (c *DeepSeekClient) StreamChat(ctx context.Context, params StreamParams) (<-chan StreamEvent, error) {
 	msgs := toLLMMessages(params.Messages)
 	opts := []llms.CallOption{
@@ -46,15 +48,6 @@ func (c *DeepSeekClient) StreamChat(ctx context.Context, params StreamParams) (<
 	ch := make(chan StreamEvent, 8)
 	go func() {
 		defer close(ch)
-
-		opts = append(opts, llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
-			select {
-			case ch <- StreamEvent{Type: StreamEventTextDelta, TextDelta: string(chunk)}:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}))
 
 		resp, err := c.llm.GenerateContent(ctx, msgs, opts...)
 		if err != nil {
@@ -70,13 +63,22 @@ func (c *DeepSeekClient) StreamChat(ctx context.Context, params StreamParams) (<
 		}
 
 		choice := resp.Choices[0]
+
+		// Emit text content
+		if choice.Content != "" {
+			ch <- StreamEvent{Type: StreamEventTextDelta, TextDelta: choice.Content}
+		}
+
+		// Emit tool calls
 		for _, tc := range choice.ToolCalls {
 			if tc.FunctionCall == nil {
 				continue
 			}
-			payload := &ToolUsePayload{ID: tc.ID, Name: tc.FunctionCall.Name}
+			payload := &ToolUsePayload{ID: tc.ID, Name: tc.FunctionCall.Name, Input: make(map[string]any)}
 			if tc.FunctionCall.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.FunctionCall.Arguments), &payload.Input)
+				if err := json.Unmarshal([]byte(tc.FunctionCall.Arguments), &payload.Input); err != nil {
+					payload.Input["_raw"] = tc.FunctionCall.Arguments
+				}
 			}
 			ch <- StreamEvent{Type: StreamEventToolUse, ToolUse: payload}
 		}
@@ -97,11 +99,15 @@ func toLLMMessages(msgs []schema.Message) []llms.MessageContent {
 		case "assistant":
 			out = append(out, llms.TextParts(llms.ChatMessageTypeAI, m.Content))
 		case "tool":
+			tcID := m.ToolCallID
+			if tcID == "" {
+				tcID = m.Name
+			}
 			out = append(out, llms.MessageContent{
 				Role: llms.ChatMessageTypeTool,
 				Parts: []llms.ContentPart{
 					llms.ToolCallResponse{
-						ToolCallID: m.Name,
+						ToolCallID: tcID,
 						Name:       m.Name,
 						Content:    m.Content,
 					},
