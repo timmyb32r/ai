@@ -182,13 +182,31 @@ func main() {
 		}
 	}()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print("> ")
-		if !scanner.Scan() {
+		firstLine, err := reader.ReadString('\n')
+		if err != nil {
 			break
 		}
-		line := strings.TrimSpace(scanner.Text())
+		firstLine = strings.TrimRight(firstLine, "\n")
+
+		// Drain any immediately buffered data (e.g. from a multi-line paste).
+		// This prevents residual lines from auto-feeding subsequent prompts.
+		var extraLines []string
+		for reader.Buffered() > 0 {
+			b, err := reader.ReadString('\n')
+			if err != nil {
+				break
+			}
+			extraLines = append(extraLines, strings.TrimRight(b, "\n"))
+		}
+
+		line := firstLine
+		if len(extraLines) > 0 {
+			line = firstLine + "\n" + strings.Join(extraLines, "\n")
+		}
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
