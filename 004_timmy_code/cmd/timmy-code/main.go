@@ -3,12 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -246,6 +250,7 @@ func isTerminal(f *os.File) bool {
 
 // autoDockerWrap re-launches the current binary inside a Docker container.
 // It picks a random host port and maps it to the container's viewer port (9876).
+// The Docker image is only rebuilt when Go source files have changed.
 func autoDockerWrap() {
 	// Pick a free host port.
 	hostPort, err := rawlog.GetFreePort()
@@ -253,19 +258,37 @@ func autoDockerWrap() {
 		hostPort = 9876 // fallback
 	}
 
-	// Always rebuild Docker image to ensure the binary is fresh.
 	if _, statErr := os.Stat("Dockerfile"); statErr != nil {
 		fmt.Fprintln(os.Stderr, "Error: Dockerfile not found in current directory.")
 		fmt.Fprintln(os.Stderr, "Run from the timmy-code project root where Dockerfile exists.")
 		os.Exit(1)
 	}
-	fmt.Fprintln(os.Stderr, "Building Docker image timmy-code...")
-	buildCmd := exec.Command("docker", "build", "-t", "timmy-code", ".")
-	buildCmd.Stdout = os.Stderr
-	buildCmd.Stderr = os.Stderr
-	if buildErr := buildCmd.Run(); buildErr != nil {
-		fmt.Fprintf(os.Stderr, "Error: docker build failed: %v\n", buildErr)
-		os.Exit(1)
+
+	// Smart rebuild: only rebuild when source changed or image missing.
+	curHash, hashErr := sourceHash()
+	needRebuild := true
+	if hashErr == nil && imageExists("timmy-code:latest") {
+		if stored, readErr := os.ReadFile(".timmy-code/.docker-image-hash"); readErr == nil {
+			if string(stored) == curHash {
+				needRebuild = false
+			}
+		}
+	}
+
+	if needRebuild {
+		fmt.Fprintln(os.Stderr, "Building Docker image timmy-code...")
+		buildCmd := exec.Command("docker", "build", "-t", "timmy-code", ".")
+		buildCmd.Stdout = os.Stderr
+		buildCmd.Stderr = os.Stderr
+		if buildErr := buildCmd.Run(); buildErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: docker build failed: %v\n", buildErr)
+			os.Exit(1)
+		}
+		// Persist the source hash so we can skip the next build.
+		if hashErr == nil {
+			os.MkdirAll(".timmy-code", 0755)
+			os.WriteFile(".timmy-code/.docker-image-hash", []byte(curHash), 0644)
+		}
 	}
 
 	workDir, _ := os.Getwd()
@@ -294,6 +317,56 @@ func autoDockerWrap() {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+// sourceHash computes a SHA-256 hash over all Go source files, go.mod and go.sum.
+func sourceHash() (string, error) {
+	h := sha256.New()
+	// Hash go.mod and go.sum first.
+	for _, f := range []string{"go.mod", "go.sum"} {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		io.WriteString(h, f)
+		h.Write(data)
+	}
+	// Hash all .go files.
+	err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			switch info.Name() {
+			case ".git", ".timmy-code", "vendor":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		io.WriteString(h, path)
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		io.Copy(h, f)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// imageExists returns true if a Docker image is present locally.
+func imageExists(name string) bool {
+	cmd := exec.Command("docker", "image", "inspect", name)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
 }
 
 // runQuery sends one prompt and displays events with spinner + token counts.
