@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.shape.CircleShape
@@ -183,7 +184,12 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                                 onFontSize = { onAction(CriAction.SetFontSize(it)) },
                                 onTogglePinyin = { onAction(CriAction.TogglePinyin) },
                                 onToggleWordBoundaries = { onAction(CriAction.ToggleWordBoundaries) },
-                                onDismiss = { showSettings = false }
+                                onDismiss = { showSettings = false },
+                                debugEnabled = state.debugEnabled,
+                                showAudioBoundaries = state.showAudioBoundaries,
+                                onToggleAudioBoundaries = { onAction(CriAction.ToggleAudioBoundaries) },
+                                pinyinFontSizeSp = state.pinyinFontSizeSp,
+                                onPinyinFontSize = { onAction(CriAction.SetPinyinFontSize(it)) }
                             )
                         }
                     }
@@ -242,6 +248,8 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                                 showPinyin = state.showPinyin,
                                 fontSizeSp = state.fontSizeSp,
                                 showWordBoundaries = state.showWordBoundaries,
+                                showAudioBoundaries = state.showAudioBoundaries,
+                                pinyinFontSizeSp = state.pinyinFontSizeSp,
                                 recenterChannel = recenterChannel,
                                 onWordTapped = { onAction(CriAction.WordTapped(it)) }
                             )
@@ -270,7 +278,11 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
             WordPopupDialog(popup,
                 onDismiss = { onAction(CriAction.DismissPopup) },
                 onPronounce = { onAction(CriAction.PronounceWord) },
-                onSave = { onAction(CriAction.SaveWord) }
+                onSave = { onAction(CriAction.SaveWord) },
+                onPlayFromHere = {
+                    onAction(CriAction.DismissPopup)
+                    onAction(CriAction.Resume)
+                }
             )
         }
     }
@@ -284,16 +296,17 @@ private fun BottomControl(
     onResume: () -> Unit,
     onRecenter: () -> Unit
 ) {
-    Surface(color = Surface, modifier = Modifier.fillMaxWidth()) {
+    Surface(color = Surface, modifier = Modifier.fillMaxWidth().height(64.dp)) {
         BoxWithConstraints(
-            modifier = Modifier.fillMaxWidth().padding(16.dp)
+            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+            contentAlignment = Alignment.Center
         ) {
-            val totalW = maxWidth
+            val frozenW = remember { maxWidth }
             val playW = 80.dp
             // d = distance(play.right, recenter.left) = distance(recenter.right, screen.right)
-            // Derivation: totalW/2 + 96dp + 2d = totalW  →  d = totalW/4 − 48dp
-            val d = totalW / 4 - 48.dp
-            val spaceLeft = totalW / 2 - playW / 2  // to center play button
+            // Derivation: frozenW/2 + 96dp + 2d = frozenW  →  d = frozenW/4 − 48dp
+            val d = frozenW / 4 - 48.dp
+            val spaceLeft = frozenW / 2 - playW / 2  // to center play button
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (d > 0.dp) {
@@ -398,7 +411,12 @@ private fun SettingsDialog(
     onFontSize: (Int) -> Unit,
     onTogglePinyin: () -> Unit,
     onToggleWordBoundaries: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    debugEnabled: Boolean = false,
+    showAudioBoundaries: Boolean = false,
+    onToggleAudioBoundaries: () -> Unit = {},
+    pinyinFontSizeSp: Int = 9,
+    onPinyinFontSize: (Int) -> Unit = {},
 ) {
     var editSize by remember { mutableStateOf(currentFontSize.toString()) }
     var editPinyinSize by remember { mutableStateOf(pinyinFontSizeSp.toString()) }
@@ -446,6 +464,45 @@ private fun SettingsDialog(
                     ) { Text("+", color = TextPrimary, fontSize = 18.sp) }
                 }
                 Spacer(Modifier.height(16.dp))
+                // Pinyin font size row
+                Text("Pinyin size", color = TextSecondary, fontSize = 14.sp)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledIconButton(
+                        onClick = {
+                            val v = (editPinyinSize.toIntOrNull() ?: pinyinFontSizeSp) - 2
+                            if (v >= 8) { val s = v.toString(); editPinyinSize = s; onPinyinFontSize(v) }
+                        },
+                        modifier = Modifier.size(36.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Surface)
+                    ) { Text("−", color = TextPrimary, fontSize = 18.sp) }
+                    OutlinedTextField(
+                        value = editPinyinSize,
+                        onValueChange = { newVal ->
+                            editPinyinSize = newVal.filter { it.isDigit() }
+                            val v = editPinyinSize.toIntOrNull()
+                            if (v != null && v in 8..32) onPinyinFontSize(v)
+                        },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Amber,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier.width(72.dp)
+                    )
+                    FilledIconButton(
+                        onClick = {
+                            val v = (editPinyinSize.toIntOrNull() ?: pinyinFontSizeSp) + 2
+                            if (v <= 32) { val s = v.toString(); editPinyinSize = s; onPinyinFontSize(v) }
+                        },
+                        modifier = Modifier.size(36.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Surface)
+                    ) { Text("+", color = TextPrimary, fontSize = 18.sp) }
+                }
+                Spacer(Modifier.height(16.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Show pinyin", color = TextPrimary, fontSize = 14.sp, modifier = Modifier)
                     Switch(
@@ -462,6 +519,21 @@ private fun SettingsDialog(
                         onCheckedChange = { onToggleWordBoundaries() },
                         colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
                     )
+                }
+                if (debugEnabled) {
+                    Spacer(Modifier.height(8.dp))
+                    HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f))
+                    Spacer(Modifier.height(8.dp))
+                    Text("Debug", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Show audio boundaries", color = TextPrimary, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = showAudioBoundaries,
+                            onCheckedChange = { onToggleAudioBoundaries() },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
+                        )
+                    }
                 }
             }
         },
@@ -508,6 +580,8 @@ private fun SubtitleList(
     showPinyin: Boolean,
     fontSizeSp: Int,
     showWordBoundaries: Boolean,
+    showAudioBoundaries: Boolean = false,
+    pinyinFontSizeSp: Int = 9,
     recenterChannel: Channel<Unit>,
     onWordTapped: (WordEntry) -> Unit
 ) {
@@ -529,6 +603,7 @@ private fun SubtitleList(
         var initSpeedPxPerSec = 0f
         var lastFrameNanos = 0L
         var totalScrolledPx = 0f
+        var accumulatedPx = 0f
         var lastLogNanos = 0L
         var wasPlaying = false
 
@@ -574,10 +649,15 @@ private fun SubtitleList(
                     // No word at all — smooth scroll with initSpeed if playing
                     if (playing && initialized && initSpeedPxPerSec > 0f) {
                         val rawDt = if (lastFrameNanos > 0) (frameNanos - lastFrameNanos) / 1_000_000_000f else 0.016f
-                        val dt = rawDt.coerceAtMost(0.033f)
+                        val dt = rawDt
                         lastFrameNanos = frameNanos
-                        val px = initSpeedPxPerSec * dt
-                        scrollAction = { listState.scrollBy(px); totalScrolledPx += px }
+                        val rawPx = initSpeedPxPerSec * dt
+                        accumulatedPx += rawPx
+                        val wholePx = accumulatedPx.toInt()
+                        if (wholePx != 0) {
+                            scrollAction = { listState.scrollBy(wholePx.toFloat()); totalScrolledPx += wholePx }
+                            accumulatedPx -= wholePx
+                        }
                     }
                     wasPlaying = playing
                     return@withFrameNanos
@@ -640,9 +720,9 @@ private fun SubtitleList(
                     return@withFrameNanos
                 }
 
-                // ── Normal scroll dt, capped to avoid dropped-frame jerks ──
+                // ── Normal scroll dt, sub-pixel accumulation for smooth scroll ──
                 val rawDt = if (lastFrameNanos > 0) (frameNanos - lastFrameNanos) / 1_000_000_000f else 0.016f
-                val dt = rawDt.coerceAtMost(0.033f)
+                val dt = rawDt
                 lastFrameNanos = frameNanos
 
                 // ── Active word position on screen → scroll correction ──
@@ -668,12 +748,16 @@ private fun SubtitleList(
                         } else {
                             initSpeedPxPerSec
                         }
-                        val px = baseSpeedPxPerSec * multiplier * dt
-                        if (px != 0f) {
+                        val rawPx = baseSpeedPxPerSec * multiplier * dt
+                        accumulatedPx += rawPx
+                        val wholePx = accumulatedPx.toInt()
+                        if (wholePx != 0) {
                             scrollAction = {
-                                listState.scrollBy(px)
-                                totalScrolledPx += px
+                                listState.scrollBy(wholePx.toFloat())
+                                totalScrolledPx += wholePx
                             }
+                            accumulatedPx -= wholePx
+                        }
                         }
                     }
                 }
@@ -698,8 +782,9 @@ private fun SubtitleList(
         state = listState, modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        items(segments, key = { it.segment_id }) { segment ->
-            SegmentCard(segment, activeWord, showPinyin, fontSizeSp, showWordBoundaries, onWordTapped)
+        itemsIndexed(segments, key = { _, s -> s.segment_id }) { index, segment ->
+            val isTsBoundary = index > 0 && segments[index - 1].ts_file != segment.ts_file
+            SegmentCard(segment, activeWord, showPinyin, fontSizeSp, showWordBoundaries, isTsBoundary, showAudioBoundaries, pinyinFontSizeSp, lastActiveWord, onWordTapped)
             Spacer(Modifier.height(6.dp))
         }
     }
@@ -712,6 +797,10 @@ private fun SegmentCard(
     showPinyin: Boolean,
     fontSizeSp: Int,
     showWordBoundaries: Boolean,
+    isTsBoundary: Boolean = false,
+    showAudioBoundaries: Boolean = false,
+    pinyinFontSizeSp: Int = 9,
+    lastActiveWord: WordEntry? = null,
     onWordTapped: (WordEntry) -> Unit
 ) {
     Card(
@@ -729,7 +818,8 @@ private fun SegmentCard(
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(modifier = Modifier.fillMaxWidth()) {
                 cells.forEachIndexed { cellIdx, charCell ->
-                    val isActive = charCell.word === activeWord
+                    val effectiveWord = activeWord ?: lastActiveWord
+                    val isActive = charCell.word === effectiveWord
                     val isCJKChar = charCell.text.any { it.code in 0x4E00..0x9FFF }
                     val hasUnderline = showWordBoundaries && isCJKChar
                     // Word boundary detection for underline gaps
@@ -776,8 +866,8 @@ private fun SegmentCard(
                     ) {
                         // Pinyin slot — always same height for alignment
                         if (showPinyin) {
-                            Box(modifier = Modifier.height(16.dp), contentAlignment = Alignment.Center) {
-                                Text(charCell.syllable, fontSize = 9.sp, color = TextPinyin,
+                            Box(modifier = Modifier.height(18.dp).padding(bottom = 2.dp), contentAlignment = Alignment.Center) {
+                                Text(charCell.syllable, fontSize = pinyinFontSizeSp.sp, color = TextPinyin,
                                     maxLines = 1, softWrap = false)
                             }
                         }
@@ -800,7 +890,8 @@ private fun WordPopupDialog(
     popup: WordPopupState,
     onDismiss: () -> Unit,
     onPronounce: () -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    onPlayFromHere: () -> Unit = {}
 ) {
     val clipboard = LocalClipboardManager.current
     AlertDialog(
@@ -825,11 +916,17 @@ private fun WordPopupDialog(
             }
         },
         confirmButton = {
+            val durationSec = popup.word.end_sec - popup.word.start_sec
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onPlayFromHere) {
+                    Icon(Icons.Default.PlayArrow, null, tint = Amber)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Play", color = Amber)
+                }
                 TextButton(onClick = onPronounce) {
                     Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = Amber)
                     Spacer(Modifier.width(4.dp))
-                    Text("Pronounce", color = Amber)
+                    Text("Pronounce (${"%.2f".format(durationSec)})", color = Amber)
                 }
                 TextButton(onClick = onSave) {
                     Icon(Icons.Default.Add, null, tint = Green)
