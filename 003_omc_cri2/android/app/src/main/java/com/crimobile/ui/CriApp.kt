@@ -96,7 +96,7 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
             topBar = {
                 TopAppBar(
                     title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                             // ── Mode toggle pill ──
                             PlaybackModeToggle(
                                 mode = state.playbackMode,
@@ -315,12 +315,12 @@ private fun BottomControl(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
             contentAlignment = Alignment.Center
         ) {
-            val frozenW = remember { maxWidth }
+            val totalW = maxWidth
             val playW = 80.dp
             // d = distance(play.right, recenter.left) = distance(recenter.right, screen.right)
-            // Derivation: frozenW/2 + 96dp + 2d = frozenW  →  d = frozenW/4 − 48dp
-            val d = frozenW / 4 - 48.dp
-            val spaceLeft = frozenW / 2 - playW / 2  // to center play button
+            // Derivation: totalW/2 + 96dp + 2d = totalW  →  d = totalW/4 − 48dp
+            val d = totalW / 4 - 48.dp
+            val spaceLeft = totalW / 2 - playW / 2  // to center play button
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (d > 0.dp) {
@@ -407,7 +407,6 @@ private fun CriLogo(onTap: (() -> Unit)? = null) {
 private fun WelcomeScreen() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CriLogo()
             Spacer(Modifier.height(12.dp))
             Text("china radio international", color = TextSecondary, fontSize = 16.sp,
                 fontWeight = FontWeight.Medium, letterSpacing = 2.sp)
