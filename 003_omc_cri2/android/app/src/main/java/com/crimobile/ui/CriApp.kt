@@ -319,17 +319,21 @@ private fun BottomControl(
     onResume: () -> Unit,
     onRecenter: () -> Unit
 ) {
-    Surface(color = Surface, modifier = Modifier.fillMaxWidth().height(64.dp)) {
-        Box(
+    Surface(color = Surface, modifier = Modifier.fillMaxWidth().height(128.dp)) {
+        BoxWithConstraints(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
             contentAlignment = Alignment.Center
         ) {
             // Play / Pause — always perfectly centered
             PlayPauseButton(state, onPlay, onPause, onResume)
-            // Recenter — right edge, equal padding from edge as play button area
-            Box(modifier = Modifier.align(Alignment.CenterEnd)) {
-                RecenterButton(onRecenter)
-            }
+            // Recenter — equidistant: d(play.right → recenter.left) = d(recenter.right → edge)
+            val d = maxWidth / 4 - 48.dp
+            RecenterButton(
+                onRecenter,
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = maxWidth / 2 + 40.dp + d)
+            )
         }
     }
 }
@@ -370,8 +374,8 @@ private fun PlayPauseButton(
 }
 
 @Composable
-private fun RecenterButton(onRecenter: () -> Unit) {
-    IconButton(onClick = onRecenter, modifier = Modifier.size(56.dp)) {
+private fun RecenterButton(onRecenter: () -> Unit, modifier: Modifier = Modifier) {
+    IconButton(onClick = onRecenter, modifier = modifier.size(56.dp)) {
         Icon(
             painter = painterResource(id = R.drawable.ic_recenter),
             contentDescription = "Recenter",
@@ -872,9 +876,9 @@ private fun SegmentCard(
                                 }
                             }
                     ) {
-                        // Pinyin slot — always same height for alignment
+                        // Pinyin slot — min height for alignment, but allows descenders
                         if (showPinyin) {
-                            Box(modifier = Modifier.height(18.dp).padding(bottom = 2.dp), contentAlignment = Alignment.Center) {
+                            Box(modifier = Modifier.heightIn(min = 18.dp), contentAlignment = Alignment.Center) {
                                 Text(charCell.syllable, fontSize = pinyinFontSizeSp.sp, color = TextPinyin,
                                     maxLines = 1, softWrap = false)
                             }
