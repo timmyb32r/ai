@@ -835,7 +835,7 @@ private fun SegmentCard(
                         modifier = Modifier
                             .padding(horizontal = 1.5.dp)
                             .then(if (cellIdx == 0 && isTsBoundary && showAudioBoundaries) Modifier.drawBehind {
-                                drawLine(Amber.copy(alpha = 0.15f), Offset(0f, 0f), Offset(0f, size.height), strokeWidth = 1.dp.toPx())
+                                drawLine(Amber.copy(alpha = 0.55f), Offset(0f, 0f), Offset(0f, size.height), strokeWidth = 1.5.dp.toPx())
                             } else Modifier)
                             .then(if (hasUnderline) Modifier.drawBehind {
                                 val strokeWidth = 2.dp.toPx()
