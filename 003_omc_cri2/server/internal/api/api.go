@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -38,6 +39,9 @@ func (s *Server) NewRouter() http.Handler {
 
 	// SSE — real-time subtitle push
 	mux.HandleFunc("/api/subtitles", s.handleSSE)
+
+	// Segment range — batch metadata query for offline sync
+	mux.HandleFunc("/api/segments/range", s.handleSegmentRange)
 
 	// Status — server health and stats
 	mux.HandleFunc("/api/status", s.handleStatus)
@@ -138,7 +142,86 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ClientsConnected:  int(s.clientsConnected.Load()),
 	}
 
+	// Populate archive time range from index so clients can validate sync windows.
+	if idx, err := s.Store.ReadIndex(); err == nil && len(idx.Segments) > 0 {
+		status.OldestSegmentStartSec = idx.Segments[0].TimelineStartSec
+		status.NewestSegmentEndSec = idx.Segments[len(idx.Segments)-1].TimelineEndSec
+	}
+
 	json.NewEncoder(w).Encode(status)
+}
+
+// handleSegmentRange returns segments whose timeline overlaps [start_sec, end_sec].
+// Supports pagination via limit and offset query params.
+func (s *Server) handleSegmentRange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		WriteError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	startStr := r.URL.Query().Get("start_sec")
+	endStr := r.URL.Query().Get("end_sec")
+	if startStr == "" || endStr == "" {
+		WriteError(w, "start_sec and end_sec query params required", http.StatusBadRequest)
+		return
+	}
+
+	startSec, err := strconv.ParseFloat(startStr, 64)
+	if err != nil {
+		WriteError(w, "invalid start_sec", http.StatusBadRequest)
+		return
+	}
+	endSec, err := strconv.ParseFloat(endStr, 64)
+	if err != nil {
+		WriteError(w, "invalid end_sec", http.StatusBadRequest)
+		return
+	}
+	if endSec <= startSec {
+		WriteError(w, "end_sec must be greater than start_sec", http.StatusBadRequest)
+		return
+	}
+
+	segments, err := s.Store.ReadRange(startSec, endSec)
+	if err != nil {
+		WriteError(w, "storage error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Pagination
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+	limit := len(segments)
+	offset := 0
+	if limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if offsetStr != "" {
+		if n, err := strconv.Atoi(offsetStr); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	total := len(segments)
+	start := offset
+	if start > len(segments) {
+		start = len(segments)
+	}
+	end := start + limit
+	if end > len(segments) {
+		end = len(segments)
+	}
+	paged := segments[start:end]
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"segments": paged,
+		"count":    len(paged),
+		"total":    total,
+	})
 }
 
 // WriteError writes a JSON error response.

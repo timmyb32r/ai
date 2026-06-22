@@ -12,6 +12,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.crimobile.model.PlaybackState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,7 +39,13 @@ class ExoRadioPlayer(context: Context) : RadioPlayer {
     private val _behindLiveWindow = MutableStateFlow(false)
     override val behindLiveWindow: StateFlow<Boolean> = _behindLiveWindow.asStateFlow()
 
+    private val _lastErrorMessage = MutableStateFlow<String?>(null)
+    override val lastErrorMessage: StateFlow<String?> = _lastErrorMessage.asStateFlow()
+
     private var pausedAtTimelineMs: Long = 0L
+    private var currentHlsUrl: String? = null
+    private var retryCount = 0
+    private var retryJob: Job? = null
 
     init {
         player.addListener(object : Player.Listener {
@@ -50,22 +57,37 @@ class ExoRadioPlayer(context: Context) : RadioPlayer {
                     Player.STATE_ENDED -> PlaybackState.IDLE
                     else -> PlaybackState.IDLE
                 }
+                // ExoPlayer always transitions to STATE_IDLE after an error.
+                // Don't overwrite ERROR — the error screen must stay visible
+                // until the user retries or auto-retry succeeds.
+                if (newState == PlaybackState.IDLE && _playbackState.value == PlaybackState.ERROR) return
                 if (newState != _playbackState.value) {
                     Log.i(TAG, "state ${_playbackState.value} → $newState")
                     _playbackState.value = newState
+                    if (newState == PlaybackState.PLAYING) {
+                        // Success — clear error and reset retry counter
+                        _lastErrorMessage.value = null
+                        retryCount = 0
+                    }
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
                 Log.e(TAG, "error code=${error.errorCode} msg=${error.message}")
+                _lastErrorMessage.value = error.message ?: "Playback error (code ${error.errorCode})"
                 _playbackState.value = PlaybackState.ERROR
                 if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
                     Log.w(TAG, "behind live window → seeking to live edge")
                     _behindLiveWindow.value = true
                     seekToLiveEdge()
                 }
+                // Auto-retry network errors with exponential backoff
+                if (error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
+                    || error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT) {
+                    scheduleRetry()
+                }
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (_playbackState.value == PlaybackState.PAUSED && isPlaying) {
+                if (isPlaying && _playbackState.value != PlaybackState.PLAYING) {
                     _playbackState.value = PlaybackState.PLAYING
                 }
             }
@@ -73,6 +95,23 @@ class ExoRadioPlayer(context: Context) : RadioPlayer {
 
         scope.launch {
             while (isActive) { updateTimeline(); delay(100) }
+        }
+    }
+
+    private fun scheduleRetry() {
+        val url = currentHlsUrl ?: return
+        if (retryCount >= MAX_RETRIES) {
+            Log.w(TAG, "max retries ($MAX_RETRIES) reached — giving up")
+            return
+        }
+        retryJob?.cancel()
+        retryJob = scope.launch {
+            val delayMs = RETRY_BASE_DELAY_MS * (1L shl retryCount)
+            retryCount++
+            Log.i(TAG, "auto-retry #$retryCount in ${delayMs}ms (url=$url)")
+            delay(delayMs)
+            Log.i(TAG, "auto-retry #$retryCount — attempting reconnect")
+            play(url)
         }
     }
 
@@ -89,6 +128,12 @@ class ExoRadioPlayer(context: Context) : RadioPlayer {
 
     override fun play(hlsUrl: String) {
         Log.i(TAG, "play url=$hlsUrl")
+        currentHlsUrl = hlsUrl
+        retryCount = 0  // reset on manual play
+        retryJob?.cancel()
+        retryJob = null
+        _lastErrorMessage.value = null
+        player.stop()  // force clean reset through IDLE → BUFFERING → READY
         _playbackState.value = PlaybackState.LOADING
         player.setMediaItem(MediaItem.Builder().setUri(hlsUrl).setLiveConfiguration(
             MediaItem.LiveConfiguration.Builder().setMaxPlaybackSpeed(1.02f).setMinPlaybackSpeed(0.98f).build()
@@ -142,6 +187,12 @@ class ExoRadioPlayer(context: Context) : RadioPlayer {
 
     override fun release() {
         Log.i(TAG, "release")
+        retryJob?.cancel()
         player.release()
+    }
+
+    companion object {
+        private const val MAX_RETRIES = 3
+        private const val RETRY_BASE_DELAY_MS = 1000L  // 1s, 2s, 4s
     }
 }

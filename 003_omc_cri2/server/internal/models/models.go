@@ -62,12 +62,14 @@ type PipelineStats struct {
 
 // ServerStatus is the JSON response for GET /api/status.
 type ServerStatus struct {
-	Status            string  `json:"status"`
-	ChannelURL        string  `json:"channel_url"`
-	SegmentsTotal     int64   `json:"segments_total"`
-	MetadataFiles     int     `json:"metadata_files"`
-	LiveEdgeOffsetSec float64 `json:"live_edge_offset_sec"`
-	ClientsConnected  int     `json:"clients_connected"`
+	Status              string  `json:"status"`
+	ChannelURL          string  `json:"channel_url"`
+	SegmentsTotal       int64   `json:"segments_total"`
+	MetadataFiles       int     `json:"metadata_files"`
+	LiveEdgeOffsetSec   float64 `json:"live_edge_offset_sec"`
+	ClientsConnected    int     `json:"clients_connected"`
+	OldestSegmentStartSec float64 `json:"oldest_segment_start_sec"`
+	NewestSegmentEndSec   float64 `json:"newest_segment_end_sec"`
 }
 
 // SSESync is the initial sync event sent to new SSE connections.

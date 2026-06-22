@@ -33,6 +33,9 @@ interface RadioPlayer {
     /** Seek to the live edge. */
     fun seekToLiveEdge()
 
+    /** Last playback error message, or null when playing successfully. */
+    val lastErrorMessage: StateFlow<String?>
+
     /** Release player resources. */
     fun release()
 }

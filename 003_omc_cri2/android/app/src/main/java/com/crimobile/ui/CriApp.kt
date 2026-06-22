@@ -2,6 +2,8 @@ package com.crimobile.ui
 
 import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,7 +19,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,11 +50,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import com.crimobile.R
 import com.crimobile.ServerConfig
 import com.crimobile.model.*
+import com.crimobile.offline.DownloadProgress
+import com.crimobile.offline.SyncConfig
 import com.crimobile.viewmodel.CriAction
 import com.crimobile.viewmodel.CriViewState
 
@@ -65,8 +74,9 @@ private val TextPinyin = Color(0xFFAAAAAA)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
-    // Shared across Scaffold slots: changing key restarts LaunchedEffect → recenter + re-enable scroll.
-    val recenterGeneration = remember { mutableIntStateOf(0) }
+    // Channel-based recenter: sends Unit when user taps Recenter.
+    // CONFLATED means multiple taps merge into one — no queue buildup.
+    val recenterChannel = remember { Channel<Unit>(Channel.CONFLATED) }
 
     MaterialTheme(
         colorScheme = darkColorScheme(
@@ -75,30 +85,92 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
             onBackground = TextPrimary, onSurface = TextPrimary
         )
     ) {
+        var showSettings by remember { mutableStateOf(false) }
+        var showSyncSettings by remember { mutableStateOf(false) }
+
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { CriLogo() },
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // ── Mode toggle pill ──
+                            PlaybackModeToggle(
+                                mode = state.playbackMode,
+                                onToggle = { newMode ->
+                                    onAction(CriAction.SetPlaybackMode(newMode))
+                                }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            CriLogo()
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Surface),
                     actions = {
-                        // Subtitle delay badge
-                        val delay = state.subtitleDelaySec
-                        if (delay in 1.0..3600.0 && state.segments.isNotEmpty()) {
+                        // Subtitle connection indicator
+                        val isActive = state.playbackState == PlaybackState.PLAYING
+                            || state.playbackState == PlaybackState.LOADING
+                            || state.playbackState == PlaybackState.PAUSED
+                        // Show "No subtitles" only in live mode when SSE is disconnected
+                        if (isActive && state.connectionStatus == ConnectionStatus.DISCONNECTED
+                            && state.playbackMode == PlaybackMode.LIVE_STREAMING) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = Amber.copy(alpha = 0.15f),
+                                color = Color.Red.copy(alpha = 0.12f),
+                                modifier = Modifier.padding(end = 4.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Red)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        "No subtitles",
+                                        color = Color.Red.copy(alpha = 0.8f),
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                        // Offline segment count badge
+                        if (state.playbackMode == PlaybackMode.OFFLINE_SAVED && state.segments.isNotEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF1976D2).copy(alpha = 0.15f),
                                 modifier = Modifier.padding(end = 4.dp)
                             ) {
                                 Text(
-                                    "~${delay.toInt()}s",
-                                    color = Amber,
-                                    fontSize = 12.sp,
+                                    "${state.segments.size} offline",
+                                    color = Color(0xFF64B5F6),
+                                    fontSize = 11.sp,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                                 )
                             }
                         }
+                        // Subtitle delay badge (live mode only)
+                        if (state.playbackMode == PlaybackMode.LIVE_STREAMING) {
+                            val delay = state.subtitleDelaySec
+                            if (delay in 1.0..3600.0 && state.segments.isNotEmpty()) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Amber.copy(alpha = 0.15f),
+                                    modifier = Modifier.padding(end = 4.dp)
+                                ) {
+                                    Text(
+                                        "~${delay.toInt()}s",
+                                        color = Amber,
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
                         // Settings
-                        var showSettings by remember { mutableStateOf(false) }
                         IconButton(onClick = { showSettings = true }) {
                             Icon(Icons.Default.Settings, "Settings",
                                 tint = TextSecondary)
@@ -118,35 +190,79 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                 )
             },
             bottomBar = {
-                BottomControl(state.playbackState, state.subtitleDelaySec,
+                BottomControl(state.playbackState,
                     onPlay = { onAction(CriAction.Play(ServerConfig.defaultUrl)) },
                     onPause = { onAction(CriAction.Pause) },
                     onResume = { onAction(CriAction.Resume) },
-                    onRecenter = { recenterGeneration.intValue++ }
+                    onRecenter = { recenterChannel.trySend(Unit) }
                 )
             }
         ) { padding ->
             Box(modifier = Modifier.padding(padding)) {
-                when {
+                // ── Offline mode: no segments → show sync setup ──
+                if (state.playbackMode == PlaybackMode.OFFLINE_SAVED && state.segments.isEmpty()
+                    && state.error == null) {
+                    OfflineSetupScreen(
+                        syncConfig = state.syncConfig,
+                        archiveInfo = state.archiveInfo,
+                        downloadProgress = state.downloadProgress,
+                        onUpdateConfig = { onAction(CriAction.UpdateSyncConfig(it)) },
+                        onSaveNow = { onAction(CriAction.StartInitialSync) },
+                        onCancelDownload = { onAction(CriAction.CancelDownload) },
+                        onLoadArchiveInfo = { onAction(CriAction.LoadArchiveInfo) }
+                    )
+                } else when {
                     state.error != null -> ErrorScreen(state.error)
                     state.playbackState == PlaybackState.IDLE && state.segments.isEmpty() ->
                         WelcomeScreen()
                     state.segments.isEmpty() && state.playbackState == PlaybackState.LOADING ->
                         LoadingScreen()
-                    else -> SubtitleList(
-                        segments = state.segments,
-                        activeWord = state.activeWord,
-                        lastActiveWord = state.lastActiveWord,
-                        playbackState = state.playbackState,
-                        isPronouncing = state.isPronouncing,
-                        showPinyin = state.showPinyin,
-                        fontSizeSp = state.fontSizeSp,
-                        showWordBoundaries = state.showWordBoundaries,
-                        recenterGeneration = recenterGeneration.intValue,
-                        onWordTapped = { onAction(CriAction.WordTapped(it)) }
-                    )
+                    else -> {
+                        Column {
+                            // In offline mode with content: show sync bar above subtitle list
+                            if (state.playbackMode == PlaybackMode.OFFLINE_SAVED) {
+                                OfflineContentBar(
+                                    segmentCount = state.segments.size,
+                                    syncConfig = state.syncConfig,
+                                    archiveInfo = state.archiveInfo,
+                                    downloadProgress = state.downloadProgress,
+                                    onOpenSync = { showSyncSettings = true },
+                                    onUpdateConfig = { onAction(CriAction.UpdateSyncConfig(it)) },
+                                    onSaveNow = { onAction(CriAction.StartInitialSync) },
+                                    onCancelDownload = { onAction(CriAction.CancelDownload) },
+                                    onLoadArchiveInfo = { onAction(CriAction.LoadArchiveInfo) }
+                                )
+                            }
+                            SubtitleList(
+                                segments = state.segments,
+                                activeWord = state.activeWord,
+                                lastActiveWord = state.lastActiveWord,
+                                playbackState = state.playbackState,
+                                isPronouncing = state.isPronouncing,
+                                showPinyin = state.showPinyin,
+                                fontSizeSp = state.fontSizeSp,
+                                showWordBoundaries = state.showWordBoundaries,
+                                recenterChannel = recenterChannel,
+                                onWordTapped = { onAction(CriAction.WordTapped(it)) }
+                            )
+                        }
+                    }
                 }
             }
+        }
+
+        // Sync settings dialog (opened from offline content bar)
+        if (showSyncSettings) {
+            SyncSettingsDialog(
+                syncConfig = state.syncConfig,
+                archiveInfo = state.archiveInfo,
+                downloadProgress = state.downloadProgress,
+                onUpdateConfig = { onAction(CriAction.UpdateSyncConfig(it)) },
+                onSaveNow = { onAction(CriAction.StartInitialSync) },
+                onCancelDownload = { onAction(CriAction.CancelDownload) },
+                onLoadArchiveInfo = { onAction(CriAction.LoadArchiveInfo) },
+                onDismiss = { showSyncSettings = false }
+            )
         }
 
         // Word popup
@@ -163,7 +279,6 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
 @Composable
 private fun BottomControl(
     state: PlaybackState,
-    subtitleDelay: Double,
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -175,7 +290,6 @@ private fun BottomControl(
         ) {
             val totalW = maxWidth
             val playW = 80.dp
-            val recenterW = 56.dp
             // d = distance(play.right, recenter.left) = distance(recenter.right, screen.right)
             // Derivation: totalW/2 + 96dp + 2d = totalW  →  d = totalW/4 − 48dp
             val d = totalW / 4 - 48.dp
@@ -390,7 +504,7 @@ private fun SubtitleList(
     showPinyin: Boolean,
     fontSizeSp: Int,
     showWordBoundaries: Boolean,
-    recenterGeneration: Int,
+    recenterChannel: Channel<Unit>,
     onWordTapped: (WordEntry) -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -404,13 +518,9 @@ private fun SubtitleList(
     val currentPlaybackState by rememberUpdatedState(playbackState)
     val currentIsPronouncing by rememberUpdatedState(isPronouncing)
 
-    // Architecture decision (deep-interview Round 4):
-    //   Do NOT send signals into a living coroutine — let Compose recreate it
-    //   by changing the LaunchedEffect KEY. recenterGeneration++ → old coroutine
-    //   cancelled by Compose (no snapshot conflict) → new coroutine starts →
-    //   init phase centers word → scroll continues.
-    //   This avoids ALL 11 documented failure modes in SCROLL.md.
-    LaunchedEffect(recenterGeneration) {
+    // LaunchedEffect with Unit key — NEVER restarts during the lifecycle of this
+    // composable. Recenter signals arrive via Channel<Unit> (non-blocking poll).
+    LaunchedEffect(Unit) {
         var initialized = false
         var initSpeedPxPerSec = 0f
         var lastFrameNanos = 0L
@@ -418,10 +528,16 @@ private fun SubtitleList(
         var lastLogNanos = 0L
         var wasPlaying = false
 
-        var scrollAction: (suspend () -> Unit)? = null
+        var scrollAction: (suspend () -> Unit)?
 
         var loopIterations = 0L
         while (isActive) {
+            // ── Recenter: non-blocking channel poll ──
+            if (recenterChannel.tryReceive().getOrNull() != null) {
+                initialized = false
+                Log.i("CRIRadio:scroll", "RECENTER triggered (channel)")
+            }
+
             scrollAction = null
             loopIterations++
 
@@ -436,7 +552,7 @@ private fun SubtitleList(
                 // Heartbeat: log that scroll loop is alive (every 5s)
                 if (frameNanos - lastLogNanos > 5_000_000_000L) {
                     lastLogNanos = frameNanos
-                    Log.d("CRIRadio:scroll", "alive word=${word?.text} segs=${segs.size} init=$initialized wasPlaying=$wasPlaying gen=$recenterGeneration")
+                    Log.d("CRIRadio:scroll", "alive word=${word?.text} segs=${segs.size} init=$initialized wasPlaying=$wasPlaying")
                 }
 
                 val viewportHeightPx = with(density) {
@@ -707,7 +823,7 @@ private fun WordPopupDialog(
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = onPronounce) {
-                    Icon(Icons.Default.VolumeUp, null, tint = Amber)
+                    Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = Amber)
                     Spacer(Modifier.width(4.dp))
                     Text("Pronounce", color = Amber)
                 }
@@ -768,6 +884,787 @@ private fun syllableToDiacritic(s: String): String {
     val toned = TONE_VOWEL_MAP[syl[idx] to tone] ?: return syl.removeRange(tonePos, tonePos + 1)
 
     return syl.substring(0, idx) + toned + syl.substring(idx + 1, tonePos) + syl.substring(tonePos + 1)
+}
+
+// ── Offline setup screen (shown when offline + no content) ───────────
+
+@Composable
+private fun OfflineSetupScreen(
+    syncConfig: SyncConfig,
+    archiveInfo: com.crimobile.offline.ArchiveInfo?,
+    downloadProgress: DownloadProgress?,
+    onUpdateConfig: (SyncConfig) -> Unit,
+    onSaveNow: () -> Unit,
+    onCancelDownload: () -> Unit,
+    onLoadArchiveInfo: () -> Unit
+) {
+    // Load archive info on first composition
+    LaunchedEffect(Unit) {
+        if (archiveInfo == null) {
+            onLoadArchiveInfo()
+        }
+    }
+
+    var editHour by remember { mutableStateOf(syncConfig.syncHourOfDay) }
+    var editMinute by remember { mutableStateOf(syncConfig.syncMinute) }
+    var editEnabled by remember { mutableStateOf(syncConfig.enabled) }
+    var editWifiOnly by remember { mutableStateOf(syncConfig.wifiOnly) }
+    var editDurationH by remember { mutableStateOf(syncConfig.syncDurationSec / 3600.0) }
+    var editDurationStr by remember {
+        val h = syncConfig.syncDurationSec / 3600.0
+        mutableStateOf(if (h == h.toInt().toDouble()) h.toInt().toString() else "%.1f".format(h))
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Header
+        item {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Sync,
+                    contentDescription = null,
+                    tint = Color(0xFF64B5F6),
+                    modifier = Modifier.size(28.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        "Offline Mode",
+                        color = TextPrimary,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Download audio + subtitles for listening without internet",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        }
+
+        // Scheduled sync toggle
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Scheduled daily sync", color = TextPrimary, fontSize = 14.sp, modifier = Modifier)
+                    Switch(
+                        checked = editEnabled,
+                        onCheckedChange = {
+                            editEnabled = it
+                            onUpdateConfig(syncConfig.copy(enabled = it))
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFF64B5F6),
+                            checkedTrackColor = Color(0xFF64B5F6).copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            }
+        }
+
+        // Sync time (only when enabled)
+        if (editEnabled) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = CardBg),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("Sync time", color = TextSecondary, fontSize = 12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = editHour.toString().padStart(2, '0'),
+                                onValueChange = { v ->
+                                    val n = v.filter { it.isDigit() }.toIntOrNull()
+                                    if (n != null && n in 0..23) {
+                                        editHour = n
+                                        onUpdateConfig(syncConfig.copy(syncHourOfDay = n))
+                                    }
+                                },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                    color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                                ),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Amber,
+                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                                ),
+                                modifier = Modifier.width(56.dp)
+                            )
+                            Text(":", color = TextSecondary, fontSize = 18.sp)
+                            OutlinedTextField(
+                                value = editMinute.toString().padStart(2, '0'),
+                                onValueChange = { v ->
+                                    val n = v.filter { it.isDigit() }.toIntOrNull()
+                                    if (n != null && n in 0..59) {
+                                        editMinute = n
+                                        onUpdateConfig(syncConfig.copy(syncMinute = n))
+                                    }
+                                },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                    color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                                ),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Amber,
+                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                                ),
+                                modifier = Modifier.width(56.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Duration
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("Download duration", color = TextSecondary, fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(1.0 to "1h", 2.0 to "2h", 2.5 to "2.5h", 3.0 to "3h").forEach { (hours, label) ->
+                            val isSelected = kotlin.math.abs(editDurationH - hours) < 0.01
+                            FilledTonalButton(
+                                onClick = {
+                                    editDurationH = hours
+                                    editDurationStr = label.dropLast(1)
+                                    onUpdateConfig(syncConfig.copy(syncDurationSec = (hours * 3600).toInt()))
+                                },
+                                modifier = Modifier.height(32.dp),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = if (isSelected) Amber.copy(alpha = 0.2f) else Surface
+                                )
+                            ) {
+                                Text(label, fontSize = 12.sp,
+                                    color = if (isSelected) Amber else TextSecondary)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = editDurationStr,
+                            onValueChange = { v ->
+                                editDurationStr = v
+                                val h = v.toDoubleOrNull()
+                                if (h != null && h >= 0.1 && h <= 24) {
+                                    editDurationH = h
+                                    onUpdateConfig(syncConfig.copy(syncDurationSec = (h * 3600).toInt()))
+                                }
+                            },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = Amber, fontSize = 14.sp, textAlign = TextAlign.Center
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Amber,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            ),
+                            modifier = Modifier.width(72.dp),
+                            label = { Text("Custom", color = TextSecondary, fontSize = 10.sp) }
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("hours", color = TextSecondary, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        // WiFi only
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("WiFi only", color = TextPrimary, fontSize = 14.sp, modifier = Modifier)
+                    Switch(
+                        checked = editWifiOnly,
+                        onCheckedChange = {
+                            editWifiOnly = it
+                            onUpdateConfig(syncConfig.copy(wifiOnly = it))
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFF64B5F6),
+                            checkedTrackColor = Color(0xFF64B5F6).copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            }
+        }
+
+        // Validation
+        if (archiveInfo != null && archiveInfo.oldestStartSec > 0.0) {
+            item {
+                val archiveHours = (archiveInfo.newestEndSec - archiveInfo.oldestStartSec) / 3600.0
+                val isValid = editDurationH <= archiveHours
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isValid) Green.copy(alpha = 0.1f) else Color.Red.copy(alpha = 0.1f)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "Server archive: %.1f hours".format(archiveHours),
+                            color = TextSecondary, fontSize = 12.sp
+                        )
+                        Text(
+                            "Requested: %.1f hours".format(editDurationH),
+                            color = TextSecondary, fontSize = 12.sp
+                        )
+                        Text(
+                            if (isValid) "✓ Fits in archive" else "⚠ Exceeds archive — will be clamped",
+                            color = if (isValid) Green else Color.Red.copy(alpha = 0.8f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        // Download progress
+        if (downloadProgress != null && downloadProgress.isRunning) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = CardBg),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = Color(0xFF64B5F6),
+                                strokeWidth = 2.dp
+                            )
+                            Text(downloadProgress.currentAction, color = TextSecondary, fontSize = 12.sp)
+                        }
+                        if (downloadProgress.totalSegments > 0) {
+                            Spacer(Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = {
+                                    downloadProgress.downloadedSegments.toFloat() /
+                                        downloadProgress.totalSegments.coerceAtLeast(1)
+                                },
+                                modifier = Modifier.fillMaxWidth().height(4.dp),
+                                color = Color(0xFF64B5F6),
+                                trackColor = Surface
+                            )
+                            Text(
+                                "${downloadProgress.downloadedSegments}/${downloadProgress.totalSegments} segments",
+                                color = TextSecondary, fontSize = 11.sp
+                            )
+                        }
+                        TextButton(onClick = onCancelDownload) {
+                            Text("Cancel", color = Color.Red.copy(alpha = 0.8f), fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        } else if (downloadProgress?.error != null) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color.Red.copy(alpha = 0.1f)
+                ) {
+                    Text(
+                        downloadProgress.error,
+                        color = Color.Red.copy(alpha = 0.8f),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+
+        // Save now button
+        item {
+            Button(
+                onClick = onSaveNow,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                enabled = downloadProgress?.isRunning != true
+            ) {
+                Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (syncConfig.initialSyncDone) "Download Now"
+                    else "Save First Batch Now",
+                    color = Color.White
+                )
+            }
+        }
+
+        // Last sync info
+        item {
+            if (syncConfig.lastSyncTimestamp > 0L) {
+                val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                    .format(Date(syncConfig.lastSyncTimestamp))
+                Text("Last sync: $dateStr", color = TextSecondary, fontSize = 11.sp)
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+// ── Offline content bar (shown above subtitle list when offline + has content) ──
+
+@Composable
+private fun OfflineContentBar(
+    segmentCount: Int,
+    syncConfig: SyncConfig,
+    archiveInfo: com.crimobile.offline.ArchiveInfo?,
+    downloadProgress: DownloadProgress?,
+    onOpenSync: () -> Unit,
+    onUpdateConfig: (SyncConfig) -> Unit,
+    onSaveNow: () -> Unit,
+    onCancelDownload: () -> Unit,
+    onLoadArchiveInfo: () -> Unit
+) {
+    Surface(
+        color = CardBg.copy(alpha = 0.6f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Segment count
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF64B5F6))
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "$segmentCount segments offline",
+                    color = Color(0xFF64B5F6),
+                    fontSize = 12.sp
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            // Sync settings button
+            TextButton(onClick = onOpenSync) {
+                Icon(
+                    Icons.Default.Sync,
+                    contentDescription = "Sync settings",
+                    tint = Color(0xFF64B5F6),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("Sync", color = Color(0xFF64B5F6), fontSize = 12.sp)
+            }
+        }
+    }
+
+    // Download progress inline
+    if (downloadProgress != null && downloadProgress.isRunning) {
+        Surface(color = Bg, modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                LinearProgressIndicator(
+                    progress = {
+                        downloadProgress.downloadedSegments.toFloat() /
+                            downloadProgress.totalSegments.coerceAtLeast(1)
+                    },
+                    modifier = Modifier.fillMaxWidth().height(3.dp),
+                    color = Color(0xFF64B5F6),
+                    trackColor = Surface
+                )
+                Text(
+                    downloadProgress.currentAction,
+                    color = TextSecondary,
+                    fontSize = 10.sp
+                )
+            }
+        }
+    }
+}
+
+// ── Playback mode toggle (iOS-style pill with animated slide) ──────────
+
+@Composable
+private fun PlaybackModeToggle(
+    mode: PlaybackMode,
+    onToggle: (PlaybackMode) -> Unit
+) {
+    val isLive = mode == PlaybackMode.LIVE_STREAMING
+
+    // Animate the sliding pill from Live (2dp) to Offline (64dp)
+    val slideOffset by animateFloatAsState(
+        targetValue = if (isLive) 2f else 64f,
+        animationSpec = tween(durationMillis = 250),
+        label = "toggleSlide"
+    )
+
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = CardBg,
+        modifier = Modifier.width(128.dp).height(32.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable { onToggle(if (isLive) PlaybackMode.OFFLINE_SAVED else PlaybackMode.LIVE_STREAMING) }
+        ) {
+            // Animated sliding pill
+            Box(
+                modifier = Modifier
+                    .offset(x = slideOffset.dp)
+                    .width(62.dp)
+                    .height(28.dp)
+                    .align(Alignment.CenterStart)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (isLive) Green else Color(0xFF1976D2))
+            )
+
+            // Live label
+            Row(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(64.dp)
+                    .align(Alignment.CenterStart),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    "Live",
+                    color = if (isLive) Color.White else TextSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = if (isLive) FontWeight.Bold else FontWeight.Normal
+                )
+            }
+
+            // Offline label
+            Row(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(64.dp)
+                    .align(Alignment.CenterEnd),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    "Offline",
+                    color = if (!isLive) Color.White else TextSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = if (!isLive) FontWeight.Bold else FontWeight.Normal
+                )
+            }
+        }
+    }
+}
+
+// ── Sync settings dialog ──────────────────────────────────────────────
+
+@Composable
+private fun SyncSettingsDialog(
+    syncConfig: SyncConfig,
+    archiveInfo: com.crimobile.offline.ArchiveInfo?,
+    downloadProgress: DownloadProgress?,
+    onUpdateConfig: (SyncConfig) -> Unit,
+    onSaveNow: () -> Unit,
+    onCancelDownload: () -> Unit,
+    onLoadArchiveInfo: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    // Load archive info on first show
+    LaunchedEffect(Unit) {
+        if (archiveInfo == null) {
+            onLoadArchiveInfo()
+        }
+    }
+
+    var editHour by remember { mutableStateOf(syncConfig.syncHourOfDay) }
+    var editMinute by remember { mutableStateOf(syncConfig.syncMinute) }
+    var editEnabled by remember { mutableStateOf(syncConfig.enabled) }
+    var editWifiOnly by remember { mutableStateOf(syncConfig.wifiOnly) }
+    var editDurationH by remember { mutableStateOf(syncConfig.syncDurationSec / 3600.0) }
+    var editDurationStr by remember {
+        val h = syncConfig.syncDurationSec / 3600.0
+        mutableStateOf(if (h == h.toInt().toDouble()) h.toInt().toString() else "%.1f".format(h))
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = CardBg,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Sync, null, tint = Color(0xFF64B5F6))
+                Spacer(Modifier.width(8.dp))
+                Text("Offline Sync", color = TextPrimary, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // ── Enabled toggle ──
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Scheduled sync", color = TextPrimary, fontSize = 14.sp, modifier = Modifier)
+                    Switch(
+                        checked = editEnabled,
+                        onCheckedChange = {
+                            editEnabled = it
+                            onUpdateConfig(syncConfig.copy(enabled = it))
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFF64B5F6),
+                            checkedTrackColor = Color(0xFF64B5F6).copy(alpha = 0.4f)
+                        )
+                    )
+                }
+
+                // ── Sync time ──
+                if (editEnabled) {
+                    Text("Daily sync time", color = TextSecondary, fontSize = 12.sp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = editHour.toString().padStart(2, '0'),
+                            onValueChange = { v ->
+                                val n = v.filter { it.isDigit() }.toIntOrNull()
+                                if (n != null && n in 0..23) {
+                                    editHour = n
+                                    onUpdateConfig(syncConfig.copy(syncHourOfDay = n))
+                                }
+                            },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Amber,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            ),
+                            modifier = Modifier.width(56.dp)
+                        )
+                        Text(":", color = TextSecondary, fontSize = 18.sp)
+                        OutlinedTextField(
+                            value = editMinute.toString().padStart(2, '0'),
+                            onValueChange = { v ->
+                                val n = v.filter { it.isDigit() }.toIntOrNull()
+                                if (n != null && n in 0..59) {
+                                    editMinute = n
+                                    onUpdateConfig(syncConfig.copy(syncMinute = n))
+                                }
+                            },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Amber,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            ),
+                            modifier = Modifier.width(56.dp)
+                        )
+                    }
+                }
+
+                // ── Duration ──
+                Text("Download duration", color = TextSecondary, fontSize = 12.sp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // Preset buttons
+                    listOf(1.0 to "1h", 2.0 to "2h", 2.5 to "2.5h", 3.0 to "3h").forEach { (hours, label) ->
+                        val isSelected = kotlin.math.abs(editDurationH - hours) < 0.01
+                        FilledTonalButton(
+                            onClick = {
+                                editDurationH = hours
+                                editDurationStr = label.dropLast(1)
+                                onUpdateConfig(syncConfig.copy(syncDurationSec = (hours * 3600).toInt()))
+                            },
+                            modifier = Modifier.height(32.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = if (isSelected) Amber.copy(alpha = 0.2f) else Surface
+                            )
+                        ) {
+                            Text(label, fontSize = 12.sp,
+                                color = if (isSelected) Amber else TextSecondary)
+                        }
+                    }
+                }
+                // Custom duration
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = editDurationStr,
+                        onValueChange = { v ->
+                            editDurationStr = v
+                            val h = v.toDoubleOrNull()
+                            if (h != null && h >= 0.1 && h <= 24) {
+                                editDurationH = h
+                                onUpdateConfig(syncConfig.copy(syncDurationSec = (h * 3600).toInt()))
+                            }
+                        },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = Amber, fontSize = 14.sp, textAlign = TextAlign.Center
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Amber,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier.width(72.dp),
+                        label = { Text("Custom", color = TextSecondary, fontSize = 10.sp) }
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("hours", color = TextSecondary, fontSize = 12.sp)
+                }
+
+                // ── WiFi only ──
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("WiFi only", color = TextPrimary, fontSize = 14.sp, modifier = Modifier)
+                    Switch(
+                        checked = editWifiOnly,
+                        onCheckedChange = {
+                            editWifiOnly = it
+                            onUpdateConfig(syncConfig.copy(wifiOnly = it))
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFF64B5F6),
+                            checkedTrackColor = Color(0xFF64B5F6).copy(alpha = 0.4f)
+                        )
+                    )
+                }
+
+                // ── Validation ──
+                if (archiveInfo != null && archiveInfo.oldestStartSec > 0.0) {
+                    val archiveHours = (archiveInfo.newestEndSec - archiveInfo.oldestStartSec) / 3600.0
+                    val isValid = editDurationH <= archiveHours
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isValid) Green.copy(alpha = 0.1f) else Color.Red.copy(alpha = 0.1f)
+                    ) {
+                        Column(modifier = Modifier.padding(8.dp)) {
+                            Text(
+                                "Server archive: %.1f hours".format(archiveHours),
+                                color = TextSecondary, fontSize = 12.sp
+                            )
+                            Text(
+                                "Requested: %.1f hours".format(editDurationH),
+                                color = TextSecondary, fontSize = 12.sp
+                            )
+                            Text(
+                                if (isValid) "✓ Valid" else "⚠ Exceeds archive — will be clamped",
+                                color = if (isValid) Green else Color.Red.copy(alpha = 0.8f),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // ── Download progress ──
+                if (downloadProgress != null && downloadProgress.isRunning) {
+                    Column {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = Color(0xFF64B5F6),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                downloadProgress.currentAction,
+                                color = TextSecondary, fontSize = 12.sp
+                            )
+                        }
+                        if (downloadProgress.totalSegments > 0) {
+                            Spacer(Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = {
+                                    downloadProgress.downloadedSegments.toFloat() /
+                                        downloadProgress.totalSegments.coerceAtLeast(1)
+                                },
+                                modifier = Modifier.fillMaxWidth().height(4.dp),
+                                color = Color(0xFF64B5F6),
+                                trackColor = Surface
+                            )
+                            Text(
+                                "${downloadProgress.downloadedSegments}/${downloadProgress.totalSegments} segments",
+                                color = TextSecondary, fontSize = 11.sp
+                            )
+                        }
+                        TextButton(onClick = onCancelDownload) {
+                            Text("Cancel", color = Color.Red.copy(alpha = 0.8f), fontSize = 12.sp)
+                        }
+                    }
+                } else if (downloadProgress?.error != null) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.Red.copy(alpha = 0.1f)
+                    ) {
+                        Text(
+                            downloadProgress.error,
+                            color = Color.Red.copy(alpha = 0.8f),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                }
+
+                // ── Save now button ──
+                Button(
+                    onClick = onSaveNow,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                    enabled = downloadProgress?.isRunning != true
+                ) {
+                    Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (syncConfig.initialSyncDone) "Download Now"
+                        else "Save First Batch Now",
+                        color = Color.White
+                    )
+                }
+
+                // ── Last sync info ──
+                if (syncConfig.lastSyncTimestamp > 0L) {
+                    val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                        .format(java.util.Date(syncConfig.lastSyncTimestamp))
+                    Text("Last sync: $dateStr", color = TextSecondary, fontSize = 11.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close", color = Amber) }
+        }
+    )
 }
 
 // ── CJK punctuation-aware cell builder (extracted for testability) ──────

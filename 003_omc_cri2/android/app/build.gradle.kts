@@ -53,6 +53,9 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
+    // WorkManager for scheduled offline sync
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
     // OkHttp for SSE + HTTP
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")

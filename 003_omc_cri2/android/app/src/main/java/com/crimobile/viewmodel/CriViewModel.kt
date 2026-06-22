@@ -5,7 +5,15 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.crimobile.ServerConfig
 import com.crimobile.model.*
+import com.crimobile.offline.DownloadEngine
+import com.crimobile.offline.DownloadProgress
+import com.crimobile.offline.OfflineRadioPlayer
+import com.crimobile.offline.OfflineStorageManager
+import com.crimobile.offline.OfflineSubtitleSource
+import com.crimobile.offline.SyncConfig
+import com.crimobile.offline.SyncScheduler
 import com.crimobile.player.RadioPlayer
 import com.crimobile.player.RadioPlayerHolder
 import com.crimobile.pronounce.PronunciationPlayer
@@ -33,7 +41,11 @@ data class CriViewState(
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val error: String? = null,
     val subtitleDelaySec: Double = 0.0,  // how far behind live are subtitles
-    val lastActiveWord: WordEntry? = null  // remembered for recenter during silence gaps
+    val lastActiveWord: WordEntry? = null,  // remembered for recenter during silence gaps
+    val playbackMode: PlaybackMode = PlaybackMode.LIVE_STREAMING,
+    val syncConfig: SyncConfig = SyncConfig(),
+    val downloadProgress: DownloadProgress? = null,  // non-null when download is active
+    val archiveInfo: com.crimobile.offline.ArchiveInfo? = null  // server archive bounds
 )
 
 sealed class CriAction {
@@ -47,6 +59,11 @@ sealed class CriAction {
     object TogglePinyin : CriAction()
     data class SetFontSize(val sp: Int) : CriAction()
     object ToggleWordBoundaries : CriAction()
+    data class SetPlaybackMode(val mode: PlaybackMode) : CriAction()
+    data class UpdateSyncConfig(val config: SyncConfig) : CriAction()
+    object LoadArchiveInfo : CriAction()
+    object StartInitialSync : CriAction()
+    object CancelDownload : CriAction()
 }
 
 class CriViewModel(application: Application) : AndroidViewModel(application) {
@@ -77,7 +94,18 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var lastActiveWord: WordEntry? = null
     private var initialDelaySeekDone = false  // one-shot seek behind live edge after connect
 
+    // ── Offline mode ───────────────────────────────────────────────────
+    private val offlineStorageManager by lazy { OfflineStorageManager(getApplication()) }
+    private val offlineSubtitleSource by lazy { OfflineSubtitleSource(offlineStorageManager) }
+    private var offlinePlayer: OfflineRadioPlayer? = null
+    private var downloadJob: kotlinx.coroutines.Job? = null
+
     init {
+        // Load sync config from prefs
+        _state.value = _state.value.copy(
+            syncConfig = SyncConfig.fromPrefs(prefs)
+        )
+
         // Non-player-dependent — start immediately
         viewModelScope.launch {
             subtitleSource.connected.collect { status ->
@@ -86,13 +114,23 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             subtitleSource.segments.collect { segs ->
-                _state.value = _state.value.copy(segments = segs)
+                if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING) {
+                    _state.value = _state.value.copy(segments = segs)
+                }
             }
         }
 
         // ── Wait for the player (owned by PlayerService) then start player-dependent flows ──
         viewModelScope.launch {
-            player = RadioPlayerHolder.awaitPlayer()
+            val obtained = RadioPlayerHolder.awaitPlayer()
+            if (obtained == null) {
+                Log.e(VM, "PlayerService did not start — player unavailable")
+                _state.value = _state.value.copy(
+                    error = "Media player service failed to start. Please restart the app."
+                )
+                return@launch
+            }
+            player = obtained
             Log.i(VM, "player obtained from RadioPlayerHolder")
 
             // Forward playback state (player must be initialised first)
@@ -102,12 +140,27 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            // Forward error messages to the UI error screen
+            launch {
+                player.lastErrorMessage.collect { msg ->
+                    _state.value = _state.value.copy(error = msg)
+                }
+            }
+
             // Main sync loop — subtitle ↔ audio alignment at ~10 Hz
             while (isActive) {
-                val segments = subtitleSource.segments.value
+                // Read segments from state (works for both live and offline modes)
+                val segments = _state.value.segments
                 if (segments.isNotEmpty()) {
                     val engine = SubtitleSyncEngine(segments)
-                    val playerMs = player.currentTimelineMs.value
+                    // Use correct player based on mode
+                    val activePlayer = if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
+                        offlinePlayer
+                    } else {
+                        if (::player.isInitialized) player else null
+                    }
+                    if (activePlayer == null) { delay(100); continue }
+                    val playerMs = activePlayer.currentTimelineMs.value
                     val playerSec = playerMs / 1000.0
 
                     val activeSegment = engine.findActiveSegment(playerMs)
@@ -152,10 +205,9 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     // ── One-shot delay seek: rewind player behind live edge ──
-                    // Server sends ~20 segments of history via SSE on connect.
-                    // We seek the player back into this buffer so there is always
-                    // content ahead — no more stalling at live edge waiting for ASR.
-                    if (!initialDelaySeekDone && playerMs > 0 && segments.size >= MIN_BUFFER_FOR_DELAY_SEEK) {
+                    // Only for LIVE_STREAMING mode — offline content has no live edge.
+                    if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING &&
+                        !initialDelaySeekDone && playerMs > 0 && segments.size >= MIN_BUFFER_FOR_DELAY_SEEK) {
                         val newest = segments.last().timeline_start_sec
                         val oldest = segments.first().timeline_start_sec
                         val availableSec = newest - oldest
@@ -173,16 +225,14 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun dispatch(action: CriAction) {
-        // Ignore actions until the player is obtained from RadioPlayerHolder.
-        // (PlayerService starts before the first Activity, so this is only
-        // a guard against a theoretical race; in practice ::player is always
-        // initialized by the time the user can tap anything.)
-        if (!::player.isInitialized) return
+    private fun requirePlayer(): Boolean = ::player.isInitialized
 
+    fun dispatch(action: CriAction) {
         when (action) {
             is CriAction.Play -> {
+                if (!requirePlayer()) return
                 Log.i(VM, "play server=${action.serverUrl}")
+                _state.value = _state.value.copy(error = null)  // clear any previous error
                 val url = "${action.serverUrl}/hls/playlist.m3u8"
                 val wasPaused = _state.value.playbackState == PlaybackState.PAUSED
                 if (wasPaused && action.serverUrl == currentServerUrl) {
@@ -199,16 +249,26 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(isPronouncing = false)
             }
             CriAction.Pause -> {
+                if (!requirePlayer()) return
                 Log.i(VM, "pause")
                 player.pause()
                 _state.value = _state.value.copy(isPronouncing = false)
             }
             CriAction.Resume -> {
+                if (!requirePlayer()) return
+                // If the player was paused without ever loading a stream
+                // (e.g. after online→offline→online toggle before pressing Play),
+                // fall back to a full Play so a media source is loaded.
+                if (currentServerUrl.isEmpty()) {
+                    dispatch(CriAction.Play(ServerConfig.defaultUrl))
+                    return
+                }
                 Log.i(VM, "resume")
                 player.resume()
                 _state.value = _state.value.copy(isPronouncing = false)
             }
             is CriAction.WordTapped -> {
+                if (!requirePlayer()) return
                 Log.i(VM, "word_tapped text=${action.word.text} pinyin=${action.word.pinyin}")
                 player.pause()
                 val segments = subtitleSource.segments.value
@@ -260,6 +320,153 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(showWordBoundaries = newVal)
                 prefs.edit().putBoolean("show_word_boundaries", newVal).apply()
             }
+            is CriAction.SetPlaybackMode -> {
+                switchPlaybackMode(action.mode)
+            }
+            is CriAction.UpdateSyncConfig -> {
+                val cfg = action.config
+                _state.value = _state.value.copy(syncConfig = cfg)
+                SyncConfig.save(prefs, cfg)
+                SyncScheduler.schedule(getApplication(), cfg)
+            }
+            CriAction.LoadArchiveInfo -> {
+                viewModelScope.launch {
+                    try {
+                        val engine = DownloadEngine(
+                            getApplication(),
+                            ServerConfig.defaultUrl,
+                            offlineStorageManager
+                        )
+                        val info = engine.fetchArchiveInfo()
+                        _state.value = _state.value.copy(archiveInfo = info)
+                    } catch (e: Exception) {
+                        Log.w(VM, "Failed to load archive info: ${e.message}")
+                    }
+                }
+            }
+            CriAction.StartInitialSync -> {
+                startDownload()
+            }
+            CriAction.CancelDownload -> {
+                downloadJob?.cancel()
+                downloadJob = null
+                _state.value = _state.value.copy(
+                    downloadProgress = DownloadProgress(isRunning = false, error = "Cancelled")
+                )
+            }
+        }
+    }
+
+    // ── Offline mode helpers ───────────────────────────────────────────
+
+    private fun switchPlaybackMode(mode: PlaybackMode) {
+        if (mode == _state.value.playbackMode) return
+        Log.i(VM, "switchPlaybackMode → $mode")
+
+        when (mode) {
+            PlaybackMode.LIVE_STREAMING -> {
+                // Tear down offline
+                offlinePlayer?.release()
+                offlinePlayer = null
+                // Restart live stream: reconnect SSE + player
+                if (::player.isInitialized && currentServerUrl.isNotEmpty()) {
+                    val hlsUrl = "$currentServerUrl/hls/playlist.m3u8"
+                    subtitleSource.connect(currentServerUrl)
+                    player.play(hlsUrl)
+                    initialDelaySeekDone = false
+                }
+                _state.value = _state.value.copy(
+                    playbackMode = mode,
+                    error = null
+                )
+            }
+            PlaybackMode.OFFLINE_SAVED -> {
+                // Disconnect live SSE and pause player — only if a stream was active
+                if (currentServerUrl.isNotEmpty()) {
+                    subtitleSource.disconnect()
+                    if (::player.isInitialized) {
+                        player.pause()
+                    }
+                }
+                // Load offline data
+                offlineSubtitleSource.load()
+                val storedSegments = offlineSubtitleSource.segments.value
+                if (storedSegments.isNotEmpty()) {
+                    offlinePlayer?.release()
+                    offlinePlayer = OfflineRadioPlayer(
+                        storedSegments,
+                        offlineStorageManager,
+                        getApplication()
+                    )
+                    offlinePlayer?.play("")  // no URL needed for offline
+                }
+                _state.value = _state.value.copy(
+                    playbackMode = mode,
+                    segments = storedSegments,
+                    error = null  // UI shows OfflineSetupScreen when no segments
+                )
+            }
+        }
+    }
+
+    private fun startDownload() {
+        val cfg = _state.value.syncConfig
+        downloadJob?.cancel()
+        downloadJob = viewModelScope.launch {
+            val engine = DownloadEngine(
+                getApplication(),
+                ServerConfig.defaultUrl,
+                offlineStorageManager
+            )
+
+            // Fetch archive info for bounds validation
+            val archive = try {
+                engine.fetchArchiveInfo()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    downloadProgress = DownloadProgress(error = "Cannot reach server: ${e.message}")
+                )
+                return@launch
+            }
+            _state.value = _state.value.copy(archiveInfo = archive)
+
+            // Determine download window
+            val nowSec = System.currentTimeMillis() / 1000.0
+            var startSec = nowSec - cfg.syncDurationSec
+            val endSec = archive.newestEndSec
+
+            // Clamp to archive bounds
+            if (archive.oldestStartSec > 0.0 && startSec < archive.oldestStartSec) {
+                startSec = archive.oldestStartSec
+            }
+            if (startSec >= endSec) {
+                _state.value = _state.value.copy(
+                    downloadProgress = DownloadProgress(error = "No content available in configured window")
+                )
+                return@launch
+            }
+
+            // Run download
+            val result = engine.downloadRange(startSec, endSec) { progress ->
+                _state.value = _state.value.copy(downloadProgress = progress)
+            }
+
+            if (result.isSuccess) {
+                // Mark initial sync done
+                val updatedConfig = cfg.copy(
+                    lastSyncTimestamp = System.currentTimeMillis(),
+                    initialSyncDone = true
+                )
+                _state.value = _state.value.copy(syncConfig = updatedConfig)
+                SyncConfig.save(prefs, updatedConfig)
+                SyncScheduler.schedule(getApplication(), updatedConfig)
+
+                // If in offline mode, reload segments
+                if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
+                    offlineSubtitleSource.load()
+                    _state.value = _state.value.copy(segments = offlineSubtitleSource.segments.value)
+                }
+            }
         }
     }
 
@@ -273,7 +480,9 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
         pronunciationPlayer.stop()
         subtitleSource.disconnect()
-        // Player is owned by PlayerService — do NOT release it here.
+        downloadJob?.cancel()
+        offlinePlayer?.release()
+        // Live player is owned by PlayerService — do NOT release it here.
         // The service survives Activity destruction and keeps audio alive.
     }
 }
