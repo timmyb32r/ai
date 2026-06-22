@@ -774,7 +774,6 @@ private fun SubtitleList(
                             }
                             accumulatedPx -= wholePx
                         }
-                        }
                     }
                 }
 
