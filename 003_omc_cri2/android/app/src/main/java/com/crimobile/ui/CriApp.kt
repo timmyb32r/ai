@@ -94,10 +94,22 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
 
         Scaffold(
             topBar = {
-                CenterAlignedTopAppBar(
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            // ── Mode toggle pill ──
+                Surface(
+                    color = Surface,
+                    shadowElevation = 4.dp
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .height(56.dp)
+                            .padding(horizontal = 16.dp)
+                    ) {
+                        // Logo + mode toggle — absolutely centered on screen
+                        Row(
+                            modifier = Modifier.align(Alignment.Center),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             PlaybackModeToggle(
                                 mode = state.playbackMode,
                                 onToggle = { newMode ->
@@ -108,7 +120,7 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                             CriLogo(onTap = {
                                 val now = System.currentTimeMillis()
                                 if (now - lastDebugTapTime > 1000L) {
-                                    debugTapCount = 0  // reset after 1s gap
+                                    debugTapCount = 0
                                 }
                                 lastDebugTapTime = now
                                 debugTapCount++
@@ -118,96 +130,94 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                                 }
                             })
                         }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Surface),
-                    actions = {
-                        // Subtitle connection indicator
-                        val isActive = state.playbackState == PlaybackState.PLAYING
-                            || state.playbackState == PlaybackState.LOADING
-                            || state.playbackState == PlaybackState.PAUSED
-                        // Show "No subtitles" only in live mode when SSE is disconnected
-                        if (isActive && state.connectionStatus == ConnectionStatus.DISCONNECTED
-                            && state.playbackMode == PlaybackMode.LIVE_STREAMING) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color.Red.copy(alpha = 0.12f),
-                                modifier = Modifier.padding(end = 4.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(6.dp)
-                                            .clip(CircleShape)
-                                            .background(Color.Red)
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Text(
-                                        "No subtitles",
-                                        color = Color.Red.copy(alpha = 0.8f),
-                                        fontSize = 11.sp
-                                    )
-                                }
-                            }
-                        }
-                        // Offline segment count badge
-                        if (state.playbackMode == PlaybackMode.OFFLINE_SAVED && state.segments.isNotEmpty()) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF1976D2).copy(alpha = 0.15f),
-                                modifier = Modifier.padding(end = 4.dp)
-                            ) {
-                                Text(
-                                    "${state.segments.size} offline",
-                                    color = Color(0xFF64B5F6),
-                                    fontSize = 11.sp,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                        // Subtitle delay badge (live mode only)
-                        if (state.playbackMode == PlaybackMode.LIVE_STREAMING) {
-                            val delay = state.subtitleDelaySec
-                            if (delay in 1.0..3600.0 && state.segments.isNotEmpty()) {
+                        // Actions — right edge
+                        Row(
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val isActive = state.playbackState == PlaybackState.PLAYING
+                                || state.playbackState == PlaybackState.LOADING
+                                || state.playbackState == PlaybackState.PAUSED
+                            if (isActive && state.connectionStatus == ConnectionStatus.DISCONNECTED
+                                && state.playbackMode == PlaybackMode.LIVE_STREAMING) {
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
-                                    color = Amber.copy(alpha = 0.15f),
+                                    color = Color.Red.copy(alpha = 0.12f),
+                                    modifier = Modifier.padding(end = 4.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .clip(CircleShape)
+                                                .background(Color.Red)
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            "No subtitles",
+                                            color = Color.Red.copy(alpha = 0.8f),
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                            }
+                            if (state.playbackMode == PlaybackMode.OFFLINE_SAVED && state.segments.isNotEmpty()) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF1976D2).copy(alpha = 0.15f),
                                     modifier = Modifier.padding(end = 4.dp)
                                 ) {
                                     Text(
-                                        "~${delay.toInt()}s",
-                                        color = Amber,
-                                        fontSize = 12.sp,
+                                        "${state.segments.size} offline",
+                                        color = Color(0xFF64B5F6),
+                                        fontSize = 11.sp,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                                     )
                                 }
                             }
-                        }
-                        // Settings
-                        IconButton(onClick = { showSettings = true }) {
-                            Icon(Icons.Default.Settings, "Settings",
-                                tint = TextSecondary)
-                        }
-                        if (showSettings) {
-                            SettingsDialog(
-                                currentFontSize = state.fontSizeSp,
-                                showPinyin = state.showPinyin,
-                                showWordBoundaries = state.showWordBoundaries,
-                                onFontSize = { onAction(CriAction.SetFontSize(it)) },
-                                onTogglePinyin = { onAction(CriAction.TogglePinyin) },
-                                onToggleWordBoundaries = { onAction(CriAction.ToggleWordBoundaries) },
-                                onDismiss = { showSettings = false },
-                                debugEnabled = state.debugEnabled,
-                                showAudioBoundaries = state.showAudioBoundaries,
-                                onToggleAudioBoundaries = { onAction(CriAction.ToggleAudioBoundaries) },
-                                pinyinFontSizeSp = state.pinyinFontSizeSp,
-                                onPinyinFontSize = { onAction(CriAction.SetPinyinFontSize(it)) }
-                            )
+                            if (state.playbackMode == PlaybackMode.LIVE_STREAMING) {
+                                val delay = state.subtitleDelaySec
+                                if (delay in 1.0..3600.0 && state.segments.isNotEmpty()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Amber.copy(alpha = 0.15f),
+                                        modifier = Modifier.padding(end = 4.dp)
+                                    ) {
+                                        Text(
+                                            "~${delay.toInt()}s",
+                                            color = Amber,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            IconButton(onClick = { showSettings = true }) {
+                                Icon(Icons.Default.Settings, "Settings",
+                                    tint = TextSecondary)
+                            }
                         }
                     }
-                )
+                }
+                if (showSettings) {
+                    SettingsDialog(
+                        currentFontSize = state.fontSizeSp,
+                        showPinyin = state.showPinyin,
+                        showWordBoundaries = state.showWordBoundaries,
+                        onFontSize = { onAction(CriAction.SetFontSize(it)) },
+                        onTogglePinyin = { onAction(CriAction.TogglePinyin) },
+                        onToggleWordBoundaries = { onAction(CriAction.ToggleWordBoundaries) },
+                        onDismiss = { showSettings = false },
+                        debugEnabled = state.debugEnabled,
+                        showAudioBoundaries = state.showAudioBoundaries,
+                        onToggleAudioBoundaries = { onAction(CriAction.ToggleAudioBoundaries) },
+                        pinyinFontSizeSp = state.pinyinFontSizeSp,
+                        onPinyinFontSize = { onAction(CriAction.SetPinyinFontSize(it)) }
+                    )
+                }
             },
             bottomBar = {
                 BottomControl(state.playbackState,
