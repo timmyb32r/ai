@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -829,6 +830,9 @@ private fun SegmentCard(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .padding(horizontal = 1.5.dp)
+                            .then(if (cellIdx == 0 && isTsBoundary && showAudioBoundaries) Modifier.drawBehind {
+                                drawLine(Amber.copy(alpha = 0.15f), Offset(0f, 0f), Offset(0f, size.height), strokeWidth = 1.dp.toPx())
+                            } else Modifier)
                             .then(if (hasUnderline) Modifier.drawBehind {
                                 val strokeWidth = 2.dp.toPx()
                                 val dashWidth = 4.dp.toPx()
