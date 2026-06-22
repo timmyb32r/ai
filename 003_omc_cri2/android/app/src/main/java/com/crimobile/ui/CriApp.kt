@@ -105,19 +105,17 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                             .height(56.dp)
                             .padding(horizontal = 16.dp)
                     ) {
-                        // Logo + mode toggle — absolutely centered on screen
-                        Row(
-                            modifier = Modifier.align(Alignment.Center),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            PlaybackModeToggle(
-                                mode = state.playbackMode,
-                                onToggle = { newMode ->
-                                    onAction(CriAction.SetPlaybackMode(newMode))
-                                }
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            CriLogo(onTap = {
+                        // Mode toggle — left edge
+                        PlaybackModeToggle(
+                            mode = state.playbackMode,
+                            onToggle = { newMode ->
+                                onAction(CriAction.SetPlaybackMode(newMode))
+                            },
+                            modifier = Modifier.align(Alignment.CenterStart)
+                        )
+                        // CRI logo — true screen center (no group shift)
+                        CriLogo(
+                            onTap = {
                                 val now = System.currentTimeMillis()
                                 if (now - lastDebugTapTime > 1000L) {
                                     debugTapCount = 0
@@ -128,8 +126,9 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                                     debugTapCount = 0
                                     onAction(CriAction.EnableDebug)
                                 }
-                            })
-                        }
+                            },
+                            modifier = Modifier.align(Alignment.Center)
+                        )
                         // Actions — right edge
                         Row(
                             modifier = Modifier.align(Alignment.CenterEnd),
@@ -383,11 +382,11 @@ private fun RecenterButton(onRecenter: () -> Unit) {
 }
 
 @Composable
-private fun CriLogo(onTap: (() -> Unit)? = null) {
+private fun CriLogo(onTap: (() -> Unit)? = null, modifier: Modifier = Modifier) {
     Image(
         painter = painterResource(id = R.drawable.cri_logo),
         contentDescription = "CRI China Radio International",
-        modifier = Modifier
+        modifier = modifier
             .height(72.dp).widthIn(max = 400.dp)
             .then(if (onTap != null) Modifier.clickable { onTap() } else Modifier),
         contentScale = ContentScale.FillHeight,
@@ -1425,7 +1424,8 @@ private fun OfflineContentBar(
 @Composable
 private fun PlaybackModeToggle(
     mode: PlaybackMode,
-    onToggle: (PlaybackMode) -> Unit
+    onToggle: (PlaybackMode) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val isLive = mode == PlaybackMode.LIVE_STREAMING
 
@@ -1439,7 +1439,7 @@ private fun PlaybackModeToggle(
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = CardBg,
-        modifier = Modifier.width(128.dp).height(32.dp)
+        modifier = modifier.width(128.dp).height(32.dp)
     ) {
         Box(
             modifier = Modifier
