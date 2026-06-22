@@ -5,7 +5,6 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.crimobile.DebugGate
 import com.crimobile.ServerConfig
 import com.crimobile.model.*
 import com.crimobile.offline.DownloadEngine
@@ -65,6 +64,7 @@ sealed class CriAction {
     object ToggleWordBoundaries : CriAction()
     object ToggleAudioBoundaries : CriAction()
     data class SetPinyinFontSize(val sp: Int) : CriAction()
+    object EnableDebug : CriAction()
     data class SetPlaybackMode(val mode: PlaybackMode) : CriAction()
     data class UpdateSyncConfig(val config: SyncConfig) : CriAction()
     object LoadArchiveInfo : CriAction()
@@ -91,7 +91,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             showWordBoundaries = prefs.getBoolean("show_word_boundaries", false),
             showAudioBoundaries = prefs.getBoolean("show_audio_boundaries", false),
             pinyinFontSizeSp = prefs.getInt("pinyin_font_size_sp", 9),
-            debugEnabled = DebugGate.isEnabled(application),
+            debugEnabled = prefs.getBoolean("debug_enabled", false),
         )
     )
     val state: StateFlow<CriViewState> = _state.asStateFlow()
@@ -345,6 +345,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             is CriAction.SetPinyinFontSize -> {
                 _state.value = _state.value.copy(pinyinFontSizeSp = action.sp)
                 prefs.edit().putInt("pinyin_font_size_sp", action.sp).apply()
+            }
+            CriAction.EnableDebug -> {
+                _state.value = _state.value.copy(debugEnabled = true)
+                prefs.edit().putBoolean("debug_enabled", true).apply()
             }
             is CriAction.SetPlaybackMode -> {
                 switchPlaybackMode(action.mode)

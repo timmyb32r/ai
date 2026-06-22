@@ -89,6 +89,8 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
     ) {
         var showSettings by remember { mutableStateOf(false) }
         var showSyncSettings by remember { mutableStateOf(false) }
+        var debugTapCount by remember { mutableIntStateOf(0) }
+        var lastDebugTapTime by remember { mutableLongStateOf(0L) }
 
         Scaffold(
             topBar = {
@@ -103,7 +105,18 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                                 }
                             )
                             Spacer(Modifier.width(8.dp))
-                            CriLogo()
+                            CriLogo(onTap = {
+                                val now = System.currentTimeMillis()
+                                if (now - lastDebugTapTime > 1000L) {
+                                    debugTapCount = 0  // reset after 1s gap
+                                }
+                                lastDebugTapTime = now
+                                debugTapCount++
+                                if (debugTapCount >= 5) {
+                                    debugTapCount = 0
+                                    onAction(CriAction.EnableDebug)
+                                }
+                            })
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Surface),
@@ -378,11 +391,13 @@ private fun RecenterButton(onRecenter: () -> Unit) {
 }
 
 @Composable
-private fun CriLogo() {
+private fun CriLogo(onTap: (() -> Unit)? = null) {
     Image(
         painter = painterResource(id = R.drawable.cri_logo),
         contentDescription = "CRI China Radio International",
-        modifier = Modifier.height(72.dp).widthIn(max = 400.dp),
+        modifier = Modifier
+            .height(72.dp).widthIn(max = 400.dp)
+            .then(if (onTap != null) Modifier.clickable { onTap() } else Modifier),
         contentScale = ContentScale.FillHeight,
         colorFilter = ColorFilter.tint(TextPrimary)
     )
