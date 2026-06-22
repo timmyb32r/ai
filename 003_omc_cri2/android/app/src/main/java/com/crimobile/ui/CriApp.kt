@@ -94,9 +94,9 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
 
         Scaffold(
             topBar = {
-                TopAppBar(
+                CenterAlignedTopAppBar(
                     title = {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             // ── Mode toggle pill ──
                             PlaybackModeToggle(
                                 mode = state.playbackMode,
@@ -311,33 +311,15 @@ private fun BottomControl(
     onRecenter: () -> Unit
 ) {
     Surface(color = Surface, modifier = Modifier.fillMaxWidth().height(64.dp)) {
-        BoxWithConstraints(
+        Box(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
             contentAlignment = Alignment.Center
         ) {
-            val totalW = maxWidth
-            val playW = 80.dp
-            // d = distance(play.right, recenter.left) = distance(recenter.right, screen.right)
-            // Derivation: totalW/2 + 96dp + 2d = totalW  →  d = totalW/4 − 48dp
-            val d = totalW / 4 - 48.dp
-            val spaceLeft = totalW / 2 - playW / 2  // to center play button
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (d > 0.dp) {
-                    Spacer(Modifier.width(spaceLeft))
-                    // Play / Pause — centered
-                    PlayPauseButton(state, onPlay, onPause, onResume)
-                    Spacer(Modifier.width(d))
-                    // Recenter — equidistant: play.right→recenter.left = recenter.right→screen.right
-                    RecenterButton(onRecenter)
-                } else {
-                    // Narrow screen fallback: center the group
-                    Spacer(Modifier.weight(1f))
-                    PlayPauseButton(state, onPlay, onPause, onResume)
-                    Spacer(Modifier.width(8.dp))
-                    RecenterButton(onRecenter)
-                    Spacer(Modifier.weight(1f))
-                }
+            // Play / Pause — always perfectly centered
+            PlayPauseButton(state, onPlay, onPause, onResume)
+            // Recenter — right edge, equal padding from edge as play button area
+            Box(modifier = Modifier.align(Alignment.CenterEnd)) {
+                RecenterButton(onRecenter)
             }
         }
     }
