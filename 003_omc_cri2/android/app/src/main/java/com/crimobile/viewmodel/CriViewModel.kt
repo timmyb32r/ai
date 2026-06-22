@@ -460,18 +460,21 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             }
             _state.value = _state.value.copy(archiveInfo = archive)
 
-            // Determine download window
+            // Determine download window — end at current time so the window
+            // doesn't collapse when the server pipeline is behind (the server
+            // naturally limits results to only segments that exist).
             val nowSec = System.currentTimeMillis() / 1000.0
             var startSec = nowSec - cfg.syncDurationSec
-            val endSec = archive.newestEndSec
+            val endSec = nowSec
 
-            // Clamp to archive bounds
+            // Clamp start to archive bounds
             if (archive.oldestStartSec > 0.0 && startSec < archive.oldestStartSec) {
                 startSec = archive.oldestStartSec
             }
-            if (startSec >= endSec) {
+            // Guard against completely empty archive
+            if (archive.newestEndSec <= 0.0) {
                 _state.value = _state.value.copy(
-                    downloadProgress = DownloadProgress(error = "No content available in configured window")
+                    downloadProgress = DownloadProgress(error = "No content available — server archive is empty")
                 )
                 return@launch
             }
