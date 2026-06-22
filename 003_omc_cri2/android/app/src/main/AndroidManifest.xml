@@ -10,6 +10,8 @@
 
     <application
         android:name=".CriApplication"
+        android:icon="@drawable/cri_logo"
+        android:roundIcon="@drawable/cri_logo"
         android:allowBackup="true"
         android:label="CRI Radio"
         android:supportsRtl="true"

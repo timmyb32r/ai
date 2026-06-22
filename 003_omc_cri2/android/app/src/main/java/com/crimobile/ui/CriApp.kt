@@ -379,6 +379,9 @@ private fun WelcomeScreen() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             CriLogo()
+            Spacer(Modifier.height(12.dp))
+            Text("china radio international", color = TextSecondary, fontSize = 16.sp,
+                fontWeight = FontWeight.Medium, letterSpacing = 2.sp)
             Spacer(Modifier.height(16.dp))
             Text("Live Chinese radio with subtitles", color = TextSecondary, fontSize = 14.sp)
             Spacer(Modifier.height(4.dp))
@@ -398,6 +401,7 @@ private fun SettingsDialog(
     onDismiss: () -> Unit
 ) {
     var editSize by remember { mutableStateOf(currentFontSize.toString()) }
+    var editPinyinSize by remember { mutableStateOf(pinyinFontSizeSp.toString()) }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = CardBg,
@@ -734,7 +738,7 @@ private fun SegmentCard(
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .padding(start = if (isFirstInWord) 3.dp else 0.dp, end = if (isLastInWord) 3.dp else 0.dp)
+                            .padding(horizontal = 1.5.dp)
                             .then(if (hasUnderline) Modifier.drawBehind {
                                 val strokeWidth = 2.dp.toPx()
                                 val dashWidth = 4.dp.toPx()
@@ -1681,7 +1685,7 @@ data class CharCell(val text: String, val word: WordEntry, val syllable: String)
 fun buildCharCells(words: List<WordEntry>, showPinyin: Boolean): List<CharCell> {
     val cells = buildList<CharCell> {
         words.forEach { word ->
-            val pinyin = pinyinToDiacritic(word.pinyin)
+            val pinyin = pinyinToDiacritic(word.pinyin.lowercase())
             val syllables = pinyin.split(" ")
             val chars = word.text.toList()
             val pinyinAligned = showPinyin && syllables.size == chars.size

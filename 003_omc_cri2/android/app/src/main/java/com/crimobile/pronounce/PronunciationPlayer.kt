@@ -14,18 +14,19 @@ class PronunciationPlayer(
     private var originalTimelineMs: Long = 0
     private var pronounceJob: Job? = null
 
-    fun playWord(word: WordEntry) {
+    fun playWord(word: WordEntry, prevTimeTo: Double? = null, nextTimeFrom: Double? = null) {
         pronounceJob?.cancel()
 
         // Save current position
         originalTimelineMs = player.currentTimelineMs.value
 
-        // word.start_sec is absolute Unix epoch — just convert to ms
-        val wordStartMs = (word.start_sec * 1000).toLong()
-        val wordDurationMs = ((word.end_sec - word.start_sec) * 1000).toLong().coerceAtLeast(200)
+        val startSec = if (prevTimeTo != null) (prevTimeTo + word.start_sec) / 2.0 else word.start_sec
+        val endSec = if (nextTimeFrom != null) (word.end_sec + nextTimeFrom) / 2.0 else word.end_sec
 
-        Log.i(TAG, "pronounce word=${word.text} " +
-            "startMs=$wordStartMs durationMs=$wordDurationMs savedPosMs=$originalTimelineMs")
+        val wordStartMs = (startSec * 1000).toLong()
+        val wordDurationMs = ((endSec - startSec) * 1000).toLong().coerceAtLeast(200)
+
+        Log.i(TAG, "pronounce word=${word.text} startMs=$wordStartMs durationMs=$wordDurationMs savedPosMs=$originalTimelineMs")
 
         player.pause()
         player.seekTo(wordStartMs)

@@ -5,6 +5,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.crimobile.DebugGate
 import com.crimobile.ServerConfig
 import com.crimobile.model.*
 import com.crimobile.offline.DownloadEngine
@@ -36,6 +37,9 @@ data class CriViewState(
     val showPinyin: Boolean = false,
     val fontSizeSp: Int = 22,  // subtitle font size in sp
     val showWordBoundaries: Boolean = false,  // subtle underline under words
+    val showAudioBoundaries: Boolean = false,  // debug: show .ts file boundaries
+    val pinyinFontSizeSp: Int = 9,  // pinyin font size in sp
+    val debugEnabled: Boolean = false,  // true when .cri_debug file exists
     val wordPopup: WordPopupState? = null,
     val isPronouncing: Boolean = false,  // true while PronounceWord audio plays
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
@@ -59,6 +63,8 @@ sealed class CriAction {
     object TogglePinyin : CriAction()
     data class SetFontSize(val sp: Int) : CriAction()
     object ToggleWordBoundaries : CriAction()
+    object ToggleAudioBoundaries : CriAction()
+    data class SetPinyinFontSize(val sp: Int) : CriAction()
     data class SetPlaybackMode(val mode: PlaybackMode) : CriAction()
     data class UpdateSyncConfig(val config: SyncConfig) : CriAction()
     object LoadArchiveInfo : CriAction()
@@ -83,6 +89,9 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             showPinyin = prefs.getBoolean("show_pinyin", false),
             fontSizeSp = prefs.getInt("font_size_sp", 22),
             showWordBoundaries = prefs.getBoolean("show_word_boundaries", false),
+            showAudioBoundaries = prefs.getBoolean("show_audio_boundaries", false),
+            pinyinFontSizeSp = prefs.getInt("pinyin_font_size_sp", 9),
+            debugEnabled = DebugGate.isEnabled(application),
         )
     )
     val state: StateFlow<CriViewState> = _state.asStateFlow()
@@ -297,7 +306,15 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             CriAction.PronounceWord -> {
                 Log.i(VM, "pronounce_word")
                 val word = savedWord.value ?: return
-                pronunciationPlayer.playWord(word)
+                val allWords = _state.value.segments.flatMap { it.words }
+                val wordIdx = allWords.indexOfFirst { w -> w === word }
+                if (wordIdx < 0) {
+                    pronunciationPlayer.playWord(word)
+                } else {
+                    val prevTimeTo = if (wordIdx > 0) allWords[wordIdx - 1].end_sec else null
+                    val nextTimeFrom = if (wordIdx < allWords.size - 1) allWords[wordIdx + 1].start_sec else null
+                    pronunciationPlayer.playWord(word, prevTimeTo, nextTimeFrom)
+                }
                 _state.value = _state.value.copy(isPronouncing = true)
             }
             CriAction.SaveWord -> {
@@ -319,6 +336,15 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 val newVal = !_state.value.showWordBoundaries
                 _state.value = _state.value.copy(showWordBoundaries = newVal)
                 prefs.edit().putBoolean("show_word_boundaries", newVal).apply()
+            }
+            CriAction.ToggleAudioBoundaries -> {
+                val newVal = !_state.value.showAudioBoundaries
+                _state.value = _state.value.copy(showAudioBoundaries = newVal)
+                prefs.edit().putBoolean("show_audio_boundaries", newVal).apply()
+            }
+            is CriAction.SetPinyinFontSize -> {
+                _state.value = _state.value.copy(pinyinFontSizeSp = action.sp)
+                prefs.edit().putInt("pinyin_font_size_sp", action.sp).apply()
             }
             is CriAction.SetPlaybackMode -> {
                 switchPlaybackMode(action.mode)
