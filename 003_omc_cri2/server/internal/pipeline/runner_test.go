@@ -196,3 +196,52 @@ func TestPipelineErrorRecovery(t *testing.T) {
 type testError struct{ msg string }
 
 func (e *testError) Error() string { return e.msg }
+
+// TestPipelineHLSEncoderCleanup verifies that stopHLSEncoder() runs on Run() exit
+// and cleans up hlsCmd/hlsStdin.
+//
+// ON THE OLD CODE (pre-fix): the defer in Run() only logged "stopped".
+//   stopHLSEncoder() did not exist. The HLS ffmpeg process was never killed,
+//   its stderr pipe never closed, and the logStderr goroutine was stuck forever
+//   in bufio.Scanner.Scan(). This is the goroutine-27 leak from the bug report.
+//
+// ON THE CURRENT CODE: defer calls stopHLSEncoder() which closes stdin, kills
+//   the process, and nils both hlsCmd and hlsStdin.
+func TestPipelineHLSEncoderCleanup(t *testing.T) {
+	store, _ := storage.New(t.TempDir())
+	defer store.Close()
+
+	pcmCh := make(chan models.PCMChunk)
+	close(pcmCh) // close immediately — simulate ingest dying
+
+	p := &Pipeline{
+		Ingestor:    &mockIngestor{ch: pcmCh},
+		Transcriber: asr.NewMockTranscriber(),
+		Tokenizer:   &mockTokenizer{},
+		Dictionary:  &mockDict{},
+		Store:       store,
+		Logger:      logging.NewProductionLogger("warn"),
+		OutputDir:   t.TempDir(),
+		HLSTime:     3,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Run returns an error because pcmCh is closed (ingest stream ended).
+	_ = p.Run(ctx)
+
+	// KEY ASSERTION: after Run() exits, hlsCmd and hlsStdin must be nil.
+	// On the old code, these would remain set (zombie ffmpeg + stuck stderr reader).
+	p.hlsMu.Lock()
+	hlsCmd := p.hlsCmd
+	hlsStdin := p.hlsStdin
+	p.hlsMu.Unlock()
+
+	if hlsCmd != nil {
+		t.Error("hlsCmd is not nil after Run() exit — stopHLSEncoder() did not clean up (old-code zombie leak)")
+	}
+	if hlsStdin != nil {
+		t.Error("hlsStdin is not nil after Run() exit — stopHLSEncoder() did not close stdin (old-code pipe leak)")
+	}
+}

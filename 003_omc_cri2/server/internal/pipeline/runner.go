@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -52,7 +53,10 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	os.RemoveAll(filepath.Join(p.OutputDir, "metadata"))
 	os.MkdirAll(filepath.Join(p.OutputDir, "metadata"), 0o755)
 	os.Remove(filepath.Join(p.OutputDir, "hls", "playlist.m3u8"))
-	defer p.Logger.Info("pipeline", "stopped")
+	defer func() {
+		p.stopHLSEncoder()
+		p.Logger.Info("pipeline", "stopped")
+	}()
 
 	hlsDir := filepath.Join(p.OutputDir, "hls")
 	os.MkdirAll(hlsDir, 0o755)
@@ -81,6 +85,12 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	if err := hlsCmd.Start(); err != nil {
 		return fmt.Errorf("start hls ffmpeg: %w", err)
 	}
+	// Reap process to prevent zombies on restart.
+	go func() {
+		if err := hlsCmd.Wait(); err != nil {
+			p.Logger.Warn("pipeline", "hls_encoder_exited", "err", err)
+		}
+	}()
 	// Log ffmpeg stderr through our logger (adds timestamps to every line)
 	go logStderr(stderrPipe, p.Logger, "ffmpeg-hls")
 	p.Logger.Info("pipeline", "hls_encoder_started")
@@ -115,7 +125,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	p.writeEmptyPlaylist(hlsDir)
 
 	p.Logger.Info("pipeline", "running")
-	go p.statsReporter(ctx)
+	go p.statsReporter(ctx, asrQueue)
 
 	segmentID := 0
 	for {
@@ -150,6 +160,19 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 }
 
+func (p *Pipeline) stopHLSEncoder() {
+	p.hlsMu.Lock()
+	defer p.hlsMu.Unlock()
+	if p.hlsStdin != nil {
+		p.hlsStdin.Close()
+		p.hlsStdin = nil
+	}
+	if p.hlsCmd != nil && p.hlsCmd.Process != nil {
+		p.hlsCmd.Process.Kill()
+	}
+	p.hlsCmd = nil
+}
+
 func (p *Pipeline) writePCMToHLS(samples []float32) {
 	p.hlsMu.Lock()
 	defer p.hlsMu.Unlock()
@@ -162,7 +185,9 @@ func (p *Pipeline) writePCMToHLS(samples []float32) {
 		buf[i*2] = byte(val)
 		buf[i*2+1] = byte(val >> 8)
 	}
-	p.hlsStdin.Write(buf)
+	if _, err := p.hlsStdin.Write(buf); err != nil {
+		p.Logger.Warn("pipeline", "hls_write_error", "err", err)
+	}
 }
 
 func (p *Pipeline) asrWorker(ctx context.Context, queue <-chan models.PCMChunk) {
@@ -438,7 +463,8 @@ func (p *Pipeline) waitForHLSTimeline(ctx context.Context, hlsDir string, timeou
 }
 
 // statsReporter logs ingest-vs-ASR progress every 5 seconds.
-func (p *Pipeline) statsReporter(ctx context.Context) {
+// Includes goroutine count and ASR queue depth for remote hang diagnostics.
+func (p *Pipeline) statsReporter(ctx context.Context, asrQueue chan models.PCMChunk) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	var lastIngested, lastTranscribed int64
@@ -458,6 +484,8 @@ func (p *Pipeline) statsReporter(ctx context.Context) {
 				"lag", lag,
 				"d_ingest", deltaIngest,
 				"d_trans", deltaTrans,
+				"goroutines", runtime.NumGoroutine(),
+				"asr_queue", fmt.Sprintf("%d/%d", len(asrQueue), cap(asrQueue)),
 			)
 			lastIngested = ingested
 			lastTranscribed = transcribed

@@ -113,7 +113,13 @@ func main() {
 	}
 
 	// ── pprof server (diagnostics) ────────────────────────────────────
-	pprofServer := &http.Server{Addr: ":6060", Handler: http.DefaultServeMux}
+	pprofServer := &http.Server{
+		Addr:         ":6060",
+		Handler:      http.DefaultServeMux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  30 * time.Second,
+	}
 	go func() {
 		runtime.SetBlockProfileRate(1)
 		runtime.SetMutexProfileFraction(1)
@@ -126,8 +132,11 @@ func main() {
 	// ── Start HTTP server ───────────────────────────────────────────────
 
 	httpServer := &http.Server{
-		Addr:    cfg.Addr,
-		Handler: apiServer.NewRouter(),
+		Addr:         cfg.Addr,
+		Handler:      apiServer.NewRouter(),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	go func() {
@@ -154,9 +163,36 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("main", "pipeline_starting")
-		if err := pipe.Run(ctx); err != nil && err != context.Canceled {
-			logger.Error("main", "pipeline_error", "err", err)
+		backoff := 2 * time.Second
+		const maxBackoff = 60 * time.Second
+
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+
+			logger.Info("main", "pipeline_starting")
+			err := pipe.Run(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+
+			if err != nil {
+				logger.Error("main", "pipeline_error", "err", err, "restart_in", backoff)
+			}
+			// pipe.Run always returns non-nil; ctx.Err() caught above.
+			_ = ingestor.Stop()
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		}
 	}()
 

@@ -8,6 +8,7 @@
 .DS_Store
 
 001_omc_cri/server
+.claude
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

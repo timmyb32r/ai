@@ -2,6 +2,7 @@ package asr
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/criradio/server/internal/models"
 )
@@ -138,7 +140,10 @@ func (t *whisperTranscriber) Transcribe(pcm []float32, segmentID int) (*models.T
 	}
 
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command("whisper-cli", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "whisper-cli", args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 

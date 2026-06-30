@@ -17,10 +17,12 @@ import (
 
 type ffmpegIngestor struct {
 	config Config
+	mu     sync.Mutex
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
+	loopCancel context.CancelFunc
 	stats  Stats
-	mu     sync.Mutex
+	started bool
 }
 
 func New(cfg Config) (Ingestor, error) {
@@ -53,111 +55,16 @@ func (f *ffmpegIngestor) Start(ctx context.Context) (<-chan models.PCMChunk, err
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.cmd != nil {
+	if f.started {
 		return nil, fmt.Errorf("ingestor already running")
 	}
 
-	ctx, f.cancel = context.WithCancel(ctx)
-
-	// Exactly the 001_omc_cri proven-working ffmpeg command:
-	//   PCM s16le, 16kHz, mono → stdout
-	// No HLS output — we generate HLS segments ourselves from PCM.
-	//
-	// -rw_timeout prevents ffmpeg from hanging forever when the
-	// upstream HLS server stalls mid-connection. Without it, ffmpeg
-	// blocks in recv() indefinitely, the stdout pipe stays empty,
-	// and the entire pipeline deadlocks.
-	args := []string{
-		"-hide_banner", "-nostdin", "-nostats",
-		"-rw_timeout", "30000000", // 30s network I/O timeout
-		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
-		"-i", f.config.ChannelURL,
-		"-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "s16le",
-		"pipe:1",
-	}
-
-	f.cmd = exec.CommandContext(ctx, "ffmpeg", args...)
-	stderrPipe, _ := f.cmd.StderrPipe()
-
-	stdout, err := f.cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("create stdout pipe: %w", err)
-	}
-
-	if err := f.cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start ffmpeg: %w", err)
-	}
-	go logStderrIngest(stderrPipe)
-
-	atomic.StoreInt64(&f.stats.Running, 1)
+	loopCtx, loopCancel := context.WithCancel(ctx)
+	f.loopCancel = loopCancel
+	f.started = true
 
 	pcmCh := make(chan models.PCMChunk, 8)
-	go func() {
-		defer close(pcmCh)
-		defer atomic.StoreInt64(&f.stats.Running, 0)
-
-		buf := bufio.NewReaderSize(stdout, 48000*2) // s16le = 2 bytes/sample
-		samplesPerChunk := 16000 * f.config.HLSTime
-		int16Chunk := make([]int16, samplesPerChunk)
-		floatChunk := make([]float32, samplesPerChunk)
-		segmentID := 0
-
-		// readTimeout is how long we wait for a single chunk before
-		// deciding ffmpeg is hung. 3× segment duration is generous
-		// enough for transient slowness but catches a dead stream.
-		readTimeout := time.Duration(f.config.HLSTime*3) * time.Second
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			// Read a full chunk with a timeout. If ffmpeg hangs on
-			// network I/O, we detect it here instead of blocking the
-			// entire pipeline forever.
-			errCh := make(chan error, 1)
-			go func() {
-				errCh <- readS16LEChunk(buf, int16Chunk)
-			}()
-
-			var readErr error
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(readTimeout):
-				return // ffmpeg hung — abandon stream
-			case readErr = <-errCh:
-			}
-
-			if readErr != nil {
-				return
-			}
-
-			for i, v := range int16Chunk {
-				floatChunk[i] = float32(v) / 32768.0
-			}
-
-			chunkCopy := make([]float32, len(floatChunk))
-			copy(chunkCopy, floatChunk)
-
-			select {
-			case pcmCh <- models.PCMChunk{
-				SegmentID:   segmentID,
-				Samples:     chunkCopy,
-				DurationSec: float64(f.config.HLSTime),
-			}:
-				segmentID++
-				atomic.AddInt64(&f.stats.SegmentsIngested, 1)
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	go func() { f.cmd.Wait() }()
-
+	go f.runLoop(loopCtx, pcmCh)
 	return pcmCh, nil
 }
 
@@ -165,14 +72,12 @@ func (f *ffmpegIngestor) Stop() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.cancel != nil {
-		f.cancel()
-		f.cancel = nil
+	f.started = false
+	if f.loopCancel != nil {
+		f.loopCancel()
+		f.loopCancel = nil
 	}
-	if f.cmd != nil && f.cmd.Process != nil {
-		f.cmd.Process.Kill()
-		f.cmd = nil
-	}
+	f.killSessionLocked()
 	return nil
 }
 
@@ -184,6 +89,174 @@ func (f *ffmpegIngestor) Stats() Stats {
 	}
 }
 
+func (f *ffmpegIngestor) runLoop(ctx context.Context, pcmCh chan models.PCMChunk) {
+	defer close(pcmCh)
+	defer atomic.StoreInt64(&f.stats.Running, 0)
+
+	backoff := 2 * time.Second
+	const maxBackoff = 60 * time.Second
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		prevSegments := atomic.LoadInt64(&f.stats.SegmentsIngested)
+		fmt.Fprintf(os.Stdout, "[I] %s ingest session_started segments=%d\n",
+			time.Now().Format("2006-01-02 15:04:05.000"), prevSegments)
+
+		sessionErr := f.runSession(ctx, pcmCh)
+		if ctx.Err() != nil {
+			return
+		}
+
+		reason := "unknown"
+		if sessionErr != nil {
+			reason = sessionErr.Error()
+		}
+		newSegments := atomic.LoadInt64(&f.stats.SegmentsIngested)
+		fmt.Fprintf(os.Stdout, "[W] %s ingest session_ended reason=%q segments=%d reconnect_in=%s\n",
+			time.Now().Format("2006-01-02 15:04:05.000"),
+			reason,
+			newSegments,
+			backoff,
+		)
+
+		f.mu.Lock()
+		f.killSessionLocked()
+		f.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		// Reset backoff if the session made progress (ingested segments),
+		// otherwise keep exponential backoff for transient failures.
+		if newSegments > prevSegments {
+			backoff = 2 * time.Second
+		} else if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+func (f *ffmpegIngestor) runSession(ctx context.Context, pcmCh chan<- models.PCMChunk) error {
+	sessionCtx, cancel := context.WithCancel(ctx)
+
+	f.mu.Lock()
+	f.cancel = cancel
+	f.cmd = f.newFFmpegCmd(sessionCtx)
+	cmd := f.cmd
+	f.mu.Unlock()
+
+	defer cancel()
+
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start ffmpeg: %w", err)
+	}
+	atomic.StoreInt64(&f.stats.Running, 1)
+
+	go logStderrIngest(stderrPipe)
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			fmt.Fprintf(os.Stdout, "[W] %s ingest-ffmpeg exited err=%v\n",
+				time.Now().Format("2006-01-02 15:04:05.000"), err)
+		}
+	}()
+
+	buf := bufio.NewReaderSize(stdout, 48000*2)
+	samplesPerChunk := 16000 * f.config.HLSTime
+	int16Chunk := make([]int16, samplesPerChunk)
+	floatChunk := make([]float32, samplesPerChunk)
+
+	readTimeout := 30 * time.Second
+	if d := time.Duration(f.config.HLSTime*10) * time.Second; d > readTimeout {
+		readTimeout = d
+	}
+
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		readErr, timedOut := readS16LEChunkWithTimeout(buf, int16Chunk, readTimeout)
+		if timedOut {
+			f.killFFmpegProcess()
+			return fmt.Errorf("stdout read timeout after %s", readTimeout)
+		}
+		if readErr != nil {
+			return fmt.Errorf("stdout read: %w", readErr)
+		}
+
+		for i, v := range int16Chunk {
+			floatChunk[i] = float32(v) / 32768.0
+		}
+
+		chunkCopy := make([]float32, len(floatChunk))
+		copy(chunkCopy, floatChunk)
+
+		select {
+		case pcmCh <- models.PCMChunk{
+			Samples:     chunkCopy,
+			DurationSec: float64(f.config.HLSTime),
+		}:
+			atomic.AddInt64(&f.stats.SegmentsIngested, 1)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (f *ffmpegIngestor) newFFmpegCmd(ctx context.Context) *exec.Cmd {
+	args := []string{
+		"-hide_banner", "-nostdin", "-nostats",
+		"-rw_timeout", "30000000", // 30s network I/O timeout (microseconds)
+		"-reconnect", "1",
+		"-reconnect_at_eof", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_delay_max", "5",
+		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+		"-i", f.config.ChannelURL,
+		"-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "s16le",
+		"pipe:1",
+	}
+	return exec.CommandContext(ctx, "ffmpeg", args...)
+}
+
+func (f *ffmpegIngestor) killFFmpegProcess() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cmd != nil && f.cmd.Process != nil {
+		f.cmd.Process.Kill()
+	}
+}
+
+func (f *ffmpegIngestor) killSessionLocked() {
+	if f.cancel != nil {
+		f.cancel()
+		f.cancel = nil
+	}
+	if f.cmd != nil && f.cmd.Process != nil {
+		f.cmd.Process.Kill()
+	}
+	f.cmd = nil
+	atomic.StoreInt64(&f.stats.Running, 0)
+}
+
 func logStderrIngest(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -193,6 +266,23 @@ func logStderrIngest(r io.Reader) {
 			fmt.Fprintf(os.Stdout, "[I] %s ingest-ffmpeg line msg=%s\n",
 				time.Now().Format("2006-01-02 15:04:05.000"), line)
 		}
+	}
+}
+
+func readS16LEChunkWithTimeout(r *bufio.Reader, buf []int16, timeout time.Duration) (error, bool) {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- readS16LEChunk(r, buf)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-errCh:
+		return err, false
+	case <-timer.C:
+		return fmt.Errorf("read timeout"), true
 	}
 }
 

@@ -3,6 +3,7 @@ package asr
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/criradio/server/internal/models"
 )
@@ -101,7 +103,10 @@ func (t *sherpaTranscriber) Transcribe(pcm []float32, segmentID int) (*models.Tr
 	args := t.buildArgs(wavPath)
 
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(t.sherpaPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, t.sherpaPath, args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
