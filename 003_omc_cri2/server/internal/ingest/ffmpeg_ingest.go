@@ -229,15 +229,13 @@ func (f *ffmpegIngestor) runSession(ctx context.Context, pcmCh chan<- models.PCM
 func (f *ffmpegIngestor) newFFmpegCmd(ctx context.Context) *exec.Cmd {
 	args := []string{
 		"-hide_banner", "-nostdin", "-nostats",
-		"-rw_timeout", "30000000", // 30s network I/O timeout (microseconds)
+		"-rw_timeout", "10000000", // 10s per-read timeout (microseconds)
 		"-reconnect", "1",
-		"-reconnect_at_eof", "1",
-		"-reconnect_streamed", "1",
 		"-reconnect_delay_max", "5",
 		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
 	}
 
-	// Custom HTTP headers to bypass geo-blocking (e.g. Referer, User-Agent).
+	// Custom HTTP headers (e.g. Referer, User-Agent).
 	if f.config.HTTPHeaders != "" {
 		args = append(args, "-headers", f.config.HTTPHeaders)
 	}
