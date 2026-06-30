@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -92,6 +94,9 @@ func (f *ffmpegIngestor) Stats() Stats {
 func (f *ffmpegIngestor) runLoop(ctx context.Context, pcmCh chan models.PCMChunk) {
 	defer close(pcmCh)
 	defer atomic.StoreInt64(&f.stats.Running, 0)
+
+	// One-time diagnostic: dump the HLS playlist to help debug geo-blocking.
+	dumpPlaylist(f.config.ChannelURL)
 
 	backoff := 2 * time.Second
 	const maxBackoff = 60 * time.Second
@@ -230,10 +235,25 @@ func (f *ffmpegIngestor) newFFmpegCmd(ctx context.Context) *exec.Cmd {
 		"-reconnect_streamed", "1",
 		"-reconnect_delay_max", "5",
 		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+	}
+
+	// Custom HTTP headers to bypass geo-blocking (e.g. Referer, User-Agent).
+	if f.config.HTTPHeaders != "" {
+		args = append(args, "-headers", f.config.HTTPHeaders)
+	}
+
+	// Extra ffmpeg arguments inserted before -i (e.g. "-timeout", "10000000").
+	args = append(args, f.config.FFmpegExtraArgs...)
+
+	args = append(args,
 		"-i", f.config.ChannelURL,
 		"-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "s16le",
 		"pipe:1",
-	}
+	)
+
+	fmt.Fprintf(os.Stdout, "[I] %s ingest-ffmpeg cmd=ffmpeg %s\n",
+		time.Now().Format("2006-01-02 15:04:05.000"), strings.Join(args, " "))
+
 	return exec.CommandContext(ctx, "ffmpeg", args...)
 }
 
@@ -299,4 +319,53 @@ func readS16LEChunk(r *bufio.Reader, buf []int16) error {
 		buf[i] = int16(uint16(lo) | uint16(hi)<<8)
 	}
 	return nil
+}
+
+// dumpPlaylist fetches the HLS playlist and logs its contents for debugging.
+// This helps diagnose geo-blocking: if the playlist contains CDN URLs that are
+// unreachable outside China, the log will show them.
+func dumpPlaylist(url string) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stdout, "[I] %s ingest-playlist error=%v\n",
+			time.Now().Format("2006-01-02 15:04:05.000"), err)
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CRI-Radio-Server/1.0)")
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stdout, "[I] %s ingest-playlist fetch_error=%v\n",
+			time.Now().Format("2006-01-02 15:04:05.000"), err)
+		return
+	}
+	defer resp.Body.Close()
+
+	fmt.Fprintf(os.Stdout, "[I] %s ingest-playlist http_status=%d content_type=%q\n",
+		time.Now().Format("2006-01-02 15:04:05.000"),
+		resp.StatusCode, resp.Header.Get("Content-Type"))
+
+	// Read up to 8KB and log it line-by-line.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if err != nil {
+		fmt.Fprintf(os.Stdout, "[I] %s ingest-playlist read_error=%v\n",
+			time.Now().Format("2006-01-02 15:04:05.000"), err)
+		return
+	}
+
+	lines := strings.Split(string(body), "\n")
+	for i, line := range lines {
+		if i >= 50 { // Limit to first 50 lines to avoid log spam.
+			fmt.Fprintf(os.Stdout, "[I] %s ingest-playlist ... truncated (%d more lines)\n",
+				time.Now().Format("2006-01-02 15:04:05.000"), len(lines)-50)
+			break
+		}
+		line = strings.TrimSpace(line)
+		if line != "" {
+			fmt.Fprintf(os.Stdout, "[I] %s ingest-playlist line[%d]=%s\n",
+				time.Now().Format("2006-01-02 15:04:05.000"), i, line)
+		}
+	}
 }

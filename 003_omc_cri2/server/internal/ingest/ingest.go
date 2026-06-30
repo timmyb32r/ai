@@ -27,8 +27,10 @@ type Stats struct {
 
 // Config holds ingest configuration.
 type Config struct {
-	ChannelURL string // HLS radio stream URL
-	OutputDir  string // root output directory
-	HLSTime    int    // seconds per HLS segment
-	HLSWindow  int    // number of segments in DVR window
+	ChannelURL      string   // HLS radio stream URL
+	OutputDir       string   // root output directory
+	HLSTime         int      // seconds per HLS segment
+	HLSWindow       int      // number of segments in DVR window
+	FFmpegExtraArgs []string // extra arguments passed to ffmpeg before -i
+	HTTPHeaders     string   // HTTP headers for ffmpeg (e.g. "Referer: ...\r\nUser-Agent: ...")
 }

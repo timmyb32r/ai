@@ -94,10 +94,12 @@ func main() {
 
 	// Ingest
 	ingestor, err := ingest.New(ingest.Config{
-		ChannelURL: cfg.ChannelURL,
-		OutputDir:  cfg.OutputDir,
-		HLSTime:    cfg.HLSTime,
-		HLSWindow:  cfg.HLSWindow,
+		ChannelURL:      cfg.ChannelURL,
+		OutputDir:       cfg.OutputDir,
+		HLSTime:         cfg.HLSTime,
+		HLSWindow:       cfg.HLSWindow,
+		HTTPHeaders:     cfg.HTTPHeaders,
+		FFmpegExtraArgs: cfg.FFmpegExtraArgs,
 	})
 	if err != nil {
 		logger.Error("main", "ingest_init_failed", "err", err)
