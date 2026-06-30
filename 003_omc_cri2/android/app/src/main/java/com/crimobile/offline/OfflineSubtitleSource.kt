@@ -23,9 +23,20 @@ class OfflineSubtitleSource(
     private val _connected = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     override val connected: StateFlow<ConnectionStatus> = _connected.asStateFlow()
 
-    /** Load all stored segments from disk. Call on main thread. */
+    /** ID of the session currently loaded (or last loaded). */
+    var lastLoadedSessionId: String? = null
+        private set
+
+    /** Load segments from the most recent session. Call on main thread. */
     fun load() {
-        val all = storageManager.loadAllSegments()
+        val latestSession = storageManager.loadAllSessions().maxByOrNull { it.createdAt }
+        val sessionId = latestSession?.let {
+            storageManager.sessionId(it.startSec, it.durationSec)
+        }
+        val all = if (sessionId != null) {
+            storageManager.loadSegmentsForSession(sessionId)
+        } else emptyList()
+        lastLoadedSessionId = sessionId
         _segments.value = all
         _connected.value = if (all.isNotEmpty()) ConnectionStatus.CONNECTED
         else ConnectionStatus.DISCONNECTED

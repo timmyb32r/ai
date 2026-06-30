@@ -51,7 +51,19 @@ data class CriViewState(
     val archiveInfo: com.crimobile.offline.ArchiveInfo? = null,  // server archive bounds
     val offlinePositionMs: Long = 0L,  // current position in offline playback (epoch ms)
     val offlineDurationMs: Long = 0L,  // total duration of offline content (ms)
-    val offlineLocalRangeSec: Pair<Double, Double>? = null  // (oldest, newest) of downloaded segments in epoch seconds
+    val offlineLocalRangeSec: Pair<Double, Double>? = null,  // (oldest, newest) of downloaded segments in epoch seconds
+    val showOfflineNavDialog: Boolean = false,
+    val offlineSessions: List<OfflineSessionInfo> = emptyList(),
+    val offlineSessionSegments: List<SubtitleSegment> = emptyList(),
+    val selectedOfflineSessionId: String? = null
+)
+
+data class OfflineSessionInfo(
+    val sessionId: String,
+    val startSec: Long,
+    val durationSec: Int,
+    val segmentCount: Int,
+    val createdAt: Long
 )
 
 sealed class CriAction {
@@ -73,6 +85,10 @@ sealed class CriAction {
     object LoadArchiveInfo : CriAction()
     object StartInitialSync : CriAction()
     object CancelDownload : CriAction()
+    object OpenOfflineNavDialog : CriAction()
+    object DismissOfflineNavDialog : CriAction()
+    data class SelectOfflineSession(val sessionId: String) : CriAction()
+    data class SelectOfflineSegment(val segmentId: Int) : CriAction()
 }
 
 class CriViewModel(application: Application) : AndroidViewModel(application) {
@@ -433,6 +449,65 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     downloadProgress = DownloadProgress(isRunning = false, error = "Cancelled")
                 )
             }
+            CriAction.OpenOfflineNavDialog -> {
+                val sessions = offlineStorageManager.loadAllSessions().map { s ->
+                    OfflineSessionInfo(
+                        sessionId = offlineStorageManager.sessionId(s.startSec, s.durationSec),
+                        startSec = s.startSec,
+                        durationSec = s.durationSec,
+                        segmentCount = s.segmentCount,
+                        createdAt = s.createdAt
+                    )
+                }.sortedByDescending { it.createdAt }
+                _state.value = _state.value.copy(
+                    showOfflineNavDialog = true,
+                    offlineSessions = sessions,
+                    offlineSessionSegments = emptyList(),
+                    selectedOfflineSessionId = null
+                )
+            }
+            CriAction.DismissOfflineNavDialog -> {
+                _state.value = _state.value.copy(showOfflineNavDialog = false)
+            }
+            is CriAction.SelectOfflineSession -> {
+                val segs = offlineStorageManager.loadSegmentsForSession(action.sessionId)
+                _state.value = _state.value.copy(
+                    selectedOfflineSessionId = action.sessionId,
+                    offlineSessionSegments = segs
+                )
+                // Rebuild player with new session's segments
+                if (segs.isNotEmpty()) {
+                    offlineStateJob?.cancel()
+                    offlinePlayer?.release()
+                    offlinePlayer = OfflineRadioPlayer(
+                        segs,
+                        offlineStorageManager,
+                        action.sessionId,
+                        getApplication()
+                    )
+                    offlinePlayer?.pause()
+                    val op = offlinePlayer!!
+                    offlineStateJob = viewModelScope.launch {
+                        op.playbackState.collect { ps ->
+                            if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
+                                _state.value = _state.value.copy(playbackState = ps)
+                            }
+                        }
+                    }
+                    // Update segments so sync loop + SubtitleList use new session
+                    _state.value = _state.value.copy(segments = segs)
+                }
+            }
+            is CriAction.SelectOfflineSegment -> {
+                val seg = _state.value.offlineSessionSegments.find { it.segment_id == action.segmentId }
+                    ?: return
+                offlinePlayer?.seekTo((seg.timeline_start_sec * 1000).toLong())
+                offlinePlayer?.resume()
+                _state.value = _state.value.copy(
+                    showOfflineNavDialog = false,
+                    error = null
+                )
+            }
         }
     }
 
@@ -479,6 +554,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     offlinePlayer = OfflineRadioPlayer(
                         storedSegments,
                         offlineStorageManager,
+                        offlineSubtitleSource.lastLoadedSessionId ?: "0_0",
                         getApplication()
                     )
                     offlinePlayer?.pause()
@@ -543,6 +619,9 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             if (result.isSuccess) {
+                // Prune old sessions before marking sync done
+                offlineStorageManager.pruneOldSessions(cfg.keepLastNSyncs)
+
                 // Mark initial sync done
                 val updatedConfig = cfg.copy(
                     lastSyncTimestamp = System.currentTimeMillis(),

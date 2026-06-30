@@ -37,7 +37,8 @@ import kotlinx.coroutines.launch
  */
 class OfflineRadioPlayer(
     segments: List<SubtitleSegment>,
-    storageManager: OfflineStorageManager,
+    private val storageManager: OfflineStorageManager,
+    private val sessionId: String,
     context: Context
 ) : RadioPlayer {
 
@@ -57,7 +58,7 @@ class OfflineRadioPlayer(
         val offsets = mutableListOf(0L)
 
         for (seg in segments) {
-            val audioFile = storageManager.getAudioFile(seg.segment_id)
+            val audioFile = storageManager.getAudioFile(sessionId, seg.segment_id)
             if (audioFile != null) {
                 available.add(seg)
                 val durMs = ((seg.timeline_end_sec - seg.timeline_start_sec) * 1000).toLong().coerceAtLeast(1)
@@ -75,7 +76,7 @@ class OfflineRadioPlayer(
         if (orderedSegments.isNotEmpty()) {
             val concat = ConcatenatingMediaSource()
             for (seg in orderedSegments) {
-                val file = storageManager.getAudioFile(seg.segment_id)!!
+                val file = storageManager.getAudioFile(sessionId, seg.segment_id)!!
                 val uri = Uri.fromFile(file)
                 val mediaSource = ProgressiveMediaSource.Factory(
                     FileDataSource.Factory()

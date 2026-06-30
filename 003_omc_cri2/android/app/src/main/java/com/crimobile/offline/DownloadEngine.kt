@@ -102,6 +102,9 @@ class DownloadEngine(
 
             Log.i(TAG, "downloadRange: ${allSegments.size} segments to download")
 
+            // Create session directory before downloading
+            val sessionId = storageManager.createSession(startSec.toLong(), (endSec - startSec).toInt())
+
             // 2. Download .ts files in parallel batches (10 concurrent)
             val totalSize = allSegments.size
             var downloadedCount = 0
@@ -116,7 +119,7 @@ class DownloadEngine(
                 }.awaitAll().forEachIndexed { i, result ->
                     if (result != null) {
                         val segment = batch[i]
-                        storageManager.saveSegment(segment, result)
+                        storageManager.saveSegment(segment, result, sessionId)
                         downloadedCount++
                     }
                 }
@@ -135,6 +138,19 @@ class DownloadEngine(
                 currentAction = "Complete: $downloadedCount segments saved",
                 isRunning = false
             ))
+
+            // Update session index with final segment count
+            val sessions = storageManager.loadAllSessions().toMutableList()
+            val startSecL = startSec.toLong()
+            val durSec = (endSec - startSec).toInt()
+            sessions.removeAll { it.startSec == startSecL && it.durationSec == durSec }
+            sessions.add(OfflineStorageManager.SessionMeta(
+                startSec = startSecL,
+                durationSec = durSec,
+                segmentCount = downloadedCount,
+                createdAt = System.currentTimeMillis()
+            ))
+            storageManager.writeSessionsIndex(sessions)
 
             Log.i(TAG, "downloadRange complete: $downloadedCount/$totalSize segments")
             Result.success(Unit)

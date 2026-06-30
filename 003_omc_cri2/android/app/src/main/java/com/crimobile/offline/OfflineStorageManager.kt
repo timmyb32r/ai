@@ -11,108 +11,244 @@ import java.io.File
 /**
  * Manages locally stored subtitle segments and audio files for offline playback.
  *
- * Directory layout:
+ * Session-based directory layout:
  *   {filesDir}/cri_offline/
- *     index.json             -- lightweight ordered index
- *     metadata/{id}.json     -- per-segment metadata (same format as server)
- *     audio/{id}.ts          -- raw .ts audio file (local copy)
+ *     sessions/
+ *       index.json                    -- atomic-written session index
+ *       {startSec}_{durationSec}/
+ *         metadata/{id}.json          -- per-segment metadata
+ *         audio/{id}.ts               -- raw .ts audio file
  */
 class OfflineStorageManager(private val context: Context) {
 
+    // Shared lock across all instances (CriViewModel + SyncWorker may coexist).
+    companion object {
+        private val lock = Any()
+        private const val TAG = "CRIRadio:offlineStore"
+        private fun zeroPad(id: Int) = id.toString().padStart(9, '0')
+    }
+
     private val rootDir: File = File(context.filesDir, "cri_offline")
-    private val metaDir: File = File(rootDir, "metadata")
-    private val audioDir: File = File(rootDir, "audio")
-    private val indexFile: File = File(rootDir, "index.json")
-    private val lock = Any()
+    private val sessionsDir: File = File(rootDir, "sessions")
+    private val sessionsIndexFile: File = File(sessionsDir, "index.json")
 
     init {
-        metaDir.mkdirs()
-        audioDir.mkdirs()
+        // Clean break: delete old flat directories if they still exist
+        val oldMeta = File(rootDir, "metadata")
+        val oldAudio = File(rootDir, "audio")
+        val oldIndex = File(rootDir, "index.json")
+        if (oldMeta.exists() || oldAudio.exists()) {
+            Log.i(TAG, "Deleting old flat storage structure")
+            rootDir.deleteRecursively()
+        }
+        oldIndex.delete()  // safety: remove stale root-level index
+        sessionsDir.mkdirs()
+    }
+
+    // ── Session metadata ────────────────────────────────────────────────
+
+    data class SessionMeta(
+        val startSec: Long,
+        val durationSec: Int,
+        val segmentCount: Int,
+        val createdAt: Long
+    )
+
+    fun sessionId(startSec: Long, durationSec: Int): String = "${startSec}_${durationSec}"
+
+    fun sessionDir(sessionId: String): File = File(sessionsDir, sessionId)
+    fun sessionMetaDir(sessionId: String): File = File(sessionDir(sessionId), "metadata")
+    fun sessionAudioDir(sessionId: String): File = File(sessionDir(sessionId), "audio")
+
+    fun createSession(startSec: Long, durationSec: Int): String {
+        val sid = sessionId(startSec, durationSec)
+        synchronized(lock) {
+            val d = sessionDir(sid)
+            if (!d.exists()) {
+                sessionMetaDir(sid).mkdirs()
+                sessionAudioDir(sid).mkdirs()
+            }
+        }
+        return sid
     }
 
     // ── Write ──────────────────────────────────────────────────────────
 
-    /** Persist segment metadata and audio bytes. */
-    fun saveSegment(segment: SubtitleSegment, tsBytes: ByteArray) {
+    fun saveSegment(segment: SubtitleSegment, tsBytes: ByteArray, sessionId: String) {
         synchronized(lock) {
             val id = segment.segment_id
-            // Metadata
             val metaJson = segmentToJson(segment)
-            File(metaDir, fileName(id, "json")).writeText(metaJson)
-            // Audio
-            File(audioDir, fileName(id, "ts")).writeBytes(tsBytes)
-            // Update index in-place
-            appendToIndex(id, segment.timeline_start_sec, segment.timeline_end_sec)
+            File(sessionMetaDir(sessionId), fileName(id, "json")).writeText(metaJson)
+            File(sessionAudioDir(sessionId), fileName(id, "ts")).writeBytes(tsBytes)
         }
     }
 
     // ── Read ───────────────────────────────────────────────────────────
 
-    fun loadSegment(segmentId: Int): SubtitleSegment? {
+    fun loadSegment(sessionId: String, segmentId: Int): SubtitleSegment? {
         synchronized(lock) {
-            val file = File(metaDir, fileName(segmentId, "json"))
+            val file = File(sessionMetaDir(sessionId), fileName(segmentId, "json"))
             if (!file.exists()) return null
             return parseSegment(file.readText())
         }
     }
 
-    fun loadAllSegments(): List<SubtitleSegment> {
+    fun loadSegmentsForSession(sessionId: String): List<SubtitleSegment> {
         synchronized(lock) {
-            val index = readIndex()
-            return index.mapNotNull { ref ->
-                val file = File(metaDir, fileName(ref.id, "json"))
-                if (file.exists()) parseSegment(file.readText()) else null
+            val metaDir = sessionMetaDir(sessionId)
+            if (!metaDir.exists()) return emptyList()
+            return metaDir.listFiles()
+                ?.mapNotNull { parseSegment(it.readText()) }
+                ?.sortedBy { it.segment_id }
+                ?: emptyList()
+        }
+    }
+
+    fun getAudioFile(sessionId: String, segmentId: Int): File? {
+        val file = File(sessionAudioDir(sessionId), fileName(segmentId, "ts"))
+        return if (file.exists() && file.length() > 0) file else null
+    }
+
+    fun hasSegment(sessionId: String, segmentId: Int): Boolean {
+        synchronized(lock) {
+            return File(sessionMetaDir(sessionId), fileName(segmentId, "json")).exists() &&
+                   getAudioFile(sessionId, segmentId) != null
+        }
+    }
+
+    fun countSegmentsInSession(sessionId: String): Int {
+        synchronized(lock) {
+            val d = sessionMetaDir(sessionId)
+            return if (d.exists()) d.listFiles()?.size ?: 0 else 0
+        }
+    }
+
+    fun totalSegmentCount(): Int = loadAllSessions().sumOf { it.segmentCount }
+
+    /**
+     * Returns (oldest_start_sec, newest_end_sec) across all stored sessions.
+     */
+    fun computeLocalRange(): Pair<Double, Double>? {
+        synchronized(lock) {
+            val sessions = loadAllSessions()
+            if (sessions.isEmpty()) return null
+            var minStart = Double.MAX_VALUE
+            var maxEnd = Double.MIN_VALUE
+            for (s in sessions) {
+                // Load segments for each session to find the actual timeline bounds
+                val segs = loadSegmentsForSession(sessionId(s.startSec, s.durationSec))
+                if (segs.isNotEmpty()) {
+                    minStart = minOf(minStart, segs.first().timeline_start_sec)
+                    maxEnd = maxOf(maxEnd, segs.last().timeline_end_sec)
+                }
+            }
+            return if (minStart < Double.MAX_VALUE) minStart to maxEnd else null
+        }
+    }
+
+    // ── Session index ──────────────────────────────────────────────────
+
+    fun loadAllSessions(): List<SessionMeta> {
+        synchronized(lock) {
+            if (!sessionsIndexFile.exists()) return emptyList()
+            return try {
+                parseSessionsIndex(sessionsIndexFile.readText())
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to read sessions index, rebuilding: ${e.message}")
+                rebuildSessionsIndex()
             }
         }
     }
 
-    fun hasSegment(segmentId: Int): Boolean {
+    fun writeSessionsIndex(sessions: List<SessionMeta>) {
         synchronized(lock) {
-            return File(metaDir, fileName(segmentId, "json")).exists() &&
-                   File(audioDir, fileName(segmentId, "ts")).exists()
+            val arr = JSONArray()
+            sessions.forEach { s ->
+                arr.put(JSONObject().apply {
+                    put("start_sec", s.startSec)
+                    put("duration_sec", s.durationSec)
+                    put("segment_count", s.segmentCount)
+                    put("created_at", s.createdAt)
+                })
+            }
+            // Atomic write: .tmp → rename
+            val tmpFile = File(sessionsDir, ".index.json.tmp")
+            tmpFile.writeText(arr.toString(2))
+            if (!tmpFile.renameTo(sessionsIndexFile)) {
+                // Fallback: write directly if rename fails (cross-filesystem edge case)
+                sessionsIndexFile.writeText(arr.toString(2))
+                tmpFile.delete()
+            }
         }
     }
 
-    fun getAudioFile(segmentId: Int): File? {
-        val file = File(audioDir, fileName(segmentId, "ts"))
-        return if (file.exists() && file.length() > 0) file else null
-    }
-
-    fun countSegments(): Int {
+    fun rebuildSessionsIndex(): List<SessionMeta> {
         synchronized(lock) {
-            return readIndex().size
+            val result = mutableListOf<SessionMeta>()
+            sessionsDir.listFiles()?.forEach { sessionDir ->
+                if (!sessionDir.isDirectory || sessionDir.name.startsWith(".")) return@forEach
+                val metaDir = File(sessionDir, "metadata")
+                val count = if (metaDir.exists()) metaDir.listFiles()?.size ?: 0 else 0
+                if (count > 0) {
+                    // Parse sessionId: {startSec}_{durationSec}
+                    val parts = sessionDir.name.split("_")
+                    if (parts.size >= 2) {
+                        val startSec = parts[0].toLongOrNull() ?: return@forEach
+                        val durationSec = parts[1].toIntOrNull() ?: return@forEach
+                        val createdAt = sessionDir.lastModified()
+                        result.add(SessionMeta(startSec, durationSec, count, createdAt))
+                    }
+                }
+            }
+            result.sortBy { it.createdAt }
+            writeSessionsIndex(result)
+            return result
         }
     }
 
-    /**
-     * Returns (oldest_start_sec, newest_end_sec) of locally stored segments
-     * or null if storage is empty.
-     */
-    fun computeLocalRange(): Pair<Double, Double>? {
+    // ── Delete / Prune ─────────────────────────────────────────────────
+
+    fun deleteSession(sessionId: String) {
         synchronized(lock) {
-            val index = readIndex()
-            if (index.isEmpty()) return null
-            val first = index.first()
-            val last = index.last()
-            return first.startSec to last.endSec
+            val d = sessionDir(sessionId)
+            if (d.exists()) {
+                d.deleteRecursively()
+                Log.i(TAG, "Deleted session: $sessionId")
+            }
+            // Remove from index
+            val sessions = loadAllSessions().filter {
+                sessionId(it.startSec, it.durationSec) != sessionId
+            }
+            writeSessionsIndex(sessions)
         }
     }
 
-    // ── Delete ─────────────────────────────────────────────────────────
-
-    fun deleteSegment(segmentId: Int) {
+    fun pruneOldSessions(keepLastN: Int) {
+        val n = keepLastN.coerceAtLeast(1)
         synchronized(lock) {
-            File(metaDir, fileName(segmentId, "json")).delete()
-            File(audioDir, fileName(segmentId, "ts")).delete()
-            removeFromIndex(segmentId)
+            val sessions = loadAllSessions()
+            if (sessions.size <= n) return
+            val toDelete = sessions.sortedBy { it.createdAt }.dropLast(n)
+            for (s in toDelete) {
+                val sid = sessionId(s.startSec, s.durationSec)
+                val d = sessionDir(sid)
+                if (d.exists()) {
+                    d.deleteRecursively()
+                    Log.i(TAG, "Pruned old session: $sid")
+                }
+            }
+            val remaining = sessions.filter { s ->
+                val sid = sessionId(s.startSec, s.durationSec)
+                sessionDir(sid).exists()
+            }
+            writeSessionsIndex(remaining)
         }
     }
 
     fun deleteAll() {
         synchronized(lock) {
             rootDir.deleteRecursively()
-            metaDir.mkdirs()
-            audioDir.mkdirs()
+            sessionsDir.mkdirs()
         }
     }
 
@@ -126,70 +262,17 @@ class OfflineStorageManager(private val context: Context) {
 
     private fun fileName(id: Int, ext: String) = "${zeroPad(id)}.$ext"
 
-    private data class IndexEntry(
-        val id: Int,
-        val startSec: Double,
-        val endSec: Double
-    )
-
-    private fun readIndex(): List<IndexEntry> {
-        if (!indexFile.exists()) return emptyList()
-        return try {
-            val arr = JSONArray(indexFile.readText())
-            (0 until arr.length()).map { i ->
-                val obj = arr.getJSONObject(i)
-                IndexEntry(
-                    id = obj.getInt("id"),
-                    startSec = obj.getDouble("start_sec"),
-                    endSec = obj.getDouble("end_sec")
-                )
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to read index, rebuilding: ${e.message}")
-            rebuildIndex()
+    private fun parseSessionsIndex(json: String): List<SessionMeta> {
+        val arr = JSONArray(json)
+        return (0 until arr.length()).map { i ->
+            val obj = arr.getJSONObject(i)
+            SessionMeta(
+                startSec = obj.optLong("start_sec", 0L),
+                durationSec = obj.optInt("duration_sec", 0),
+                segmentCount = obj.optInt("segment_count", 0),
+                createdAt = obj.optLong("created_at", 0L)
+            )
         }
-    }
-
-    private fun writeIndex(entries: List<IndexEntry>) {
-        val arr = JSONArray()
-        entries.forEach { entry ->
-            arr.put(JSONObject().apply {
-                put("id", entry.id)
-                put("start_sec", entry.startSec)
-                put("end_sec", entry.endSec)
-            })
-        }
-        indexFile.writeText(arr.toString(2))
-    }
-
-    private fun appendToIndex(id: Int, startSec: Double, endSec: Double) {
-        val entries = readIndex().toMutableList()
-        val newEntry = IndexEntry(id, startSec, endSec)
-        val existingIdx = entries.indexOfFirst { it.id == id }
-        if (existingIdx >= 0) {
-            entries[existingIdx] = newEntry
-        } else {
-            entries.add(newEntry)
-        }
-        entries.sortBy { it.id }
-        writeIndex(entries)
-    }
-
-    private fun removeFromIndex(id: Int) {
-        writeIndex(readIndex().filter { it.id != id })
-    }
-
-    private fun rebuildIndex(): List<IndexEntry> {
-        val entries = metaDir.listFiles()
-            ?.mapNotNull { file ->
-                val id = parseId(file.name) ?: return@mapNotNull null
-                val seg = parseSegment(file.readText()) ?: return@mapNotNull null
-                IndexEntry(id, seg.timeline_start_sec, seg.timeline_end_sec)
-            }
-            ?.sortedBy { it.id }
-            ?: emptyList()
-        writeIndex(entries)
-        return entries
     }
 
     private fun segmentToJson(seg: SubtitleSegment): String {
@@ -246,17 +329,6 @@ class OfflineStorageManager(private val context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to parse segment JSON: ${e.message}")
             null
-        }
-    }
-
-    companion object {
-        private const val TAG = "CRIRadio:offlineStore"
-
-        private fun zeroPad(id: Int) = id.toString().padStart(9, '0')
-
-        private fun parseId(name: String): Int? {
-            val digits = name.takeWhile { it in '0'..'9' }
-            return digits.toIntOrNull()
         }
     }
 }

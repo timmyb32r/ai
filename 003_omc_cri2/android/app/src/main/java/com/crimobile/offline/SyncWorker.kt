@@ -78,7 +78,8 @@ class SyncWorker(
                     lastSyncTimestamp = System.currentTimeMillis(),
                     initialSyncDone = true
                 ))
-                Log.i(TAG, "Sync complete — ${storageManager.countSegments()} segments stored")
+                storageManager.pruneOldSessions(config.keepLastNSyncs)
+                Log.i(TAG, "Sync complete — ${storageManager.totalSegmentCount()} segments stored")
                 Result.success()
             } else {
                 Log.w(TAG, "Sync failed: ${result.exceptionOrNull()?.message}")

@@ -7,8 +7,9 @@ data class SyncConfig(
     val enabled: Boolean = false,
     val syncHourOfDay: Int = 0,       // 0–23, default midnight
     val syncMinute: Int = 0,          // 0–59
-    val syncDurationSec: Int = 10800,  // default 2.5 hours (10800 seconds)
+    val syncDurationSec: Int = 10800,  // default 3 hours (10800 seconds)
     val wifiOnly: Boolean = true,
+    val keepLastNSyncs: Int = 2,      // number of sync sessions to retain
     val lastSyncTimestamp: Long = 0L, // epoch millis of last successful sync
     val initialSyncDone: Boolean = false
 ) {
@@ -21,6 +22,7 @@ data class SyncConfig(
             syncMinute = prefs.getInt("${PREF_PREFIX}sync_minute", 0),
             syncDurationSec = prefs.getInt("${PREF_PREFIX}sync_duration_sec", 10800),
             wifiOnly = prefs.getBoolean("${PREF_PREFIX}wifi_only", true),
+            keepLastNSyncs = prefs.getInt("${PREF_PREFIX}keep_last_n_syncs", 2),
             lastSyncTimestamp = prefs.getLong("${PREF_PREFIX}last_sync_ts", 0L),
             initialSyncDone = prefs.getBoolean("${PREF_PREFIX}initial_sync_done", false)
         )
@@ -32,6 +34,7 @@ data class SyncConfig(
                 .putInt("${PREF_PREFIX}sync_minute", config.syncMinute)
                 .putInt("${PREF_PREFIX}sync_duration_sec", config.syncDurationSec)
                 .putBoolean("${PREF_PREFIX}wifi_only", config.wifiOnly)
+                .putInt("${PREF_PREFIX}keep_last_n_syncs", config.keepLastNSyncs)
                 .putLong("${PREF_PREFIX}last_sync_ts", config.lastSyncTimestamp)
                 .putBoolean("${PREF_PREFIX}initial_sync_done", config.initialSyncDone)
                 .apply()

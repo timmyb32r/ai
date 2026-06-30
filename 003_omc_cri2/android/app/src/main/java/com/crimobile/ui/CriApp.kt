@@ -51,6 +51,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.channels.Channel
@@ -262,6 +264,7 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                                     downloadProgress = state.downloadProgress,
                                     offlineLocalRangeSec = state.offlineLocalRangeSec,
                                     onOpenSync = { showSyncSettings = true },
+                                    onOpenNav = { onAction(CriAction.OpenOfflineNavDialog) },
                                     onUpdateConfig = { onAction(CriAction.UpdateSyncConfig(it)) },
                                     onSaveNow = { onAction(CriAction.StartInitialSync) },
                                     onCancelDownload = { onAction(CriAction.CancelDownload) },
@@ -286,6 +289,18 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                     }
                 }
             }
+        }
+
+        // Offline navigation dialog
+        if (state.showOfflineNavDialog) {
+            OfflineNavDialog(
+                sessions = state.offlineSessions,
+                segments = state.offlineSessionSegments,
+                selectedSessionId = state.selectedOfflineSessionId,
+                onSelectSession = { onAction(CriAction.SelectOfflineSession(it)) },
+                onSelectSegment = { onAction(CriAction.SelectOfflineSegment(it)) },
+                onDismiss = { onAction(CriAction.DismissOfflineNavDialog) }
+            )
         }
 
         // Sync settings dialog (opened from offline content bar)
@@ -1291,6 +1306,45 @@ private fun OfflineSetupScreen(
             }
         }
 
+        // Keep last N syncs
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("Keep last N syncs", color = TextSecondary, fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        var editKeepN by remember {
+                            mutableStateOf(syncConfig.keepLastNSyncs.toString())
+                        }
+                        OutlinedTextField(
+                            value = editKeepN,
+                            onValueChange = { v ->
+                                editKeepN = v.filter { it.isDigit() }
+                                val n = editKeepN.toIntOrNull()
+                                if (n != null && n >= 1) {
+                                    onUpdateConfig(syncConfig.copy(keepLastNSyncs = n))
+                                }
+                            },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Amber,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            ),
+                            modifier = Modifier.width(56.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("sessions", color = TextSecondary, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
         // Validation
         if (archiveInfo != null && archiveInfo.oldestStartSec > 0.0) {
             item {
@@ -1417,6 +1471,7 @@ private fun OfflineContentBar(
     downloadProgress: DownloadProgress?,
     offlineLocalRangeSec: Pair<Double, Double>?,
     onOpenSync: () -> Unit,
+    onOpenNav: () -> Unit,
     onUpdateConfig: (SyncConfig) -> Unit,
     onSaveNow: () -> Unit,
     onCancelDownload: () -> Unit,
@@ -1432,8 +1487,10 @@ private fun OfflineContentBar(
                 .padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Segment count + date range
-            Column {
+            // Segment count + date range (clickable → opens nav dialog)
+            Column(
+                modifier = Modifier.clickable { onOpenNav() }
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
@@ -1743,6 +1800,35 @@ private fun SyncSettingsDialog(
                     )
                 }
 
+                // ── Keep last N syncs ──
+                var editKeepN by remember {
+                    mutableStateOf(syncConfig.keepLastNSyncs.toString())
+                }
+                Text("Keep last N syncs", color = TextSecondary, fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = editKeepN,
+                        onValueChange = { v ->
+                            editKeepN = v.filter { it.isDigit() }
+                            val n = editKeepN.toIntOrNull()
+                            if (n != null && n >= 1) {
+                                onUpdateConfig(syncConfig.copy(keepLastNSyncs = n))
+                            }
+                        },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Amber,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier.width(56.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("sessions", color = TextSecondary, fontSize = 12.sp)
+                }
+
                 // ── Validation ──
                 if (archiveInfo != null && archiveInfo.oldestStartSec > 0.0) {
                     val archiveHours = (archiveInfo.newestEndSec - archiveInfo.oldestStartSec) / 3600.0
@@ -1922,4 +2008,223 @@ private fun findToneVowel(s: String): Int {
     val vowels = "aeiouü"
     for (i in s.lastIndex downTo 0) { if (s[i] in vowels) return i }
     return -1
+}
+
+// ── Offline Navigation Dialog ─────────────────────────────────────────
+
+@Composable
+private fun OfflineNavDialog(
+    sessions: List<com.crimobile.viewmodel.OfflineSessionInfo>,
+    segments: List<SubtitleSegment>,
+    selectedSessionId: String?,
+    onSelectSession: (String) -> Unit,
+    onSelectSegment: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sessionsState = rememberLazyListState()
+    val segmentsState = rememberLazyListState()
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = CardBg
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // ── Header ──
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Offline Navigation",
+                        color = TextPrimary,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, "Close", tint = TextSecondary)
+                    }
+                }
+                HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f))
+
+                // ── Two-panel body ──
+                Row(modifier = Modifier.weight(1f)) {
+                    // Left panel: sessions
+                    Box(
+                        modifier = Modifier
+                            .weight(0.4f)
+                            .fillMaxHeight()
+                    ) {
+                        LazyColumn(
+                            state = sessionsState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(8.dp)
+                        ) {
+                        items(sessions, key = { it.sessionId }) { session ->
+                            val isSelected = session.sessionId == selectedSessionId
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .clickable { onSelectSession(session.sessionId) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) Amber.copy(alpha = 0.15f) else Color.Transparent
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    val dateStr = SimpleDateFormat(
+                                        "yyyy.MMM.dd HH:mm",
+                                        Locale.ENGLISH
+                                    ).format(Date(session.startSec * 1000))
+                                    Text(
+                                        dateStr,
+                                        color = if (isSelected) Amber else TextPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                    Text(
+                                        formatDuration(session.durationSec),
+                                        color = TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                    Text(
+                                        "${session.segmentCount} segments",
+                                        color = TextSecondary.copy(alpha = 0.6f),
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+                        }
+                        // Amber scroll thumb — fixed size, moves with scroll
+                        val totalItems = sessionsState.layoutInfo.totalItemsCount
+                        if (totalItems > 0) {
+                            val density = LocalDensity.current
+                            val viewportH = sessionsState.layoutInfo.viewportSize.height
+                            val firstVisible = sessionsState.firstVisibleItemIndex
+                            val visibleCount = sessionsState.layoutInfo.visibleItemsInfo.size
+                            val thumbH = with(density) { 40.dp.toPx() }
+                            val maxScroll = (totalItems - visibleCount).coerceAtLeast(1)
+                            val fraction = (firstVisible.toFloat() / maxScroll).coerceIn(0f, 1f)
+                            val thumbY = fraction * (viewportH - thumbH)
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(end = 4.dp)
+                                    .offset(y = with(density) { thumbY.toDp() })
+                                    .width(3.dp)
+                                    .height(with(density) { 40.dp })
+                                    .clip(RoundedCornerShape(1.5.dp))
+                                    .background(Amber.copy(alpha = 0.5f))
+                            )
+                        }
+                    }
+
+                    // Vertical divider
+                    VerticalDivider(
+                        color = TextSecondary.copy(alpha = 0.15f),
+                        modifier = Modifier.fillMaxHeight()
+                    )
+
+                    // Right panel: segments
+                    Box(
+                        modifier = Modifier
+                            .weight(0.6f)
+                            .fillMaxHeight()
+                    ) {
+                        LazyColumn(
+                            state = segmentsState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(8.dp)
+                        ) {
+                        if (segments.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "Select a session",
+                                        color = TextSecondary,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            }
+                        }
+                        items(segments, key = { it.segment_id }) { seg ->
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 1.dp)
+                                    .clickable { onSelectSegment(seg.segment_id) },
+                                shape = RoundedCornerShape(6.dp),
+                                color = Surface.copy(alpha = 0.5f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.PlayArrow,
+                                        "Play",
+                                        tint = Amber.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        "#${seg.segment_id} ${seg.text_zh.take(50)}",
+                                        color = TextPrimary,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+                        }
+                        }
+                        // Amber scroll thumb — fixed size, moves with scroll
+                        val segTotal = segmentsState.layoutInfo.totalItemsCount
+                        if (segTotal > 0) {
+                            val density = LocalDensity.current
+                            val viewportH = segmentsState.layoutInfo.viewportSize.height
+                            val segFirst = segmentsState.firstVisibleItemIndex
+                            val visibleCount = segmentsState.layoutInfo.visibleItemsInfo.size
+                            val thumbH = with(density) { 40.dp.toPx() }
+                            val maxScroll = (segTotal - visibleCount).coerceAtLeast(1)
+                            val segFraction = (segFirst.toFloat() / maxScroll).coerceIn(0f, 1f)
+                            val segThumbY = segFraction * (viewportH - thumbH)
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(end = 4.dp)
+                                    .offset(y = with(density) { segThumbY.toDp() })
+                                    .width(3.dp)
+                                    .height(with(density) { 40.dp })
+                                    .clip(RoundedCornerShape(1.5.dp))
+                                    .background(Amber.copy(alpha = 0.5f))
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatDuration(durationSec: Int): String {
+    val h = durationSec / 3600
+    val m = (durationSec % 3600) / 60
+    return if (h > 0) "[${h}h:${m.toString().padStart(2, '0')}m]"
+    else "[${m}m]"
 }
