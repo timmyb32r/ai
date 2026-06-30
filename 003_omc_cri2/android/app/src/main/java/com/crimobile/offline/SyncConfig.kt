@@ -7,7 +7,7 @@ data class SyncConfig(
     val enabled: Boolean = false,
     val syncHourOfDay: Int = 0,       // 0–23, default midnight
     val syncMinute: Int = 0,          // 0–59
-    val syncDurationSec: Int = 9000,  // default 2.5 hours (9000 seconds)
+    val syncDurationSec: Int = 10800,  // default 2.5 hours (10800 seconds)
     val wifiOnly: Boolean = true,
     val lastSyncTimestamp: Long = 0L, // epoch millis of last successful sync
     val initialSyncDone: Boolean = false
@@ -19,7 +19,7 @@ data class SyncConfig(
             enabled = prefs.getBoolean("${PREF_PREFIX}enabled", false),
             syncHourOfDay = prefs.getInt("${PREF_PREFIX}sync_hour", 0),
             syncMinute = prefs.getInt("${PREF_PREFIX}sync_minute", 0),
-            syncDurationSec = prefs.getInt("${PREF_PREFIX}sync_duration_sec", 9000),
+            syncDurationSec = prefs.getInt("${PREF_PREFIX}sync_duration_sec", 10800),
             wifiOnly = prefs.getBoolean("${PREF_PREFIX}wifi_only", true),
             lastSyncTimestamp = prefs.getLong("${PREF_PREFIX}last_sync_ts", 0L),
             initialSyncDone = prefs.getBoolean("${PREF_PREFIX}initial_sync_done", false)

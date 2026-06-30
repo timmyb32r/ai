@@ -171,22 +171,23 @@ class OfflineRadioPlayer(
         Log.d(TAG, "seekTo $timelineMs")
         val idx = findSegmentForTimelineMs(timelineMs)
         if (idx < 0) {
-            // Before all segments → seek to start
-            player.seekTo(0)
+            // Before all segments → seek to start of first window
+            player.seekTo(0, 0L)
             return
         }
         val seg = orderedSegments[idx]
         val offsetInSeg = (timelineMs - (seg.timeline_start_sec * 1000).toLong())
             .coerceIn(0, ((seg.timeline_end_sec - seg.timeline_start_sec) * 1000).toLong())
-        val absolutePosMs = segmentOffsetsMs[idx] + offsetInSeg
-        player.seekTo(absolutePosMs.coerceAtLeast(0))
+        // Decompose absolute position into (windowIndex, positionInWindow)
+        val posInWindow = offsetInSeg.coerceAtLeast(0)
+        player.seekTo(idx, posInWindow)
     }
 
     override fun seekToLiveEdge() {
         Log.i(TAG, "seekToLiveEdge → last segment")
         if (orderedSegments.isNotEmpty()) {
-            val lastSeg = orderedSegments.last()
-            seekTo((lastSeg.timeline_start_sec * 1000).toLong())
+            val lastIdx = orderedSegments.size - 1
+            player.seekTo(lastIdx, 0L)
         }
     }
 
@@ -202,14 +203,21 @@ class OfflineRadioPlayer(
         if (builtCount == 0) return
         if (player.playbackState != Player.STATE_READY && player.playbackState != Player.STATE_BUFFERING) return
 
-        val pos = player.currentPosition  // ms from start of concatenated source
-        val idx = findSegmentForPosition(pos)
+        // ExoPlayer.currentPosition is per-window in a ConcatenatingMediaSource.
+        // Convert to absolute position: prefix sum for windows before current + position in current.
+        val windowIdx = player.currentMediaItemIndex
+        val totalPos = if (windowIdx in 0 until orderedSegments.size) {
+            segmentOffsetsMs[windowIdx] + player.currentPosition
+        } else {
+            player.currentPosition
+        }
+        val idx = findSegmentForPosition(totalPos)
         if (idx < 0) {
             _currentTimelineMs.value = 0L
             return
         }
         val seg = orderedSegments[idx]
-        val offsetInSeg = pos - segmentOffsetsMs[idx]
+        val offsetInSeg = totalPos - segmentOffsetsMs[idx]
         _currentTimelineMs.value = (seg.timeline_start_sec * 1000 + offsetInSeg).toLong().coerceAtLeast(0)
     }
 

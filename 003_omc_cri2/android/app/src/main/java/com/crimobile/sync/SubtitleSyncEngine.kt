@@ -47,7 +47,12 @@ class SubtitleSyncEngine(
             val wordStartMs = (word.start_sec * 1000).toLong()
             val wordEndMs = (word.end_sec * 1000).toLong()
             when {
-                timelineMs < wordStartMs -> hi = mid - 1
+                timelineMs < wordStartMs -> {
+                    // Before this word — remember it as the next upcoming word
+                    // in case the timeline is between the segment start and the first word.
+                    activeWord = word
+                    hi = mid - 1
+                }
                 timelineMs >= wordEndMs -> {
                     activeWord = word
                     lo = mid + 1

@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.FlowRow
@@ -219,7 +220,11 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                 }
             },
             bottomBar = {
-                BottomControl(state.playbackState,
+                BottomControl(
+                    playbackState = state.playbackState,
+                    playbackMode = state.playbackMode,
+                    offlinePositionMs = state.offlinePositionMs,
+                    offlineDurationMs = state.offlineDurationMs,
                     onPlay = { onAction(CriAction.Play(ServerConfig.defaultUrl)) },
                     onPause = { onAction(CriAction.Pause) },
                     onResume = { onAction(CriAction.Resume) },
@@ -255,6 +260,7 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                                     syncConfig = state.syncConfig,
                                     archiveInfo = state.archiveInfo,
                                     downloadProgress = state.downloadProgress,
+                                    offlineLocalRangeSec = state.offlineLocalRangeSec,
                                     onOpenSync = { showSyncSettings = true },
                                     onUpdateConfig = { onAction(CriAction.UpdateSyncConfig(it)) },
                                     onSaveNow = { onAction(CriAction.StartInitialSync) },
@@ -313,7 +319,10 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
 
 @Composable
 private fun BottomControl(
-    state: PlaybackState,
+    playbackState: PlaybackState,
+    playbackMode: PlaybackMode,
+    offlinePositionMs: Long,
+    offlineDurationMs: Long,
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -325,7 +334,7 @@ private fun BottomControl(
             contentAlignment = Alignment.Center
         ) {
             // Play / Pause — always perfectly centered
-            PlayPauseButton(state, onPlay, onPause, onResume)
+            PlayPauseButton(playbackState, onPlay, onPause, onResume)
             // Recenter — equidistant: d(play.right → recenter.left) = d(recenter.right → edge)
             val d = maxWidth / 4 - 48.dp
             RecenterButton(
@@ -334,8 +343,63 @@ private fun BottomControl(
                     .align(Alignment.CenterStart)
                     .offset(x = maxWidth / 2 + 40.dp + d)
             )
+            // Offline progress bar — above the buttons
+            if (playbackMode == PlaybackMode.OFFLINE_SAVED && offlineDurationMs > 0L) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    val progress = (offlinePositionMs.toFloat() / offlineDurationMs)
+                        .coerceIn(0f, 1f)
+                    val posSec = offlinePositionMs / 1000
+                    val durSec = offlineDurationMs / 1000
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            formatHhMmSs(posSec),
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            modifier = Modifier.width(52.dp),
+                            textAlign = TextAlign.Center
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(3.dp),
+                            color = Color.Transparent,
+                            border = BorderStroke(0.5.dp, Amber.copy(alpha = 0.2f)),
+                            modifier = Modifier.weight(1f).height(8.dp).padding(vertical = 2.dp)
+                        ) {
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.fillMaxSize().height(4.dp),
+                                color = Amber,
+                                trackColor = Surface
+                            )
+                        }
+                        Text(
+                            formatHhMmSs(durSec),
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            modifier = Modifier.width(52.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
         }
     }
+}
+
+private fun formatHhMmSs(totalSec: Long): String {
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val s = totalSec % 60
+    return "%02d:%02d:%02d".format(h, m, s)
 }
 
 @Composable
@@ -1022,11 +1086,8 @@ private fun OfflineSetupScreen(
     var editMinute by remember { mutableStateOf(syncConfig.syncMinute) }
     var editEnabled by remember { mutableStateOf(syncConfig.enabled) }
     var editWifiOnly by remember { mutableStateOf(syncConfig.wifiOnly) }
-    var editDurationH by remember { mutableStateOf(syncConfig.syncDurationSec / 3600.0) }
-    var editDurationStr by remember {
-        val h = syncConfig.syncDurationSec / 3600.0
-        mutableStateOf(if (h == h.toInt().toDouble()) h.toInt().toString() else "%.1f".format(h))
-    }
+    val editDurationSec = syncConfig.syncDurationSec
+    val editDurationH = editDurationSec / 3600.0
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -1144,7 +1205,7 @@ private fun OfflineSetupScreen(
             }
         }
 
-        // Duration
+        // Duration (HH:MM)
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = CardBg),
@@ -1154,51 +1215,51 @@ private fun OfflineSetupScreen(
                     Text("Download duration", color = TextSecondary, fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listOf(1.0 to "1h", 2.0 to "2h", 2.5 to "2.5h", 3.0 to "3h").forEach { (hours, label) ->
-                            val isSelected = kotlin.math.abs(editDurationH - hours) < 0.01
-                            FilledTonalButton(
-                                onClick = {
-                                    editDurationH = hours
-                                    editDurationStr = label.dropLast(1)
-                                    onUpdateConfig(syncConfig.copy(syncDurationSec = (hours * 3600).toInt()))
-                                },
-                                modifier = Modifier.height(32.dp),
-                                colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = if (isSelected) Amber.copy(alpha = 0.2f) else Surface
-                                )
-                            ) {
-                                Text(label, fontSize = 12.sp,
-                                    color = if (isSelected) Amber else TextSecondary)
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val editH = editDurationSec / 3600
+                        val editM = (editDurationSec % 3600) / 60
                         OutlinedTextField(
-                            value = editDurationStr,
+                            value = editH.toString().padStart(2, '0'),
                             onValueChange = { v ->
-                                editDurationStr = v
-                                val h = v.toDoubleOrNull()
-                                if (h != null && h >= 0.1 && h <= 24) {
-                                    editDurationH = h
-                                    onUpdateConfig(syncConfig.copy(syncDurationSec = (h * 3600).toInt()))
+                                val n = v.filter { it.isDigit() }.toIntOrNull()
+                                if (n != null && n in 0..99) {
+                                    val newSec = n * 3600 + editM * 60
+                                    onUpdateConfig(syncConfig.copy(syncDurationSec = newSec.coerceIn(60, 86400)))
                                 }
                             },
                             singleLine = true,
                             textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                color = Amber, fontSize = 14.sp, textAlign = TextAlign.Center
+                                color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
                             ),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Amber,
                                 unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
                             ),
-                            modifier = Modifier.width(72.dp),
-                            label = { Text("Custom", color = TextSecondary, fontSize = 10.sp) }
+                            modifier = Modifier.width(56.dp)
                         )
-                        Spacer(Modifier.width(4.dp))
-                        Text("hours", color = TextSecondary, fontSize = 12.sp)
+                        Text("h", color = TextSecondary, fontSize = 14.sp)
+                        OutlinedTextField(
+                            value = editM.toString().padStart(2, '0'),
+                            onValueChange = { v ->
+                                val n = v.filter { it.isDigit() }.toIntOrNull()
+                                if (n != null && n in 0..59) {
+                                    val newSec = editH * 3600 + n * 60
+                                    onUpdateConfig(syncConfig.copy(syncDurationSec = newSec.coerceIn(60, 86400)))
+                                }
+                            },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Amber,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            ),
+                            modifier = Modifier.width(56.dp)
+                        )
+                        Text("m", color = TextSecondary, fontSize = 14.sp)
                     }
                 }
             }
@@ -1354,6 +1415,7 @@ private fun OfflineContentBar(
     syncConfig: SyncConfig,
     archiveInfo: com.crimobile.offline.ArchiveInfo?,
     downloadProgress: DownloadProgress?,
+    offlineLocalRangeSec: Pair<Double, Double>?,
     onOpenSync: () -> Unit,
     onUpdateConfig: (SyncConfig) -> Unit,
     onSaveNow: () -> Unit,
@@ -1370,32 +1432,44 @@ private fun OfflineContentBar(
                 .padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Segment count
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF64B5F6))
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    "$segmentCount segments offline",
-                    color = Color(0xFF64B5F6),
-                    fontSize = 12.sp
-                )
+            // Segment count + date range
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF64B5F6))
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "$segmentCount segments offline",
+                        color = Color(0xFF64B5F6),
+                        fontSize = 12.sp
+                    )
+                }
+                if (offlineLocalRangeSec != null) {
+                    val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
+                    val from = fmt.format(Date((offlineLocalRangeSec.first * 1000).toLong()))
+                    val to = fmt.format(Date((offlineLocalRangeSec.second * 1000).toLong()))
+                    Text(
+                        "$from – $to",
+                        color = TextSecondary,
+                        fontSize = 10.sp
+                    )
+                }
             }
             Spacer(Modifier.weight(1f))
             // Sync settings button
             TextButton(onClick = onOpenSync) {
                 Icon(
-                    Icons.Default.Sync,
+                    Icons.Default.Settings,
                     contentDescription = "Sync settings",
-                    tint = Color(0xFF64B5F6),
+                    tint = TextSecondary,
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(4.dp))
-                Text("Sync", color = Color(0xFF64B5F6), fontSize = 12.sp)
+                Text("Sync", color = TextSecondary, fontSize = 12.sp)
             }
         }
     }
@@ -1522,18 +1596,15 @@ private fun SyncSettingsDialog(
     var editMinute by remember { mutableStateOf(syncConfig.syncMinute) }
     var editEnabled by remember { mutableStateOf(syncConfig.enabled) }
     var editWifiOnly by remember { mutableStateOf(syncConfig.wifiOnly) }
-    var editDurationH by remember { mutableStateOf(syncConfig.syncDurationSec / 3600.0) }
-    var editDurationStr by remember {
-        val h = syncConfig.syncDurationSec / 3600.0
-        mutableStateOf(if (h == h.toInt().toDouble()) h.toInt().toString() else "%.1f".format(h))
-    }
+    val editDurationSec = syncConfig.syncDurationSec
+    val editDurationH = editDurationSec / 3600.0
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = CardBg,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Sync, null, tint = Color(0xFF64B5F6))
+                Icon(Icons.Default.Settings, null, tint = TextSecondary)
                 Spacer(Modifier.width(8.dp))
                 Text("Offline Sync", color = TextPrimary, fontWeight = FontWeight.Bold)
             }
@@ -1605,56 +1676,55 @@ private fun SyncSettingsDialog(
                     }
                 }
 
-                // ── Duration ──
+                // ── Duration (HH:MM) ──
                 Text("Download duration", color = TextSecondary, fontSize = 12.sp)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Preset buttons
-                    listOf(1.0 to "1h", 2.0 to "2h", 2.5 to "2.5h", 3.0 to "3h").forEach { (hours, label) ->
-                        val isSelected = kotlin.math.abs(editDurationH - hours) < 0.01
-                        FilledTonalButton(
-                            onClick = {
-                                editDurationH = hours
-                                editDurationStr = label.dropLast(1)
-                                onUpdateConfig(syncConfig.copy(syncDurationSec = (hours * 3600).toInt()))
-                            },
-                            modifier = Modifier.height(32.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = if (isSelected) Amber.copy(alpha = 0.2f) else Surface
-                            )
-                        ) {
-                            Text(label, fontSize = 12.sp,
-                                color = if (isSelected) Amber else TextSecondary)
-                        }
-                    }
-                }
-                // Custom duration
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val editDurationSec = syncConfig.syncDurationSec
+                    val editH = editDurationSec / 3600
+                    val editM = (editDurationSec % 3600) / 60
                     OutlinedTextField(
-                        value = editDurationStr,
+                        value = editH.toString().padStart(2, '0'),
                         onValueChange = { v ->
-                            editDurationStr = v
-                            val h = v.toDoubleOrNull()
-                            if (h != null && h >= 0.1 && h <= 24) {
-                                editDurationH = h
-                                onUpdateConfig(syncConfig.copy(syncDurationSec = (h * 3600).toInt()))
+                            val n = v.filter { it.isDigit() }.toIntOrNull()
+                            if (n != null && n in 0..99) {
+                                val newSec = n * 3600 + editM * 60
+                                onUpdateConfig(syncConfig.copy(syncDurationSec = newSec.coerceIn(60, 86400)))
                             }
                         },
                         singleLine = true,
                         textStyle = MaterialTheme.typography.bodyLarge.copy(
-                            color = Amber, fontSize = 14.sp, textAlign = TextAlign.Center
+                            color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
                         ),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = Amber,
                             unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
                         ),
-                        modifier = Modifier.width(72.dp),
-                        label = { Text("Custom", color = TextSecondary, fontSize = 10.sp) }
+                        modifier = Modifier.width(56.dp)
                     )
-                    Spacer(Modifier.width(4.dp))
-                    Text("hours", color = TextSecondary, fontSize = 12.sp)
+                    Text("h", color = TextSecondary, fontSize = 14.sp)
+                    OutlinedTextField(
+                        value = editM.toString().padStart(2, '0'),
+                        onValueChange = { v ->
+                            val n = v.filter { it.isDigit() }.toIntOrNull()
+                            if (n != null && n in 0..59) {
+                                val newSec = editH * 3600 + n * 60
+                                onUpdateConfig(syncConfig.copy(syncDurationSec = newSec.coerceIn(60, 86400)))
+                            }
+                        },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Amber,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier.width(56.dp)
+                    )
+                    Text("m", color = TextSecondary, fontSize = 14.sp)
                 }
 
                 // ── WiFi only ──
