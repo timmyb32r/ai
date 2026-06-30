@@ -398,11 +398,12 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 // Tear down offline
                 offlinePlayer?.release()
                 offlinePlayer = null
-                // Restart live stream: reconnect SSE + player
+                // Restart live stream: reconnect SSE + player, but leave paused
                 if (::player.isInitialized && currentServerUrl.isNotEmpty()) {
                     val hlsUrl = "$currentServerUrl/hls/playlist.m3u8"
                     subtitleSource.connect(currentServerUrl)
                     player.play(hlsUrl)
+                    player.pause()
                     initialDelaySeekDone = false
                 }
                 _state.value = _state.value.copy(
@@ -428,7 +429,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         offlineStorageManager,
                         getApplication()
                     )
-                    offlinePlayer?.play("")  // no URL needed for offline
+                    offlinePlayer?.pause()
                 }
                 _state.value = _state.value.copy(
                     playbackMode = mode,
