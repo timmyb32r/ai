@@ -786,8 +786,8 @@ private fun SubtitleList(
             }
 
             // ── Read current state into plain immutable locals ──
-            // These are taken inside delay(16), outside any snapshot observation,
-            // so they are stable copies — NOT iterated as SnapshotStateList.
+            // Plain snapshots of the current values, outside any snapshot
+            // observation — NOT iterated as SnapshotStateList.
             val word = currentWord
             val lastWord = currentLastWord
             val segs = currentSegments
@@ -810,9 +810,16 @@ private fun SubtitleList(
             }
             val currentMode = scrollMode.value
 
-            // ── Tick: delay(16) loop (Invariant #4) ──
-            delay(16) // ~60 fps
-            val tickNanos = System.nanoTime()
+            // ── Tick: frame-paced via withFrameNanos ──
+            // Recompute position AND speed exactly once per rendered frame
+            // (~60 fps, vsync-aligned). We take only the TIMESTAMP here; every
+            // snapshot read and the scrollBy happen outside, wrapped in
+            // Snapshot.withoutReadObservation / executed below — so the loop is
+            // NOT coupled to snapshot invalidation (the old cancellation trap).
+            // withFrameNanos self-throttles to the display and yields a true
+            // frame dt, so speed * dt stays time-correct even across a hitch
+            // (no fixed-16ms drift, no jerky catch-up).
+            val tickNanos = withFrameNanos { it }
             val dt = if (lastTickNanos > 0) {
                 ((tickNanos - lastTickNanos) / 1_000_000_000f).coerceIn(0.001f, 0.100f)
             } else {
