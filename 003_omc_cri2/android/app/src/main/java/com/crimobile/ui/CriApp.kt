@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
@@ -256,7 +258,7 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
             Box(modifier = Modifier.padding(padding)) {
                 // ── Offline mode: no segments → show sync setup ──
                 if (state.playbackMode == PlaybackMode.OFFLINE_SAVED && state.segments.isEmpty()
-                    && state.error == null) {
+                    && state.error == null && state.playbackState != PlaybackState.LOADING) {
                     OfflineSetupScreen(
                         syncConfig = state.syncConfig,
                         archiveInfo = state.archiveInfo,
@@ -480,6 +482,74 @@ private fun RecenterButton(onRecenter: () -> Unit, modifier: Modifier = Modifier
             modifier = Modifier.size(40.dp),
             tint = TextSecondary
         )
+    }
+}
+
+/**
+ * Hours + minutes editor for the download duration.
+ *
+ * Uses a LOCAL text buffer per sub-field (not a value derived from
+ * syncConfig each keystroke), so the user can freely type "00", clear the
+ * field, or enter multi-digit values without the displayed text snapping
+ * back mid-edit. The parsed value is committed to config on every valid
+ * change; the 60s floor is applied to the STORED value only, never to the
+ * on-screen text. Numeric keyboard is forced via keyboardOptions.
+ */
+@Composable
+private fun DownloadDurationField(
+    syncConfig: SyncConfig,
+    onUpdateConfig: (SyncConfig) -> Unit,
+) {
+    var hText by remember { mutableStateOf((syncConfig.syncDurationSec / 3600).toString()) }
+    var mText by remember { mutableStateOf(((syncConfig.syncDurationSec % 3600) / 60).toString()) }
+
+    fun commit() {
+        val h = hText.toIntOrNull() ?: 0
+        val m = mText.toIntOrNull() ?: 0
+        onUpdateConfig(syncConfig.copy(syncDurationSec = (h * 3600 + m * 60).coerceIn(60, 86400)))
+    }
+
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = Amber,
+        unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+    )
+    val fieldTextStyle = MaterialTheme.typography.bodyLarge.copy(
+        color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+    )
+    val numericKeyboard = KeyboardOptions(keyboardType = KeyboardType.Number)
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedTextField(
+            value = hText,
+            onValueChange = { v ->
+                val digits = v.filter { it.isDigit() }.take(2)
+                val n = digits.toIntOrNull()
+                if (digits.isEmpty() || (n != null && n in 0..99)) { hText = digits; commit() }
+            },
+            singleLine = true,
+            keyboardOptions = numericKeyboard,
+            textStyle = fieldTextStyle,
+            colors = fieldColors,
+            modifier = Modifier.width(56.dp)
+        )
+        Text("h", color = TextSecondary, fontSize = 14.sp)
+        OutlinedTextField(
+            value = mText,
+            onValueChange = { v ->
+                val digits = v.filter { it.isDigit() }.take(2)
+                val n = digits.toIntOrNull()
+                if (digits.isEmpty() || (n != null && n in 0..59)) { mText = digits; commit() }
+            },
+            singleLine = true,
+            keyboardOptions = numericKeyboard,
+            textStyle = fieldTextStyle,
+            colors = fieldColors,
+            modifier = Modifier.width(56.dp)
+        )
+        Text("m", color = TextSecondary, fontSize = 14.sp)
     }
 }
 
@@ -1338,53 +1408,7 @@ private fun OfflineSetupScreen(
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text("Download duration", color = TextSecondary, fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        val editH = editDurationSec / 3600
-                        val editM = (editDurationSec % 3600) / 60
-                        OutlinedTextField(
-                            value = editH.toString().padStart(2, '0'),
-                            onValueChange = { v ->
-                                val n = v.filter { it.isDigit() }.toIntOrNull()
-                                if (n != null && n in 0..99) {
-                                    val newSec = n * 3600 + editM * 60
-                                    onUpdateConfig(syncConfig.copy(syncDurationSec = newSec.coerceIn(60, 86400)))
-                                }
-                            },
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
-                            ),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Amber,
-                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
-                            ),
-                            modifier = Modifier.width(56.dp)
-                        )
-                        Text("h", color = TextSecondary, fontSize = 14.sp)
-                        OutlinedTextField(
-                            value = editM.toString().padStart(2, '0'),
-                            onValueChange = { v ->
-                                val n = v.filter { it.isDigit() }.toIntOrNull()
-                                if (n != null && n in 0..59) {
-                                    val newSec = editH * 3600 + n * 60
-                                    onUpdateConfig(syncConfig.copy(syncDurationSec = newSec.coerceIn(60, 86400)))
-                                }
-                            },
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
-                            ),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Amber,
-                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
-                            ),
-                            modifier = Modifier.width(56.dp)
-                        )
-                        Text("m", color = TextSecondary, fontSize = 14.sp)
-                    }
+                    DownloadDurationField(syncConfig, onUpdateConfig)
                 }
             }
         }
@@ -1844,54 +1868,7 @@ private fun SyncSettingsDialog(
 
                 // ── Duration (HH:MM) ──
                 Text("Download duration", color = TextSecondary, fontSize = 12.sp)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val editDurationSec = syncConfig.syncDurationSec
-                    val editH = editDurationSec / 3600
-                    val editM = (editDurationSec % 3600) / 60
-                    OutlinedTextField(
-                        value = editH.toString().padStart(2, '0'),
-                        onValueChange = { v ->
-                            val n = v.filter { it.isDigit() }.toIntOrNull()
-                            if (n != null && n in 0..99) {
-                                val newSec = n * 3600 + editM * 60
-                                onUpdateConfig(syncConfig.copy(syncDurationSec = newSec.coerceIn(60, 86400)))
-                            }
-                        },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(
-                            color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
-                        ),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Amber,
-                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
-                        ),
-                        modifier = Modifier.width(56.dp)
-                    )
-                    Text("h", color = TextSecondary, fontSize = 14.sp)
-                    OutlinedTextField(
-                        value = editM.toString().padStart(2, '0'),
-                        onValueChange = { v ->
-                            val n = v.filter { it.isDigit() }.toIntOrNull()
-                            if (n != null && n in 0..59) {
-                                val newSec = editH * 3600 + n * 60
-                                onUpdateConfig(syncConfig.copy(syncDurationSec = newSec.coerceIn(60, 86400)))
-                            }
-                        },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(
-                            color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
-                        ),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Amber,
-                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
-                        ),
-                        modifier = Modifier.width(56.dp)
-                    )
-                    Text("m", color = TextSecondary, fontSize = 14.sp)
-                }
+                DownloadDurationField(syncConfig, onUpdateConfig)
 
                 // ── WiFi only ──
                 Row(verticalAlignment = Alignment.CenterVertically) {

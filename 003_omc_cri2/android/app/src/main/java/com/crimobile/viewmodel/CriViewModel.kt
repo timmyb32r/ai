@@ -22,7 +22,9 @@ import com.crimobile.subtitles.SseSubtitleSource
 import com.crimobile.subtitles.SubtitleSource
 import com.crimobile.sync.SubtitleSyncEngine
 import com.crimobile.vocabulary.VocabularyStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -581,9 +583,19 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     player.pause()
                     initialDelaySeekDone = false
                 }
+                // Clear stale offline subtitle state. Otherwise the sync loop would
+                // briefly compute delay = livePlayerSec − lastOfflineSegment.end
+                // (the age of the archive, e.g. ~2951s) and flash a bogus lag until
+                // the live source repopulates. Empty segments ⇒ delay = 0.
+                lastActiveWord = null
                 _state.value = _state.value.copy(
                     playbackMode = mode,
                     playbackState = if (::player.isInitialized) player.playbackState.value else PlaybackState.IDLE,
+                    segments = emptyList(),
+                    activeSegment = null,
+                    activeWord = null,
+                    lastActiveWord = null,
+                    subtitleDelaySec = 0.0,
                     error = null
                 )
             }
@@ -595,37 +607,70 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         player.pause()
                     }
                 }
-                // Load offline data
-                offlineSubtitleSource.load()
-                val storedSegments = offlineSubtitleSource.segments.value
-                if (storedSegments.isNotEmpty()) {
-                    offlinePlayer?.release()
-                    offlinePlayer = OfflineRadioPlayer(
-                        storedSegments,
-                        offlineStorageManager,
-                        offlineSubtitleSource.lastLoadedSessionId ?: "0_0",
-                        getApplication()
+
+                // Flip the UI to offline IMMEDIATELY (instant switch). The heavy disk
+                // read — parsing every stored segment JSON — used to run inline on the
+                // main thread and froze the UI for ~seconds. It now runs off-thread
+                // below. playbackState=LOADING keeps the setup screen from flashing and
+                // shows LoadingScreen while segments are read.
+                lastActiveWord = null
+                _state.value = _state.value.copy(
+                    playbackMode = mode,
+                    playbackState = PlaybackState.LOADING,
+                    segments = emptyList(),
+                    activeSegment = null,
+                    activeWord = null,
+                    lastActiveWord = null,
+                    subtitleDelaySec = 0.0,
+                    offlinePositionMs = 0L,
+                    error = null
+                )
+
+                offlineStateJob?.cancel()
+                offlineStateJob = viewModelScope.launch {
+                    // Heavy disk read off the main thread.
+                    val storedSegments = withContext(Dispatchers.IO) {
+                        offlineSubtitleSource.load()
+                        offlineSubtitleSource.segments.value
+                    }
+                    // User may have switched back to live while loading.
+                    if (_state.value.playbackMode != PlaybackMode.OFFLINE_SAVED) return@launch
+
+                    // ExoPlayer must be constructed on the main thread (we are here).
+                    if (storedSegments.isNotEmpty()) {
+                        offlinePlayer?.release()
+                        offlinePlayer = OfflineRadioPlayer(
+                            storedSegments,
+                            offlineStorageManager,
+                            offlineSubtitleSource.lastLoadedSessionId ?: "0_0",
+                            getApplication()
+                        )
+                        offlinePlayer?.pause()
+                    }
+                    _state.value = _state.value.copy(
+                        segments = storedSegments,
+                        playbackState = offlinePlayer?.playbackState?.value ?: PlaybackState.IDLE
                     )
-                    offlinePlayer?.pause()
-                    // Collect offline player state so Play/Pause button responds
-                    val op = offlinePlayer!!
-                    offlineStateJob?.cancel()
-                    offlineStateJob = viewModelScope.launch {
-                        op.playbackState.collect { ps ->
-                            if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
-                                _state.value = _state.value.copy(playbackState = ps)
+
+                    // Collect offline player state so the Play/Pause button responds.
+                    val op = offlinePlayer
+                    if (op != null) {
+                        launch {
+                            op.playbackState.collect { ps ->
+                                if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
+                                    _state.value = _state.value.copy(playbackState = ps)
+                                }
                             }
                         }
                     }
+
+                    // Local range is the heaviest read (re-scans all sessions) and the
+                    // least urgent — compute it last, off-thread, publish when ready.
+                    val range = withContext(Dispatchers.IO) { offlineStorageManager.computeLocalRange() }
+                    if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
+                        _state.value = _state.value.copy(offlineLocalRangeSec = range)
+                    }
                 }
-                _state.value = _state.value.copy(
-                    playbackMode = mode,
-                    playbackState = offlinePlayer?.playbackState?.value ?: PlaybackState.IDLE,
-                    segments = storedSegments,
-                    offlineLocalRangeSec = offlineStorageManager.computeLocalRange(),
-                    offlinePositionMs = 0L,  // start of content = 0 relative
-                    error = null  // UI shows OfflineSetupScreen when no segments
-                )
             }
         }
     }
