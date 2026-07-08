@@ -17,6 +17,7 @@ import com.crimobile.offline.SyncScheduler
 import com.crimobile.player.RadioPlayer
 import com.crimobile.player.RadioPlayerHolder
 import com.crimobile.pronounce.PronunciationPlayer
+import com.crimobile.subtitles.HttpSubtitleSource
 import com.crimobile.subtitles.SseSubtitleSource
 import com.crimobile.subtitles.SubtitleSource
 import com.crimobile.sync.SubtitleSyncEngine
@@ -25,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -39,6 +41,7 @@ data class CriViewState(
     val showAudioBoundaries: Boolean = false,  // debug: show .ts file boundaries
     val pinyinFontSizeSp: Int = 9,  // pinyin font size in sp
     val debugEnabled: Boolean = false,  // true when .cri_debug file exists
+    val metadataProtocol: String = "HTTP",  // "HTTP" or "SSE"
     val wordPopup: WordPopupState? = null,
     val isPronouncing: Boolean = false,  // true while PronounceWord audio plays
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
@@ -89,6 +92,7 @@ sealed class CriAction {
     object DismissOfflineNavDialog : CriAction()
     data class SelectOfflineSession(val sessionId: String) : CriAction()
     data class SelectOfflineSegment(val segmentId: Int) : CriAction()
+    data class SetMetadataProtocol(val protocol: String) : CriAction() // "HTTP" or "SSE"
 }
 
 class CriViewModel(application: Application) : AndroidViewModel(application) {
@@ -97,11 +101,19 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     // We obtain it via the singleton holder — same StateFlow, zero IPC latency.
     private lateinit var player: RadioPlayer
 
-    private val subtitleSource: SubtitleSource = SseSubtitleSource()
+    private val prefs = application.getSharedPreferences("cri_prefs", Context.MODE_PRIVATE)
+
+    // Swappable subtitle source — see createSubtitleSource() for factory logic.
+    private val _subtitleSource = MutableStateFlow<SubtitleSource>(createSubtitleSource())
+    private val subtitleSource: SubtitleSource get() = _subtitleSource.value
     private val vocabularyStore = VocabularyStore(application)
     private val pronunciationPlayer by lazy { PronunciationPlayer(player, viewModelScope) }
 
-    private val prefs = application.getSharedPreferences("cri_prefs", Context.MODE_PRIVATE)
+    /** Build a [SubtitleSource] based on the stored metadata_protocol preference. */
+    private fun createSubtitleSource(): SubtitleSource {
+        val protocol = prefs.getString("metadata_protocol", "HTTP") ?: "HTTP"
+        return if (protocol == "SSE") SseSubtitleSource() else HttpSubtitleSource()
+    }
 
     private val _state = MutableStateFlow(
         CriViewState(
@@ -111,6 +123,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             showAudioBoundaries = prefs.getBoolean("show_audio_boundaries", false),
             pinyinFontSizeSp = prefs.getInt("pinyin_font_size_sp", 9),
             debugEnabled = prefs.getBoolean("debug_enabled", false),
+            metadataProtocol = prefs.getString("metadata_protocol", "HTTP") ?: "HTTP",
         )
     )
     val state: StateFlow<CriViewState> = _state.asStateFlow()
@@ -135,14 +148,15 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             syncConfig = SyncConfig.fromPrefs(prefs)
         )
 
-        // Non-player-dependent — start immediately
+        // Non-player-dependent — start immediately.
+        // flatMapLatest ensures collectors re-bind when the subtitle source is swapped.
         viewModelScope.launch {
-            subtitleSource.connected.collect { status ->
+            _subtitleSource.flatMapLatest { it.connected }.collect { status ->
                 _state.value = _state.value.copy(connectionStatus = status)
             }
         }
         viewModelScope.launch {
-            subtitleSource.segments.collect { segs ->
+            _subtitleSource.flatMapLatest { it.segments }.collect { segs ->
                 if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING) {
                     _state.value = _state.value.copy(segments = segs)
                 }
@@ -246,6 +260,18 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             "segTL=[${activeSegment.timeline_start_sec}-${activeSegment.timeline_end_sec}] " +
                             "word=${activeWord?.text} wTL=[${activeWord?.start_sec}-${activeWord?.end_sec}] " +
                             "delay=${delay.toInt()}s")
+                    }
+
+                    // Diagnostic: no active segment despite loaded metadata → the player
+                    // position is outside the loaded segment window (seek/window misalign).
+                    if (activeSegment == null && now - lastSyncLog > 2000) {
+                        lastSyncLog = now
+                        val first = segments.firstOrNull()
+                        val last = segments.lastOrNull()
+                        Log.w(VM, "sync MISS: no active segment. playerSec=%.1f".format(playerSec) +
+                            " playerMs=$playerMs segs=${segments.size} " +
+                            "loadedRange=[${first?.timeline_start_sec}-${last?.timeline_end_sec}] " +
+                            "(player ${if (last != null && playerSec > last.timeline_end_sec) "AHEAD of" else if (first != null && playerSec < first.timeline_start_sec) "BEHIND" else "inside?"} window)")
                     }
 
                     // ── One-shot delay seek: rewind player behind live edge ──
@@ -507,6 +533,29 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     showOfflineNavDialog = false,
                     error = null
                 )
+            }
+            is CriAction.SetMetadataProtocol -> {
+                val newProtocol = action.protocol
+                if (newProtocol == _state.value.metadataProtocol) return
+                Log.i(VM, "SetMetadataProtocol → $newProtocol")
+
+                // Persist preference
+                prefs.edit().putString("metadata_protocol", newProtocol).apply()
+
+                // Disconnect old source
+                val oldSource = _subtitleSource.value
+                oldSource.disconnect()
+
+                // Build new source
+                val newSource = if (newProtocol == "SSE") SseSubtitleSource() else HttpSubtitleSource()
+                _subtitleSource.value = newSource
+
+                // Re-connect if a live stream is active
+                if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING && currentServerUrl.isNotEmpty()) {
+                    newSource.connect(currentServerUrl)
+                }
+
+                _state.value = _state.value.copy(metadataProtocol = newProtocol)
             }
         }
     }

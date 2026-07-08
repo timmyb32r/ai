@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +29,7 @@ import java.util.Date
 import java.util.Locale
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,6 +77,21 @@ private val Green = Color(0xFF4CAF50)
 private val TextPrimary = Color.White
 private val TextSecondary = Color(0xFF888888)
 private val TextPinyin = Color(0xFFAAAAAA)
+
+// Scroll mode FSM — lives inside the scroll loop; drag-mode is set by a separate
+// LaunchedEffect that only *collects* interactions (never calls scroll*).
+// AUTO:  smooth auto-scroll active (default)
+// MANUAL: user dragged the list; auto-scroll suspended until recenter
+// PAUSED: player paused or word being pronounced
+private enum class ScrollMode { AUTO, MANUAL, PAUSED }
+
+// Sealed result from the scroll loop's snapshot-safe computation.
+// Keeps the pure-calculation phase separate from the suspend-scroll-execution phase.
+private sealed class ScrollResult {
+    data class ScrollBy(val px: Float) : ScrollResult()
+    data class ScrollTo(val index: Int) : ScrollResult()
+    data object NoOp : ScrollResult()
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -217,7 +234,9 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                         showAudioBoundaries = state.showAudioBoundaries,
                         onToggleAudioBoundaries = { onAction(CriAction.ToggleAudioBoundaries) },
                         pinyinFontSizeSp = state.pinyinFontSizeSp,
-                        onPinyinFontSize = { onAction(CriAction.SetPinyinFontSize(it)) }
+                        onPinyinFontSize = { onAction(CriAction.SetPinyinFontSize(it)) },
+                        metadataProtocol = state.metadataProtocol,
+                        onMetadataProtocol = { onAction(CriAction.SetMetadataProtocol(it)) }
                     )
                 }
             },
@@ -506,6 +525,8 @@ private fun SettingsDialog(
     onToggleAudioBoundaries: () -> Unit = {},
     pinyinFontSizeSp: Int = 9,
     onPinyinFontSize: (Int) -> Unit = {},
+    metadataProtocol: String = "HTTP",
+    onMetadataProtocol: (String) -> Unit = {},
 ) {
     var editSize by remember { mutableStateOf(currentFontSize.toString()) }
     var editPinyinSize by remember { mutableStateOf(pinyinFontSizeSp.toString()) }
@@ -615,6 +636,32 @@ private fun SettingsDialog(
                     Spacer(Modifier.height(8.dp))
                     Text("Debug", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
+                    // Metadata protocol toggle
+                    Text("Metadata protocol", color = TextSecondary, fontSize = 12.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
+                        val protocols = listOf("HTTP", "SSE")
+                        protocols.forEachIndexed { idx, proto ->
+                            val selected = metadataProtocol == proto
+                            OutlinedButton(
+                                onClick = { onMetadataProtocol(proto) },
+                                modifier = Modifier.height(36.dp),
+                                shape = when {
+                                    idx == 0 -> RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp)
+                                    idx == protocols.lastIndex -> RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp)
+                                    else -> RoundedCornerShape(0.dp)
+                                },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (selected) Amber.copy(alpha = 0.2f) else Color.Transparent,
+                                    contentColor = if (selected) Amber else TextSecondary
+                                ),
+                                border = BorderStroke(1.dp, if (selected) Amber else TextSecondary.copy(alpha = 0.3f))
+                            ) {
+                                Text(proto, fontSize = 14.sp)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Show audio boundaries", color = TextPrimary, fontSize = 14.sp, modifier = Modifier.weight(1f))
                         Switch(
@@ -685,148 +732,179 @@ private fun SubtitleList(
     val currentPlaybackState by rememberUpdatedState(playbackState)
     val currentIsPronouncing by rememberUpdatedState(isPronouncing)
 
-    // LaunchedEffect with Unit key — NEVER restarts during the lifecycle of this
-    // composable. Recenter signals arrive via Channel<Unit> (non-blocking poll).
+    // ── Single scroll owner ───────────────────────────────────────────────
+    // Exactly one coroutine ever calls listState.scroll*.  Recenter requests
+    // arrive as data (Channel<Unit>), polled inside the loop — never as competing
+    // scroll calls from other composables or Scaffold slots.
+    val scrollMode = remember { mutableStateOf(ScrollMode.AUTO) }
+
+    // Drag detector: a SEPARATE coroutine that only COLLECTS DragInteraction
+    // events.  It never calls scroll*, so it cannot create MutatorMutex contention.
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> {
+                    if (scrollMode.value != ScrollMode.MANUAL) {
+                        scrollMode.value = ScrollMode.MANUAL
+                        Log.i("CRIRadio:scroll", "FSM → MANUAL (user drag)")
+                    }
+                }
+                is DragInteraction.Cancel, is DragInteraction.Stop -> {
+                    // stays MANUAL until recenter
+                }
+            }
+        }
+    }
+
+    // ── Main scroll loop (single owner) ───────────────────────────────────
     LaunchedEffect(Unit) {
-        var initialized = false
         var initSpeedPxPerSec = 0f
-        var lastFrameNanos = 0L
+        var lastTickNanos = 0L
         var totalScrolledPx = 0f
         var accumulatedPx = 0f
         var lastLogNanos = 0L
-        var wasPlaying = false
-
-        var scrollAction: (suspend () -> Unit)?
-
         var loopIterations = 0L
-        while (isActive) {
-            // ── Recenter: non-blocking channel poll ──
-            if (recenterChannel.tryReceive().getOrNull() != null) {
-                initialized = false
-                Log.i("CRIRadio:scroll", "RECENTER triggered (channel)")
-            }
+        var wasPaused = false
 
-            scrollAction = null
+        // ── Diagnostics captured each tick, surfaced in the 2s heartbeat ──
+        var dbgPosition: Float? = null      // active word vertical position [0,1] or null
+        var dbgMultiplier = 0f              // speed multiplier for that position
+        var dbgBaseSpeed = 0f               // base px/s used this tick
+        var dbgRawPx = 0f                   // px requested this tick (pre-accumulation)
+        var dbgActiveIdx = -1               // segment index of the active word (-1 = not found)
+        var dbgReason = "init"              // why we scrolled / did not scroll this tick
+
+        while (isActive) {
             loopIterations++
 
-            withFrameNanos { frameNanos ->
-                val word = currentWord
-                val segs = currentSegments
+            // ── Recenter: non-blocking channel poll (Invariant #2) ──
+            if (recenterChannel.tryReceive().getOrNull() != null) {
+                scrollMode.value = ScrollMode.AUTO
+                // Force re-centering on next pass
+                lastTickNanos = 0L  // triggers re-init below
+                Log.i("CRIRadio:scroll", "RECENTER → AUTO")
+            }
 
-                if (segs.isEmpty()) return@withFrameNanos
+            // ── Read current state into plain immutable locals ──
+            // These are taken inside delay(16), outside any snapshot observation,
+            // so they are stable copies — NOT iterated as SnapshotStateList.
+            val word = currentWord
+            val lastWord = currentLastWord
+            val segs = currentSegments
+            val playing = currentPlaybackState == PlaybackState.PLAYING
+            val pronouncing = currentIsPronouncing
+            val mode = scrollMode.value
 
-                val playing = currentPlaybackState == PlaybackState.PLAYING
+            // ── PAUSED check ──
+            val shouldPause = !playing || pronouncing
+            if (shouldPause && mode == ScrollMode.AUTO) {
+                scrollMode.value = ScrollMode.PAUSED
+                wasPaused = true
+                lastTickNanos = 0L
+                Log.d("CRIRadio:scroll", "FSM → PAUSED")
+            }
+            if (!shouldPause && mode == ScrollMode.PAUSED) {
+                scrollMode.value = ScrollMode.AUTO
+                lastTickNanos = 0L  // force re-center on resume
+                Log.i("CRIRadio:scroll", "FSM PAUSED → AUTO (resume + recenter)")
+            }
+            val currentMode = scrollMode.value
 
-                // Heartbeat: log that scroll loop is alive (every 5s)
-                if (frameNanos - lastLogNanos > 5_000_000_000L) {
-                    lastLogNanos = frameNanos
-                    Log.d("CRIRadio:scroll", "alive word=${word?.text} segs=${segs.size} init=$initialized wasPlaying=$wasPlaying")
-                }
+            // ── Tick: delay(16) loop (Invariant #4) ──
+            delay(16) // ~60 fps
+            val tickNanos = System.nanoTime()
+            val dt = if (lastTickNanos > 0) {
+                ((tickNanos - lastTickNanos) / 1_000_000_000f).coerceIn(0.001f, 0.100f)
+            } else {
+                0.016f
+            }
+
+            // ── Snapshot-safe reads (Invariant #3) ──
+            // ALL layoutInfo / index computations are wrapped so they never
+            // observe Compose snapshot state or trigger recomposition.
+            val snapshotResult: ScrollResult? = Snapshot.withoutReadObservation {
+                if (segs.isEmpty()) return@withoutReadObservation null
 
                 val viewportHeightPx = with(density) {
                     listState.layoutInfo.viewportSize.height.toFloat()
                 }
-                if (viewportHeightPx <= 0f) return@withFrameNanos
+                if (viewportHeightPx <= 0f) return@withoutReadObservation null
 
                 val visibleItems = listState.layoutInfo.visibleItemsInfo
-                if (visibleItems.isEmpty()) return@withFrameNanos
+                if (visibleItems.isEmpty()) return@withoutReadObservation null
 
-                // ── Effective word: fall back to lastActiveWord during silence gaps ──
-                val effectiveWord = word ?: currentLastWord
+                // Effective word: fall back to lastActiveWord during silence gaps
+                val effectiveWord = word ?: lastWord
 
+                // Heartbeat every 5s
+                if (tickNanos - lastLogNanos > 5_000_000_000L) {
+                    Log.d("CRIRadio:scroll",
+                        "alive segs=${segs.size} word=${effectiveWord?.text} " +
+                        "mode=$currentMode loop=$loopIterations")
+                }
+
+                // ── MANUAL / PAUSED: no scroll; just skip ──
+                if (currentMode != ScrollMode.AUTO) {
+                    dbgReason = "mode=$currentMode"
+                    return@withoutReadObservation ScrollResult.NoOp
+                }
+
+                // ── No active word → coast at initSpeed ──
                 if (effectiveWord == null) {
-                    // No word at all — smooth scroll with initSpeed if playing
-                    if (playing && initialized && initSpeedPxPerSec > 0f) {
-                        val rawDt = if (lastFrameNanos > 0) (frameNanos - lastFrameNanos) / 1_000_000_000f else 0.016f
-                        val dt = rawDt
-                        lastFrameNanos = frameNanos
-                        val rawPx = initSpeedPxPerSec * dt
-                        accumulatedPx += rawPx
-                        val wholePx = accumulatedPx.toInt()
-                        if (wholePx != 0) {
-                            scrollAction = { listState.scrollBy(wholePx.toFloat()); totalScrolledPx += wholePx }
-                            accumulatedPx -= wholePx
-                        }
+                    dbgReason = "no-word"; dbgActiveIdx = -1; dbgPosition = null
+                    if (initSpeedPxPerSec > 0f) {
+                        dbgReason = "no-word-coast"; dbgRawPx = initSpeedPxPerSec * dt
+                        return@withoutReadObservation ScrollResult.ScrollBy(initSpeedPxPerSec * dt)
                     }
-                    wasPlaying = playing
-                    return@withFrameNanos
+                    return@withoutReadObservation ScrollResult.NoOp
                 }
 
+                // ── Find active word index ──
                 val activeIdx = segs.indexOfFirst { it.words.any { w -> w === effectiveWord } }
+                dbgActiveIdx = activeIdx
                 if (activeIdx < 0) {
-                    wasPlaying = playing
-                    return@withFrameNanos
+                    // Active word not present in the rendered list (e.g. segment churn /
+                    // eviction during a large HTTP backlog fetch) → cannot scroll to it.
+                    dbgReason = "activeIdx<0 word=${effectiveWord.text}"
+                    return@withoutReadObservation ScrollResult.NoOp
                 }
 
-                // ── INIT PHASE: center word (~25% from top), regardless of play state ──
-                // Runs on: first frame after LaunchedEffect start (recenter or app launch),
-                // and on pause→play transitions within the same coroutine.
-                if (!initialized) {
-                    val firstIdx = (activeIdx - (viewportHeightPx * 0.25f / (visibleItems.first().size.toFloat())).toInt())
-                        .coerceAtLeast(0)
-                    scrollAction = {
-                        try { listState.scrollToItem(firstIdx, 0) } catch (_: Exception) { }
-                    }
+                // ── Re-init: center word ~25% from top (jump allowed) ──
+                if (lastTickNanos == 0L || wasPaused) {
+                    val offsetItems = (viewportHeightPx * 0.25f / (visibleItems.first().size.toFloat())).toInt()
+                    val targetIdx = (activeIdx - offsetItems).coerceAtLeast(0)
 
-                    // init_speed: total_visible_pixel_height / delta_t
+                    // Compute init speed
                     val firstVisibleIdx = visibleItems.first().index
                     val lastVisibleIdx = visibleItems.last().index
                     if (firstVisibleIdx in segs.indices && lastVisibleIdx in segs.indices) {
                         val firstSeg = segs[firstVisibleIdx]
                         val lastSeg = segs[lastVisibleIdx]
-                        val firstWordTime = firstSeg.words.firstOrNull()?.start_sec ?: firstSeg.timeline_start_sec
-                        val lastWordTime = lastSeg.words.lastOrNull()?.end_sec ?: lastSeg.timeline_end_sec
-                        val deltaSec = (lastWordTime - firstWordTime).toFloat()
-                        val totalVisiblePx = visibleItems.sumOf { it.size }.toFloat()
-                        if (deltaSec > 0f && totalVisiblePx > 0f) {
-                            initSpeedPxPerSec = totalVisiblePx / deltaSec
+                        val firstTime = firstSeg.words.firstOrNull()?.start_sec ?: firstSeg.timeline_start_sec
+                        val lastTime = lastSeg.words.lastOrNull()?.end_sec ?: lastSeg.timeline_end_sec
+                        val deltaSec = (lastTime - firstTime).toFloat()
+                        val totalPx = visibleItems.sumOf { it.size }.toFloat()
+                        if (deltaSec > 0f && totalPx > 0f) {
+                            initSpeedPxPerSec = totalPx / deltaSec
                         }
                     }
                     Log.i("CRIRadio:scroll",
-                        "INIT segs=${segs.size} activeIdx=$activeIdx initSpeed=%.1f px/sec firstVis=$firstVisibleIdx lastVis=$lastVisibleIdx".format(
-                            initSpeedPxPerSec))
-                    initialized = true
-                    lastFrameNanos = 0L
-                    wasPlaying = playing
-                    return@withFrameNanos
+                        "INIT segs=${segs.size} activeIdx=$activeIdx targetIdx=$targetIdx initSpeed=%.1f".format(initSpeedPxPerSec))
+                    return@withoutReadObservation ScrollResult.ScrollTo(targetIdx)
                 }
 
-                // ── PAUSE / PRONOUNCING: stop scrolling, wait for resume ──
-                if (!playing || currentIsPronouncing) {
-                    if (wasPlaying) {
-                        Log.i("CRIRadio:scroll", "PAUSE — stopping scroll (loop=$loopIterations)")
-                    }
-                    wasPlaying = false
-                    lastFrameNanos = 0L
-                    return@withFrameNanos
-                }
-
-                // ── Pause→Play transition (within same coroutine): force re-init ──
-                if (!wasPlaying) {
-                    Log.i("CRIRadio:scroll", "RESUME — reinitializing scroll")
-                    initialized = false
-                    wasPlaying = true
-                    return@withFrameNanos
-                }
-
-                // ── Normal scroll dt, sub-pixel accumulation for smooth scroll ──
-                val rawDt = if (lastFrameNanos > 0) (frameNanos - lastFrameNanos) / 1_000_000_000f else 0.016f
-                val dt = rawDt
-                lastFrameNanos = frameNanos
-
-                // ── Active word position on screen → scroll correction ──
+                // ── Normal scroll: position → multiplier → speed → px ──
                 val position = speedController.getActiveWordVerticalPosition(
                     listState, segs, effectiveWord, viewportHeightPx
                 )
+                dbgPosition = position
 
-                when {
+                return@withoutReadObservation when {
                     position == 0f || position == 1f -> {
-                        // Word off-screen — instant jump to bring it back
-                        scrollAction = {
-                            try {
-                                listState.scrollToItem(activeIdx.coerceAtMost(segs.size - 1), 0)
-                            } catch (_: Exception) { }
-                        }
+                        // Word off-screen — jump
+                        dbgReason = if (position == 0f) "offscreen-top→jump" else "offscreen-bottom→jump"
+                        dbgMultiplier = 0f; dbgRawPx = 0f
+                        ScrollResult.ScrollTo(activeIdx.coerceAtMost(segs.size - 1))
                     }
                     position != null -> {
                         val multiplier = speedController.getMultiplier(position)
@@ -838,33 +916,57 @@ private fun SubtitleList(
                             initSpeedPxPerSec
                         }
                         val rawPx = baseSpeedPxPerSec * multiplier * dt
-                        accumulatedPx += rawPx
-                        val wholePx = accumulatedPx.toInt()
-                        if (wholePx != 0) {
-                            scrollAction = {
-                                listState.scrollBy(wholePx.toFloat())
-                                totalScrolledPx += wholePx
-                            }
-                            accumulatedPx -= wholePx
-                        }
+                        dbgMultiplier = multiplier; dbgBaseSpeed = baseSpeedPxPerSec; dbgRawPx = rawPx
+                        dbgReason = if (multiplier <= 0f) "at-or-above-target(hold)" else "scroll"
+                        ScrollResult.ScrollBy(rawPx)
+                    }
+                    else -> {
+                        dbgReason = "position=null"; dbgMultiplier = 0f; dbgRawPx = 0f
+                        ScrollResult.NoOp
                     }
                 }
+            } // Snapshot.withoutReadObservation
 
-                // Log every 2s
-                if (frameNanos - lastLogNanos > 2_000_000_000L) {
-                    lastLogNanos = frameNanos
-                    val posStr = if (position != null) "%.2f".format(position) else "null"
-                    val mult = if (position != null) speedController.getMultiplier(position) else 0f
-                    Log.i("CRIRadio:scroll",
-                        "pos=$posStr mult=%.2f speed=%.1f px/s pxFrame=%.2f dt=%.0fms totalPx=%.0f initSpeed=%.1f".format(
-                            mult, initSpeedPxPerSec * mult, initSpeedPxPerSec * mult * dt, dt * 1000, totalScrolledPx, initSpeedPxPerSec))
+            // ── Execute scroll action OUTSIDE snapshot observation ──
+            when (val result = snapshotResult) {
+                is ScrollResult.ScrollBy -> {
+                    accumulatedPx += result.px
+                    val wholePx = accumulatedPx.toInt()
+                    if (wholePx != 0) {
+                        try {
+                            listState.scrollBy(wholePx.toFloat())
+                        } catch (_: Exception) { }
+                        totalScrolledPx += wholePx
+                        accumulatedPx -= wholePx
+                    }
                 }
+                is ScrollResult.ScrollTo -> {
+                    try {
+                        listState.scrollToItem(result.index, 0)
+                    } catch (_: Exception) { }
+                }
+                is ScrollResult.NoOp, null -> { /* nothing to do */ }
             }
 
-            // Execute suspend actions outside withFrameNanos to avoid snapshot conflicts
-            scrollAction?.invoke()
+            // ── Log every 2s ──
+            if (tickNanos - lastLogNanos > 2_000_000_000L) {
+                lastLogNanos = tickNanos
+                val posStr = dbgPosition?.let { "%.2f".format(it) } ?: "null"
+                Log.i("CRIRadio:scroll",
+                    ("mode=$currentMode reason=$dbgReason pos=$posStr mult=%.2f " +
+                     "base=%.1f rawPx=%.2f/tick initSpeed=%.1f totalPx=%.0f " +
+                     "activeIdx=$dbgActiveIdx segs=${segs.size} dt=%.0fms loop=$loopIterations").format(
+                        dbgMultiplier, dbgBaseSpeed, dbgRawPx, initSpeedPxPerSec,
+                        totalScrolledPx, dt * 1000))
+            }
+
+            lastTickNanos = tickNanos
+            wasPaused = shouldPause
         }
     }
+
+    // ScrollResult is a top-level sealed class (see above CriApp).
+    // Snapshot-safe computation returns a ScrollResult; execution happens here.
 
     LazyColumn(
         state = listState, modifier = Modifier.fillMaxSize(),

@@ -1,0 +1,224 @@
+package com.crimobile.subtitles
+
+import android.util.Log
+import com.crimobile.model.ConnectionStatus
+import com.crimobile.model.SubtitleSegment
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+private const val HTTP_TAG = "CRIRadio:http"
+
+/**
+ * Pull-based subtitle source that polls the HLS playlist and fetches
+ * per-segment metadata via HTTP. Metadata follows audio 1:1 over the
+ * same pull channel — desync is structurally impossible.
+ *
+ * Poll interval tracks the HLS segment duration (default ~3 s); the
+ * poll loop runs at ~1× that interval.
+ */
+class HttpSubtitleSource(
+    private val pollIntervalMs: Long = 1500L
+) : SubtitleSource {
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
+    private val scope = CoroutineScope(Dispatchers.IO)
+    private var pollJob: Job? = null
+
+    private val _segments = MutableStateFlow<List<SubtitleSegment>>(emptyList())
+    override val segments: StateFlow<List<SubtitleSegment>> = _segments.asStateFlow()
+
+    private val _connected = MutableStateFlow(ConnectionStatus.DISCONNECTED)
+    override val connected: StateFlow<ConnectionStatus> = _connected.asStateFlow()
+
+    private val segmentMap = linkedMapOf<Int, SubtitleSegment>() // insertion-ordered
+    private val lock = Any()
+    private val seenIds = mutableSetOf<Int>()
+
+    // Regex: matches filenames like "000000123.ts" and captures the numeric ID
+    private val tsFilePattern = Regex("^(\\d{9})\\.ts$")
+
+    override fun connect(serverUrl: String) {
+        Log.i(HTTP_TAG, "connecting to $serverUrl (poll=${pollIntervalMs}ms)")
+        _connected.value = ConnectionStatus.CONNECTING
+        seenIds.clear()
+
+        pollJob?.cancel()
+        pollJob = scope.launch {
+            var consecutiveFailures = 0
+            val maxConsecutiveFailures = 5
+
+            while (isActive) {
+                try {
+                    val success = pollOnce(serverUrl)
+                    if (success) {
+                        consecutiveFailures = 0
+                        if (_connected.value != ConnectionStatus.CONNECTED) {
+                            _connected.value = ConnectionStatus.CONNECTED
+                        }
+                    } else {
+                        consecutiveFailures++
+                        if (consecutiveFailures >= maxConsecutiveFailures) {
+                            _connected.value = ConnectionStatus.DISCONNECTED
+                        }
+                        Log.w(HTTP_TAG, "poll failed ($consecutiveFailures/$maxConsecutiveFailures)")
+                    }
+                } catch (e: Exception) {
+                    consecutiveFailures++
+                    if (consecutiveFailures >= maxConsecutiveFailures) {
+                        _connected.value = ConnectionStatus.DISCONNECTED
+                    }
+                    Log.w(HTTP_TAG, "poll error: ${e.message} ($consecutiveFailures/$maxConsecutiveFailures)")
+                }
+                delay(pollIntervalMs)
+            }
+        }
+    }
+
+    /**
+     * One poll cycle: fetch playlist → extract unseen .ts IDs → fetch metadata for each.
+     * Returns true if the playlist fetch succeeded (even if no new segments).
+     */
+    private fun pollOnce(serverUrl: String): Boolean {
+        // 1. Fetch playlist.m3u8
+        val playlistUrl = "$serverUrl/hls/playlist.m3u8"
+        val playlistBody = fetchUrl(playlistUrl) ?: return false
+
+        // 2. Extract .ts filenames and their segment IDs (chronological: oldest → newest)
+        val tsIds = parseTsIds(playlistBody)
+        if (tsIds.isEmpty()) {
+            Log.d(HTTP_TAG, "playlist has no .ts entries")
+            return true // empty playlist is valid, not a failure
+        }
+
+        // 3. Bound the work to a recent TAIL of the playlist.
+        //    playlist.m3u8 can list the entire archived session (600–700 entries).
+        //    Fetching all of them in a burst floods the main thread with GC/recompose
+        //    work, starves subtitle sync (activeWord never resolves) and misaligns the
+        //    delay-seek window. The newest WINDOW_SIZE segments always cover the
+        //    live/delay-seek band we actually play.
+        val tail = if (tsIds.size > WINDOW_SIZE) {
+            tsIds.subList(tsIds.size - WINDOW_SIZE, tsIds.size)
+        } else {
+            tsIds
+        }
+
+        // 4. Within the tail, find IDs we haven't fetched yet
+        val newIds = synchronized(lock) {
+            tail.filter { it !in seenIds }
+        }
+
+        if (newIds.isEmpty()) return true
+
+        Log.d(HTTP_TAG, "playlist has ${tsIds.size} .ts entries, fetching ${newIds.size} new (tail-bounded to $WINDOW_SIZE)")
+
+        // 5. Fetch metadata for each new ID. Accumulate into the map, but emit the
+        //    StateFlow only ONCE per poll (below) — not per segment — so a batch of
+        //    N new segments triggers a single recomposition instead of N.
+        var fetched = 0
+        for (id in newIds) {
+            val metadataUrl = "$serverUrl/api/metadata/${segmentIdToFilename(id)}"
+            val jsonBody = fetchUrl(metadataUrl) ?: continue
+
+            try {
+                val json = JSONObject(jsonBody)
+                val segment = SubtitleParser.parseSegment(json)
+                synchronized(lock) {
+                    segmentMap[segment.segment_id] = segment
+                    seenIds.add(segment.segment_id)
+                    // Cap at 200 entries — remove oldest (first inserted)
+                    while (segmentMap.size > 200) {
+                        val iterator = segmentMap.iterator()
+                        if (iterator.hasNext()) {
+                            val (oldestId, _) = iterator.next()
+                            iterator.remove()
+                            seenIds.remove(oldestId)
+                        }
+                    }
+                }
+                fetched++
+            } catch (e: Exception) {
+                Log.w(HTTP_TAG, "parse error for id=$id: ${e.message}")
+            }
+        }
+
+        // 6. Single emit per poll batch.
+        if (fetched > 0) {
+            synchronized(lock) {
+                _segments.value = segmentMap.values.sortedBy { it.timeline_start_sec }
+            }
+            Log.i(HTTP_TAG, "fetched $fetched new segments, total=${segmentMap.size}")
+        }
+        return true
+    }
+
+    /** Fetch a URL and return its body as a string, or null on failure. */
+    private fun fetchUrl(url: String): String? {
+        return try {
+            val request = Request.Builder().url(url).build()
+            val response = client.newCall(request).execute()
+            if (response.isSuccessful) {
+                response.body?.string()
+            } else {
+                Log.w(HTTP_TAG, "HTTP ${response.code} for $url")
+                response.close()
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(HTTP_TAG, "fetch failed $url: ${e.message}")
+            null
+        }
+    }
+
+    /** Extract segment IDs from an M3U8 playlist body (e.g. "000000123.ts" → 123). */
+    private fun parseTsIds(playlistBody: String): List<Int> {
+        return playlistBody.lines()
+            .mapNotNull { line ->
+                val trimmed = line.trim()
+                tsFilePattern.matchEntire(trimmed)?.let { match ->
+                    match.groupValues[1].toIntOrNull()
+                }
+            }
+    }
+
+    override fun disconnect() {
+        Log.i(HTTP_TAG, "disconnect total_segments=${segmentMap.size}")
+        pollJob?.cancel()
+        pollJob = null
+        _connected.value = ConnectionStatus.DISCONNECTED
+        synchronized(lock) {
+            segmentMap.clear()
+            seenIds.clear()
+            _segments.value = emptyList()
+        }
+    }
+
+    companion object {
+        /**
+         * Max number of most-recent playlist segments to pull. Bounds the initial
+         * fetch so a long archived playlist (600+ entries) never floods the app.
+         * ~100 segments × ~3 s ≈ 5 min — comfortably covers the delay-seek band.
+         */
+        private const val WINDOW_SIZE = 100
+
+        /** Zero-padded 9-digit filename, e.g. segment ID 123 → "000000123.json". */
+        fun segmentIdToFilename(id: Int): String {
+            return id.toString().padStart(9, '0') + ".json"
+        }
+    }
+}

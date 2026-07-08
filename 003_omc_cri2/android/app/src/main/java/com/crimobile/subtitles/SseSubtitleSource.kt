@@ -86,14 +86,16 @@ class SseSubtitleSource : SubtitleSource {
         try {
             val json = JSONObject(data)
             val segmentJson = json.getJSONObject("segment")
-            val segment = parseSegment(segmentJson)
+            val segment = SubtitleParser.parseSegment(segmentJson)
 
             synchronized(lock) {
                 segmentMap[segment.segment_id] = segment
-                if (segmentMap.size > 200) {
+                // Cap at 200 entries — remove oldest (first inserted)
+                while (segmentMap.size > 200) {
                     val iterator = segmentMap.iterator()
-                    repeat(segmentMap.size - 200) {
-                        if (iterator.hasNext()) { iterator.next(); iterator.remove() }
+                    if (iterator.hasNext()) {
+                        iterator.next()
+                        iterator.remove()
                     }
                 }
                 _segments.value = segmentMap.values.sortedBy { it.timeline_start_sec }
@@ -109,36 +111,6 @@ class SseSubtitleSource : SubtitleSource {
         } catch (e: Exception) {
             Log.w(SSE_TAG, "parse error: ${e.message}")
         }
-    }
-
-    private fun parseSegment(json: JSONObject): SubtitleSegment {
-        val wordsArray = json.optJSONArray("words") ?: org.json.JSONArray()
-        val words = mutableListOf<com.crimobile.model.WordEntry>()
-        for (i in 0 until wordsArray.length()) {
-            val w = wordsArray.getJSONObject(i)
-            words.add(
-                com.crimobile.model.WordEntry(
-                    text = w.optString("text", ""),
-                    char_start = w.optInt("char_start", 0),
-                    char_end = w.optInt("char_end", 0),
-                    start_sec = w.optDouble("start_sec", 0.0),
-                    end_sec = w.optDouble("end_sec", 0.0),
-                    pinyin = w.optString("pinyin", ""),
-                    translation = w.optString("translation", "")
-                )
-            )
-        }
-
-        return SubtitleSegment(
-            segment_id = json.optInt("segment_id", 0),
-            timeline_start_sec = json.optDouble("timeline_start_sec", 0.0),
-            timeline_end_sec = json.optDouble("timeline_end_sec", 0.0),
-            ts_file = json.optString("ts_file", ""),
-            text_zh = json.optString("text_zh", ""),
-            text_pinyin = json.optString("text_pinyin", ""),
-            text_en = json.optString("text_en", ""),
-            words = words
-        )
     }
 
     override fun disconnect() {

@@ -31,11 +31,11 @@ func (s *Server) NewRouter() http.Handler {
 
 	// HLS static files — audio segments and playlist
 	hlsFS := http.FileServer(http.Dir(s.HLSDir))
-	mux.Handle("/hls/", http.StripPrefix("/hls/", hlsFS))
+	mux.Handle("/hls/", corsWrapper(http.StripPrefix("/hls/", hlsFS)))
 
 	// Metadata static files — individual segment JSON
 	metaFS := http.FileServer(http.Dir(s.MetaDir))
-	mux.Handle("/api/metadata/", http.StripPrefix("/api/metadata/", metaFS))
+	mux.Handle("/api/metadata/", corsWrapper(http.StripPrefix("/api/metadata/", metaFS)))
 
 	// SSE — real-time subtitle push
 	mux.HandleFunc("/api/subtitles", s.handleSSE)
@@ -224,9 +224,19 @@ func (s *Server) handleSegmentRange(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// corsWrapper adds CORS headers to every response from the wrapped handler.
+// Needed for static file servers (http.FileServer) which don't set CORS themselves.
+func corsWrapper(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // WriteError writes a JSON error response.
 func WriteError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
