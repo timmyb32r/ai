@@ -144,6 +144,25 @@ else
     echo "   ✓ cedict_ts.u8 ($(wc -l < "${CEDICT_FILE}") entries)"
 fi
 
+# ── BKRS (大БКРС) Chinese-Russian dictionary ────────────────────────────────
+# Daily raw dump from bkrs.info (plain UTF-8, no password).
+# Try today's date first, fall back to yesterday.
+BKRS_FILE="dabkrs.gz"
+if [ -f "${BKRS_FILE}" ]; then
+    echo "==> BKRS dump already cached ($(du -h "${BKRS_FILE}" | cut -f1))"
+else
+    TODAY=$(date -u +%y%m%d)
+    YESTERDAY=$(date -u -d "yesterday" +%y%m%d 2>/dev/null || date -u -v-1d +%y%m%d)
+    BKRS_URL="https://bkrs.info/downloads/daily/dabkrs_${TODAY}.gz"
+    echo "==> Downloading BKRS daily dump (trying ${TODAY})..."
+    if ! curl -fL --progress-bar "${BKRS_URL}" -o "${BKRS_FILE}" 2>/dev/null; then
+        BKRS_URL="https://bkrs.info/downloads/daily/dabkrs_${YESTERDAY}.gz"
+        echo "==> Today's dump not available, trying yesterday (${YESTERDAY})..."
+        curl -fL --progress-bar "${BKRS_URL}" -o "${BKRS_FILE}"
+    fi
+    echo "   ✓ dabkrs.gz ($(du -h "${BKRS_FILE}" | cut -f1))"
+fi
+
 # ── gse dictionaries ──────────────────────────────────────────────────────
 if [ -d "gse-dict" ] && [ -f "gse-dict/zh/s_1.txt" ]; then
     echo "==> gse dictionaries already cached"
@@ -161,6 +180,7 @@ fi
 cat > "${CACHE_DIR}/.build-config" <<EOF
 ASR_ENGINE=${ENGINE}
 ASR_MODEL=${MODEL}
+BKRS_PATH=/opt/dabkrs.gz
 EOF
 
 # ── Write .env for docker-compose (static vars only; ASR is baked into image) ─

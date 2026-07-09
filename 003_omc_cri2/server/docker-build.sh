@@ -38,10 +38,11 @@ if [ -z "${ASR_ENGINE:-}" ] || [ -z "${ASR_MODEL:-}" ]; then
 fi
 
 echo "=== CRI Radio: Docker Build ==="
-echo "Engine: ${ASR_ENGINE}"
-echo "Model:  ${ASR_MODEL}"
-echo "Base:   ${BASE_IMAGE}"
-echo "Server: ${SERVER_IMAGE}"
+echo "Engine:   ${ASR_ENGINE}"
+echo "Model:    ${ASR_MODEL}"
+echo "Dict:     ${DICT:-bkrs} (BKRS_PATH=${BKRS_PATH:-/opt/dabkrs.gz})"
+echo "Base:     ${BASE_IMAGE}"
+echo "Server:   ${SERVER_IMAGE}"
 echo ""
 
 # ── validate cache ───────────────────────────────────────────────────────

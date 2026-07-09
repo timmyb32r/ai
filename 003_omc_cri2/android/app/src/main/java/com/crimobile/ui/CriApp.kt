@@ -17,6 +17,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -1155,6 +1157,7 @@ private fun SegmentCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WordPopupDialog(
     popup: WordPopupState,
@@ -1164,30 +1167,126 @@ private fun WordPopupDialog(
     onPlayFromHere: () -> Unit = {}
 ) {
     val clipboard = LocalClipboardManager.current
-    AlertDialog(
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = CardBg,
-        title = {
+        sheetState = sheetState,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = TextSecondary) }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            // Header: character + copy button
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(popup.word.text, fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Amber)
+                Text(
+                    popup.word.text,
+                    fontSize = 36.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Amber
+                )
+                Spacer(Modifier.width(8.dp))
                 IconButton(onClick = {
                     clipboard.setText(AnnotatedString(popup.word.text))
                 }) {
-                    Icon(Icons.Default.ContentCopy, "Copy", tint = TextSecondary,
-                        modifier = Modifier.size(20.dp))
+                    Icon(
+                        Icons.Default.ContentCopy, "Copy", tint = TextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
-        },
-        text = {
-            Column {
-                DetailRow("Pinyin", pinyinToDiacritic(popup.pinyin))
-                Spacer(Modifier.height(8.dp))
-                DetailRow("Translation", popup.translation)
+
+            // Pinyin with diacritics
+            if (popup.pinyin.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = pinyinToDiacritic(popup.pinyin),
+                    color = TextPinyin,
+                    fontSize = 16.sp
+                )
             }
-        },
-        confirmButton = {
+
+            // Structured senses (BKRS) or flat translation (CC-CEDICT)
+            if (popup.senses.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                popup.senses.forEach { sense ->
+                    Spacer(Modifier.height(8.dp))
+                    Row {
+                        // Sense number
+                        if (sense.number > 0) {
+                            Text(
+                                "${sense.number}. ",
+                                color = Amber,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Column {
+                            // Labels as small tag chips
+                            if (sense.labels.isNotEmpty()) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    sense.labels.forEach { label ->
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = TextSecondary.copy(alpha = 0.15f)
+                                        ) {
+                                            Text(
+                                                label,
+                                                color = TextSecondary,
+                                                fontSize = 12.sp,
+                                                modifier = Modifier.padding(
+                                                    horizontal = 4.dp,
+                                                    vertical = 1.dp
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(2.dp))
+                            }
+                            // Translation text
+                            Text(
+                                sense.text,
+                                color = TextPrimary,
+                                fontSize = 15.sp
+                            )
+                            // Usage notes (italic)
+                            if (sense.notes.isNotBlank()) {
+                                Text(
+                                    sense.notes,
+                                    color = TextSecondary,
+                                    fontSize = 13.sp,
+                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback: flat translation display
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Translation",
+                    color = TextSecondary,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(popup.translation, color = TextPrimary, fontSize = 15.sp)
+            }
+
+            // Action buttons
+            Spacer(Modifier.height(16.dp))
             val durationSec = popup.word.end_sec - popup.word.start_sec
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 TextButton(onClick = onPlayFromHere) {
                     Icon(Icons.Default.PlayArrow, null, tint = Amber)
                     Spacer(Modifier.width(4.dp))
@@ -1204,16 +1303,15 @@ private fun WordPopupDialog(
                     Text("Save", color = Green)
                 }
             }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Close", color = TextSecondary) } }
-    )
-}
 
-@Composable
-private fun DetailRow(label: String, value: String) {
-    Row {
-        Text("$label: ", color = TextSecondary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-        Text(value, color = TextPrimary, fontSize = 16.sp)
+            // Close button
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            ) {
+                Text("Close", color = TextSecondary)
+            }
+        }
     }
 }
 

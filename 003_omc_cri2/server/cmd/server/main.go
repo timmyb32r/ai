@@ -60,10 +60,25 @@ func main() {
 	}
 	defer tok.Close()
 
-	// Dictionary
-	dict, err := dictionary.Load(cfg.DictPath)
-	if err != nil {
-		logger.Error("main", "dictionary_init_failed", "err", err)
+	// Dictionary: select by DICT env (mirrors ASR engine selection).
+	var dict dictionary.Dictionary
+	switch cfg.Dict {
+	case "bkrs":
+		dict, err = dictionary.LoadBKRS(cfg.BKRSPath)
+		if err != nil {
+			logger.Error("main", "bkrs_init_failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("main", "dictionary", "dict", "bkrs", "path", cfg.BKRSPath)
+	case "cedict":
+		dict, err = dictionary.Load(cfg.DictPath)
+		if err != nil {
+			logger.Error("main", "cedict_init_failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("main", "dictionary", "dict", "cedict", "path", cfg.DictPath)
+	default:
+		logger.Error("main", "unknown_dict", "dict", cfg.Dict)
 		os.Exit(1)
 	}
 	defer dict.Close()

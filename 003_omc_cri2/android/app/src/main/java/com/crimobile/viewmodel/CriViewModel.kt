@@ -388,7 +388,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         word = action.word,
                         segment = segment ?: return,
                         pinyin = action.word.pinyin,
-                        translation = action.word.translation
+                        translation = action.word.translation,
+                        senses = action.word.senses
                     )
                 )
                 savedWord.value = action.word

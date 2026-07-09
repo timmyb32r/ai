@@ -12,6 +12,13 @@ data class SubtitleSegment(
 )
 
 
+data class WordSense(
+    val number: Int = 0,
+    val labels: List<String> = emptyList(),
+    val text: String = "",
+    val notes: String = ""
+)
+
 data class WordEntry(
     val text: String,
     val char_start: Int,
@@ -19,7 +26,8 @@ data class WordEntry(
     val start_sec: Double,
     val end_sec: Double,
     val pinyin: String,
-    val translation: String
+    val translation: String,
+    val senses: List<WordSense> = emptyList()
 )
 
 
@@ -47,5 +55,6 @@ data class WordPopupState(
     val word: WordEntry,
     val segment: SubtitleSegment,
     val pinyin: String,
-    val translation: String
+    val translation: String,
+    val senses: List<WordSense> = emptyList()
 )

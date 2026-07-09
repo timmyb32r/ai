@@ -13,6 +13,8 @@ func TestConfigDefaults(t *testing.T) {
 	os.Unsetenv("MODEL_PATH")
 	os.Unsetenv("CEDICT_PATH")
 	os.Unsetenv("GSE_DICT_PATH")
+	os.Unsetenv("DICT")
+	os.Unsetenv("BKRS_PATH")
 
 	cfg := FromEnv()
 
@@ -28,6 +30,12 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.Addr != ":8080" {
 		t.Errorf("default Addr: got %s, want :8080", cfg.Addr)
 	}
+	if cfg.Dict != "bkrs" {
+		t.Errorf("default Dict: got %s, want bkrs", cfg.Dict)
+	}
+	if cfg.BKRSPath != "/opt/dabkrs.gz" {
+		t.Errorf("default BKRSPath: got %s, want /opt/dabkrs.gz", cfg.BKRSPath)
+	}
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -37,12 +45,29 @@ func TestConfigValidate(t *testing.T) {
 		errMsg string
 	}{
 		{
-			name: "valid config",
+			name: "valid config — bkrs",
 			cfg: &Config{
 				ChannelURL: "https://example.com/radio.m3u8",
 				OutputDir:  "/tmp/test",
 				ModelPath:  "/opt/model.bin",
-				DictPath:   "/opt/dict.u8",
+				Dict:       "bkrs",
+				BKRSPath:   "/opt/dabkrs.gz",
+				GSEDictDir: "/opt/gse",
+				HLSTime:    3,
+				HLSWindow:  3600,
+				Delay:      180 * time.Second,
+				Addr:       ":8080",
+				LogLevel:   "info",
+			},
+		},
+		{
+			name: "valid config — cedict",
+			cfg: &Config{
+				ChannelURL: "https://example.com/radio.m3u8",
+				OutputDir:  "/tmp/test",
+				ModelPath:  "/opt/model.bin",
+				Dict:       "cedict",
+				DictPath:   "/opt/cedict_ts.u8",
 				GSEDictDir: "/opt/gse",
 				HLSTime:    3,
 				HLSWindow:  3600,
@@ -53,18 +78,33 @@ func TestConfigValidate(t *testing.T) {
 		},
 		{
 			name:   "empty ChannelURL",
-			cfg:    &Config{ChannelURL: "", OutputDir: "/tmp", ModelPath: "/m", DictPath: "/d", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			cfg:    &Config{ChannelURL: "", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
 			errMsg: "CHANNEL_URL",
 		},
 		{
 			name:   "invalid HLSTime",
-			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", DictPath: "/d", GSEDictDir: "/g", HLSTime: 0, HLSWindow: 100, LogLevel: "info"},
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", HLSTime: 0, HLSWindow: 100, LogLevel: "info"},
 			errMsg: "HLS_TIME",
 		},
 		{
 			name:   "invalid LogLevel",
-			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", DictPath: "/d", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "verbose"},
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "verbose"},
 			errMsg: "LOG_LEVEL",
+		},
+		{
+			name:   "invalid DICT value",
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "invalid", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			errMsg: "DICT",
+		},
+		{
+			name:   "bkrs without BKRS_PATH",
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			errMsg: "BKRS_PATH",
+		},
+		{
+			name:   "cedict without CEDICT_PATH",
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "cedict", DictPath: "", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			errMsg: "CEDICT_PATH",
 		},
 	}
 
@@ -88,12 +128,20 @@ func TestConfigFromEnv(t *testing.T) {
 	defer os.Unsetenv("LOG_LEVEL")
 
 	cfg := FromEnv()
-	// Need to set required fields since FromEnv reads them with defaults.
-	// We're testing that env vars override defaults.
 	if cfg.HLSTime != 5 {
 		t.Errorf("HLSTime from env: got %d, want 5", cfg.HLSTime)
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel from env: got %s, want debug", cfg.LogLevel)
+	}
+}
+
+func TestDictEnvVar(t *testing.T) {
+	os.Setenv("DICT", "cedict")
+	defer os.Unsetenv("DICT")
+
+	cfg := FromEnv()
+	if cfg.Dict != "cedict" {
+		t.Errorf("Dict from env: got %s, want cedict", cfg.Dict)
 	}
 }

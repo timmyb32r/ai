@@ -47,10 +47,27 @@ else
 fi
 
 # ── Validate dictionary ───────────────────────────────────────────────────
-if [ ! -f "${CEDICT_PATH}" ]; then
-    echo "ERROR: CC-CEDICT dictionary not found at ${CEDICT_PATH}" >&2
-    exit 1
-fi
+DICT="${DICT:-bkrs}"
+case "${DICT}" in
+    bkrs)
+        if [ ! -f "${BKRS_PATH}" ]; then
+            echo "ERROR: BKRS dictionary not found at ${BKRS_PATH}" >&2
+            exit 1
+        fi
+        echo "BKRS dump:  ${BKRS_PATH} ($(du -h "${BKRS_PATH}" 2>/dev/null | cut -f1 || echo 'N/A'))"
+        ;;
+    cedict)
+        if [ ! -f "${CEDICT_PATH}" ]; then
+            echo "ERROR: CC-CEDICT dictionary not found at ${CEDICT_PATH}" >&2
+            exit 1
+        fi
+        echo "CEDICT:     ${CEDICT_PATH} ($(wc -l < "${CEDICT_PATH}" 2>/dev/null || echo 'N/A') entries)"
+        ;;
+    *)
+        echo "ERROR: Unknown DICT '${DICT}'. Valid: bkrs, cedict" >&2
+        exit 1
+        ;;
+esac
 
 # ── Validate ffmpeg ──────────────────────────────────────────────────────
 if ! command -v ffmpeg >/dev/null 2>&1; then

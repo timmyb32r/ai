@@ -3,12 +3,21 @@ package dictionary
 
 import "fmt"
 
-// Entry represents a single CC-CEDICT dictionary entry.
+// Sense represents one numbered meaning within a dictionary entry (BKRS structure).
+type Sense struct {
+	Number int      `json:"number"` // meaning number (1, 2, 3, ...), 0 if unnumbered
+	Labels []string `json:"labels"` // grammatical/style labels (e.g. "уст.", "г.")
+	Text   string   `json:"text"`   // the translation text for this sense
+	Notes  string   `json:"notes"`  // italic/usage notes (e.g. "о человеке")
+}
+
+// Entry represents a single dictionary entry (CC-CEDICT or BKRS).
 type Entry struct {
-	Traditional string
-	Simplified  string
-	Pinyin      string
-	Meanings    []string
+	Traditional string   `json:"traditional"`
+	Simplified  string   `json:"simplified"`
+	Pinyin      string   `json:"pinyin"`
+	Meanings    []string `json:"meanings"`        // flat list (CC-CEDICT compat)
+	Senses      []Sense  `json:"senses,omitempty"` // structured (BKRS)
 }
 
 func (e *Entry) String() string {

@@ -16,6 +16,29 @@ object SubtitleParser {
         val words = mutableListOf<WordEntry>()
         for (i in 0 until wordsArray.length()) {
             val w = wordsArray.getJSONObject(i)
+            // Parse structured senses (BKRS)
+            val sensesArray = w.optJSONArray("senses")
+            val senses = mutableListOf<com.crimobile.model.WordSense>()
+            if (sensesArray != null) {
+                for (j in 0 until sensesArray.length()) {
+                    val so = sensesArray.getJSONObject(j)
+                    val labelsArray = so.optJSONArray("labels")
+                    val labels = mutableListOf<String>()
+                    if (labelsArray != null) {
+                        for (k in 0 until labelsArray.length()) {
+                            labels.add(labelsArray.optString(k, ""))
+                        }
+                    }
+                    senses.add(
+                        com.crimobile.model.WordSense(
+                            number = so.optInt("number", 0),
+                            labels = labels,
+                            text = so.optString("text", ""),
+                            notes = so.optString("notes", "")
+                        )
+                    )
+                }
+            }
             words.add(
                 WordEntry(
                     text = w.optString("text", ""),
@@ -24,7 +47,8 @@ object SubtitleParser {
                     start_sec = w.optDouble("start_sec", 0.0),
                     end_sec = w.optDouble("end_sec", 0.0),
                     pinyin = w.optString("pinyin", ""),
-                    translation = w.optString("translation", "")
+                    translation = w.optString("translation", ""),
+                    senses = senses
                 )
             )
         }

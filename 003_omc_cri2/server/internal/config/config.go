@@ -16,7 +16,9 @@ type Config struct {
 	ModelPath       string        // Path to ASR model file/directory
 	AsrEngine       string        // ASR engine: "whisper" or "sherpa-onnx"
 	AsrModel        string        // Model codename from registry (e.g. "ggml-small", "sense-voice-2024")
-	DictPath        string        // Path to CC-CEDICT dictionary (cedict_ts.u8)
+	Dict            string        // Dictionary: "bkrs" or "cedict" (env DICT, default "bkrs")
+	DictPath        string        // Path to CC-CEDICT dictionary (cedict_ts.u8) — used when DICT=cedict
+	BKRSPath        string        // Path to BKRS raw dump (dabkrs.gz) — used when DICT=bkrs
 	GSEDictDir      string        // Path to gse dictionary directory
 	HLSTime         int           // Seconds per HLS segment (default: 3)
 	HLSWindow       int           // Number of HLS segments to keep (default: 3600 = 3 hours)
@@ -35,7 +37,9 @@ func FromEnv() *Config {
 		ModelPath:       envStr("MODEL_PATH", "/opt/models/ggml-large-v3.bin"),
 		AsrEngine:       envStr("ASR_ENGINE", "whisper"),
 		AsrModel:        envStr("ASR_MODEL", "ggml-large"),
+		Dict:            envStr("DICT", "bkrs"),
 		DictPath:        envStr("CEDICT_PATH", "/opt/cedict_ts.u8"),
+		BKRSPath:        envStr("BKRS_PATH", "/opt/dabkrs.gz"),
 		GSEDictDir:      envStr("GSE_DICT_PATH", "/opt/gse-dict"),
 		HLSTime:         envInt("HLS_TIME", 3),
 		HLSWindow:       envInt("HLS_WINDOW", 3600),
@@ -61,8 +65,14 @@ func (c *Config) Validate() error {
 	if c.AsrEngine != "" && c.AsrEngine != "whisper" && c.AsrEngine != "sherpa-onnx" {
 		return fmt.Errorf("ASR_ENGINE must be 'whisper' or 'sherpa-onnx', got %q", c.AsrEngine)
 	}
-	if c.DictPath == "" {
-		return fmt.Errorf("CEDICT_PATH is required")
+	if c.Dict != "bkrs" && c.Dict != "cedict" {
+		return fmt.Errorf("DICT must be 'bkrs' or 'cedict', got %q", c.Dict)
+	}
+	if c.Dict == "bkrs" && c.BKRSPath == "" {
+		return fmt.Errorf("BKRS_PATH is required when DICT=bkrs")
+	}
+	if c.Dict == "cedict" && c.DictPath == "" {
+		return fmt.Errorf("CEDICT_PATH is required when DICT=cedict")
 	}
 	if c.GSEDictDir == "" {
 		return fmt.Errorf("GSE_DICT_PATH is required")

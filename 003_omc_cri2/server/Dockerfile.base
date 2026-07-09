@@ -79,6 +79,15 @@ COPY .docker-cache/cedict_ts.u8 /opt/cedict_ts.u8
 RUN test -s /opt/cedict_ts.u8 \
  && echo "CEDICT entries: $(wc -l < /opt/cedict_ts.u8)"
 
+# ── BKRS (大БКРС) Chinese-Russian dictionary ─────────────────────────────
+# Pre-downloaded by download-cache.sh. Optional — only validated when DICT=bkrs.
+COPY .docker-cache/dabkrs.gz /opt/dabkrs.gz
+RUN if [ -s /opt/dabkrs.gz ]; then \
+      echo "BKRS dump: $(du -h /opt/dabkrs.gz | cut -f1)"; \
+    else \
+      echo "WARNING: BKRS dump not found — set DICT=cedict for English mode" >&2; \
+    fi
+
 # ── gse Chinese word segmentation dictionaries ──────────────────────────
 COPY .docker-cache/gse-dict/ /opt/gse-dict/
 RUN test -f /opt/gse-dict/zh/s_1.txt \
@@ -93,6 +102,8 @@ ENV ADDR=:8080 \
     ASR_MODEL=${ASR_MODEL} \
     MODEL_PATH=/opt/models \
     GSE_DICT_PATH=/opt/gse-dict \
+    DICT=bkrs \
+    BKRS_PATH=/opt/dabkrs.gz \
     CEDICT_PATH=/opt/cedict_ts.u8 \
     CHANNEL_URL=https://sk.cri.cn/905.m3u8 \
     OUTPUT_DIR=/tmp/china_radio_international \
