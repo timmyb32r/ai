@@ -48,12 +48,15 @@ class SubtitleSyncEngine(
             val wordEndMs = (word.end_sec * 1000).toLong()
             when {
                 timelineMs < wordStartMs -> {
-                    // Before this word — remember it as the next upcoming word
-                    // in case the timeline is between the segment start and the first word.
-                    activeWord = word
+                    // Strictly before this word — search earlier words only.
+                    // An upcoming word is NOT active: before the first word there
+                    // is no active word (activeWord stays null → returns null).
                     hi = mid - 1
                 }
                 timelineMs >= wordEndMs -> {
+                    // At/after this word's end — it is the most recent word so far;
+                    // keep it as the candidate. Covers gaps between words and the
+                    // tail after the last word.
                     activeWord = word
                     lo = mid + 1
                 }
