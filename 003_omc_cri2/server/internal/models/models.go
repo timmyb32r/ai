@@ -39,7 +39,7 @@ type WordEntry struct {
 	StartSec   float64     `json:"start_sec"`
 	EndSec     float64     `json:"end_sec"`
 	Pinyin     string      `json:"pinyin"`                // word-level pinyin
-	CharPinyin []string    `json:"char_pinyin,omitempty"`  // per-character pinyin syllables
+	CharPinyin []string    `json:"char_pinyin"`  // per-character pinyin syllables
 	Trans      string      `json:"translation"`            // flat translation (backward compat)
 	Senses     []WordSense `json:"senses,omitempty"`       // structured senses (BKRS)
 }

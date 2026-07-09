@@ -1,5 +1,6 @@
 package com.crimobile.subtitles
 
+import android.util.Log
 import com.crimobile.model.SubtitleSegment
 import com.crimobile.model.WordEntry
 import org.json.JSONObject
@@ -46,6 +47,9 @@ object SubtitleParser {
                 for (j in 0 until charPinyinArray.length()) {
                     charPinyin.add(charPinyinArray.optString(j, ""))
                 }
+            }
+            if (charPinyin.isEmpty() && !w.optString("pinyin", "").isNullOrBlank()) {
+                Log.w("CRIRadio:parse", "word=${w.optString("text")} — char_pinyin MISSING, pinyin=${w.optString("pinyin")}")
             }
             words.add(
                 WordEntry(
