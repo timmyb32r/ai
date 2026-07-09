@@ -42,6 +42,7 @@ data class CriViewState(
     val showWordBoundaries: Boolean = false,  // subtle underline under words
     val showAudioBoundaries: Boolean = false,  // debug: show .ts file boundaries
     val pinyinFontSizeSp: Int = 9,  // pinyin font size in sp
+    val dictFontSizeSp: Int = 14,  // dictionary bottom sheet font size in sp
     val debugEnabled: Boolean = false,  // true when .cri_debug file exists
     val metadataProtocol: String = "HTTP",  // "HTTP" or "SSE"
     val wordPopup: WordPopupState? = null,
@@ -84,6 +85,7 @@ sealed class CriAction {
     object ToggleWordBoundaries : CriAction()
     object ToggleAudioBoundaries : CriAction()
     data class SetPinyinFontSize(val sp: Int) : CriAction()
+    data class SetDictFontSize(val sp: Int) : CriAction()
     object EnableDebug : CriAction()
     data class SetPlaybackMode(val mode: PlaybackMode) : CriAction()
     data class UpdateSyncConfig(val config: SyncConfig) : CriAction()
@@ -124,6 +126,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             showWordBoundaries = prefs.getBoolean("show_word_boundaries", false),
             showAudioBoundaries = prefs.getBoolean("show_audio_boundaries", false),
             pinyinFontSizeSp = prefs.getInt("pinyin_font_size_sp", 9),
+            dictFontSizeSp = prefs.getInt("dict_font_size_sp", 14),
             debugEnabled = prefs.getBoolean("debug_enabled", false),
             metadataProtocol = prefs.getString("metadata_protocol", "HTTP") ?: "HTTP",
         )
@@ -439,6 +442,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             is CriAction.SetPinyinFontSize -> {
                 _state.value = _state.value.copy(pinyinFontSizeSp = action.sp)
                 prefs.edit().putInt("pinyin_font_size_sp", action.sp).apply()
+            }
+            is CriAction.SetDictFontSize -> {
+                _state.value = _state.value.copy(dictFontSizeSp = action.sp)
+                prefs.edit().putInt("dict_font_size_sp", action.sp).apply()
             }
             CriAction.EnableDebug -> {
                 _state.value = _state.value.copy(debugEnabled = true)

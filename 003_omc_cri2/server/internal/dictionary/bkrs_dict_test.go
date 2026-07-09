@@ -351,6 +351,138 @@ func TestSplitWordPinyin_UnspacedWithComma(t *testing.T) {
 	}
 }
 
+func TestSplitWordPinyin_Apostrophe_Separator(t *testing.T) {
+	// 哈尔克岛 (ha1'er3ke4dao3) — apostrophe as syllable boundary.
+	tests := []struct {
+		name   string
+		pinyin string
+		want   []string
+	}{
+		{"ASCII apostrophe", "ha1'er3ke4dao3", []string{"ha1", "er3", "ke4", "dao3"}},
+		{"smart apostrophe U+2019", "ha1’er3ke4dao3", []string{"ha1", "er3", "ke4", "dao3"}},
+		{"no tone with apostrophe", "ha'er'ke'dao", []string{"ha", "er", "ke", "dao"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := splitWordPinyin("哈尔克岛", tt.pinyin, nil)
+			if len(result) != 4 {
+				t.Fatalf("expected 4 syllables, got %d: %v", len(result), result)
+			}
+			for i, want := range tt.want {
+				if result[i] != want {
+					t.Errorf("[%d]: got %q, want %q", i, result[i], want)
+				}
+			}
+		})
+	}
+}
+
+func TestSplitWordPinyin_Xian_Apostrophe(t *testing.T) {
+	// 西安 (xi1'an1) — apostrophe prevents reading as "xian1".
+	result := splitWordPinyin("西安", "xi1'an1", nil)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 syllables, got %d: %v", len(result), result)
+	}
+	if result[0] != "xi1" {
+		t.Errorf("[0]: got %q, want xi1", result[0])
+	}
+	if result[1] != "an1" {
+		t.Errorf("[1]: got %q, want an1", result[1])
+	}
+}
+
+func TestSplitWordPinyin_SmartApostropheUnspaced(t *testing.T) {
+	// Unicode smart apostrophe between syllables.
+	result := splitWordPinyin("西安", "xi1’an1", nil)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 syllables, got %d: %v", len(result), result)
+	}
+	if result[0] != "xi1" {
+		t.Errorf("[0]: got %q, want xi1", result[0])
+	}
+	if result[1] != "an1" {
+		t.Errorf("[1]: got %q, want an1", result[1])
+	}
+}
+
+func TestSplitWordPinyin_DashSeparated(t *testing.T) {
+	// 科技新闻 (ke1-ji4-xin1-wen2) — dash as syllable separator.
+	result := splitWordPinyin("科技新闻", "ke1-ji4-xin1-wen2", nil)
+	if len(result) != 4 {
+		t.Fatalf("expected 4 syllables, got %d: %v", len(result), result)
+	}
+	want := []string{"ke1", "ji4", "xin1", "wen2"}
+	for i, w := range want {
+		if result[i] != w {
+			t.Errorf("[%d]: got %q, want %q", i, result[i], w)
+		}
+	}
+}
+
+func TestSplitWordPinyin_DashNoTones(t *testing.T) {
+	result := splitWordPinyin("科技新闻", "ke-ji-xin-wen", nil)
+	if len(result) != 4 {
+		t.Fatalf("expected 4 syllables, got %d: %v", len(result), result)
+	}
+	want := []string{"ke", "ji", "xin", "wen"}
+	for i, w := range want {
+		if result[i] != w {
+			t.Errorf("[%d]: got %q, want %q", i, result[i], w)
+		}
+	}
+}
+
+func TestSplitWordPinyin_MixedDashAndSpace(t *testing.T) {
+	result := splitWordPinyin("科技新闻", "ke1-ji4 xin1-wen2", nil)
+	if len(result) != 4 {
+		t.Fatalf("expected 4 syllables, got %d: %v", len(result), result)
+	}
+	want := []string{"ke1", "ji4", "xin1", "wen2"}
+	for i, w := range want {
+		if result[i] != w {
+			t.Errorf("[%d]: got %q, want %q", i, result[i], w)
+		}
+	}
+}
+
+func TestSplitWordPinyin_LiAn_Unspaced(t *testing.T) {
+	// 离岸 (li2an4) — must split as li2 + an4, not l + i2an4.
+	charMap := map[string][]string{
+		"离": {"li2"},
+		"岸": {"an4"},
+	}
+	result := splitWordPinyin("离岸", "li2an4", charMap)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 syllables, got %d: %v", len(result), result)
+	}
+	if result[0] != "li2" {
+		t.Errorf("[0]: got %q, want li2", result[0])
+	}
+	if result[1] != "an4" {
+		t.Errorf("[1]: got %q, want an4", result[1])
+	}
+}
+
+func TestSplitWordPinyin_ZhongYao_Unspaced(t *testing.T) {
+	// 重要 (zhongyao) — unspaced without tones, must split via charMap.
+	charMap := map[string][]string{
+		"重": {"zhong4", "chong2"},
+		"要": {"yao4", "yao1"},
+	}
+	result := splitWordPinyin("重要", "zhongyao", charMap)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 syllables, got %d: %v", len(result), result)
+	}
+	if result[0] != "zhong4" {
+		t.Errorf("[0]: got %q, want zhong4", result[0])
+	}
+	// Both yao4 and yao1 are valid — split is what matters.
+	if result[1] != "yao4" && result[1] != "yao1" {
+		t.Errorf("[1]: got %q, want yao4 or yao1", result[1])
+	}
+}
+
 func TestParseBKRSRecord_Typical(t *testing.T) {
 	entry := parseBKRSRecord("方面", "fang1 mian4", "[m1]сторона, аспект[/m] [m2][p]перен.[/p]грань[/m]")
 

@@ -16,7 +16,7 @@ class VocabularyStore(private val context: Context) {
     private val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
 
     fun appendWord(word: WordEntry, context: String) {
-        val line = "${word.text}\t${word.pinyin}\t${word.translation}\t$context\n"
+        val line = "${word.text}\n"
         val file = File(dir, filename)
 
         try {

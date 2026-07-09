@@ -239,6 +239,8 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                         onToggleAudioBoundaries = { onAction(CriAction.ToggleAudioBoundaries) },
                         pinyinFontSizeSp = state.pinyinFontSizeSp,
                         onPinyinFontSize = { onAction(CriAction.SetPinyinFontSize(it)) },
+                        dictFontSizeSp = state.dictFontSizeSp,
+                        onDictFontSize = { onAction(CriAction.SetDictFontSize(it)) },
                         metadataProtocol = state.metadataProtocol,
                         onMetadataProtocol = { onAction(CriAction.SetMetadataProtocol(it)) }
                     )
@@ -349,7 +351,8 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                 onPlayFromHere = {
                     onAction(CriAction.DismissPopup)
                     onAction(CriAction.Resume)
-                }
+                },
+                dictFontSizeSp = state.dictFontSizeSp
             )
         }
     }
@@ -597,6 +600,8 @@ private fun SettingsDialog(
     onToggleAudioBoundaries: () -> Unit = {},
     pinyinFontSizeSp: Int = 9,
     onPinyinFontSize: (Int) -> Unit = {},
+    dictFontSizeSp: Int = 14,
+    onDictFontSize: (Int) -> Unit = {},
     metadataProtocol: String = "HTTP",
     onMetadataProtocol: (String) -> Unit = {},
 ) {
@@ -679,6 +684,46 @@ private fun SettingsDialog(
                         onClick = {
                             val v = (editPinyinSize.toIntOrNull() ?: pinyinFontSizeSp) + 2
                             if (v <= 32) { val s = v.toString(); editPinyinSize = s; onPinyinFontSize(v) }
+                        },
+                        modifier = Modifier.size(36.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Surface)
+                    ) { Text("+", color = TextPrimary, fontSize = 18.sp) }
+                }
+                Spacer(Modifier.height(16.dp))
+                // Dictionary font size row
+                Text("Dictionary size", color = TextSecondary, fontSize = 14.sp)
+                Spacer(Modifier.height(8.dp))
+                var editDictSize by remember { mutableStateOf(dictFontSizeSp.toString()) }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledIconButton(
+                        onClick = {
+                            val v = (editDictSize.toIntOrNull() ?: dictFontSizeSp) - 2
+                            if (v >= 10) { val s = v.toString(); editDictSize = s; onDictFontSize(v) }
+                        },
+                        modifier = Modifier.size(36.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Surface)
+                    ) { Text("−", color = TextPrimary, fontSize = 18.sp) }
+                    OutlinedTextField(
+                        value = editDictSize,
+                        onValueChange = { newVal ->
+                            editDictSize = newVal.filter { it.isDigit() }
+                            val v = editDictSize.toIntOrNull()
+                            if (v != null && v in 10..48) onDictFontSize(v)
+                        },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = Amber, fontSize = 16.sp, textAlign = TextAlign.Center
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Amber,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier.width(72.dp)
+                    )
+                    FilledIconButton(
+                        onClick = {
+                            val v = (editDictSize.toIntOrNull() ?: dictFontSizeSp) + 2
+                            if (v <= 48) { val s = v.toString(); editDictSize = s; onDictFontSize(v) }
                         },
                         modifier = Modifier.size(36.dp),
                         colors = IconButtonDefaults.filledIconButtonColors(containerColor = Surface)
@@ -1164,8 +1209,10 @@ private fun WordPopupDialog(
     onDismiss: () -> Unit,
     onPronounce: () -> Unit,
     onSave: () -> Unit,
-    onPlayFromHere: () -> Unit = {}
+    onPlayFromHere: () -> Unit = {},
+    dictFontSizeSp: Int = 14
 ) {
+    val dictFont = dictFontSizeSp.sp
     val clipboard = LocalClipboardManager.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -1209,7 +1256,7 @@ private fun WordPopupDialog(
                     Text(
                         text = pinyinToDiacritic(popup.pinyin),
                         color = TextPinyin,
-                        fontSize = 16.sp
+                        fontSize = dictFont
                     )
                 }
 
@@ -1249,7 +1296,7 @@ private fun WordPopupDialog(
                                     }
                                     Spacer(Modifier.height(2.dp))
                                 }
-                                Text(sense.text, color = TextPrimary, fontSize = 15.sp)
+                                Text(sense.text, color = TextPrimary, fontSize = dictFont)
                                 if (sense.notes.isNotBlank()) {
                                     Text(
                                         sense.notes,
@@ -1266,11 +1313,11 @@ private fun WordPopupDialog(
                     Text(
                         "Translation",
                         color = TextSecondary,
-                        fontSize = 14.sp,
+                        fontSize = dictFont,
                         fontWeight = FontWeight.Medium
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text(popup.translation, color = TextPrimary, fontSize = 15.sp)
+                    Text(popup.translation, color = TextPrimary, fontSize = dictFont)
                 }
 
                 Spacer(Modifier.height(8.dp))

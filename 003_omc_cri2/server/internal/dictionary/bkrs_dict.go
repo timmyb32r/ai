@@ -408,6 +408,8 @@ func cleanSyllable(syl string) string {
 // splitWordPinyin splits a word's pinyin string into per-character syllables.
 func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string {
 	chars := []rune(word)
+	// Also split on dashes (e.g. "ke1-ji4-xin1-wen2").
+	pinyin = strings.ReplaceAll(pinyin, "-", " ")
 	syllables := strings.Fields(pinyin)
 
 	// Un-spaced pinyin (e.g. "zhi3chu1") — split using char map or regex.
@@ -489,13 +491,16 @@ func splitWithCharMap(pinyin string, chars []rune, charMap map[string][]string) 
 			return nil
 		}
 		result[i] = best
-		// Consume only the plain (no-tone) part from remaining,
-		// since remaining may not have tone digits.
+		// Consume the plain (no-tone) letters from remaining.
 		plainLen := len(strings.TrimRight(best, "0123456789"))
 		if plainLen > len(remaining) {
 			plainLen = len(remaining)
 		}
 		remaining = remaining[plainLen:]
+		// Also consume trailing tone digit if present in remaining.
+		if len(remaining) > 0 && remaining[0] >= '1' && remaining[0] <= '5' {
+			remaining = remaining[1:]
+		}
 	}
 	if remaining != "" {
 		return nil
@@ -508,6 +513,10 @@ func splitBySyllablePattern(pinyin string, charCount int) []string {
 	i := 0
 	runes := []rune(pinyin)
 	for i < len(runes) {
+		// Skip leading apostrophes (syllable separators).
+		for i < len(runes) && isApostrophe(runes[i]) {
+			i++
+		}
 		start := i
 		for i < len(runes) && isPinyinLetter(runes[i]) {
 			i++
@@ -515,14 +524,22 @@ func splitBySyllablePattern(pinyin string, charCount int) []string {
 		if i < len(runes) && runes[i] >= '1' && runes[i] <= '5' {
 			i++
 			syllables = append(syllables, string(runes[start:i]))
+			// Skip trailing apostrophe after tone digit.
+			if i < len(runes) && isApostrophe(runes[i]) {
+				i++
+			}
 		} else if i > start {
+			// Letters without tone digit.
 			syllables = append(syllables, string(runes[start:i]))
+			// Skip trailing apostrophe.
+			if i < len(runes) && isApostrophe(runes[i]) {
+				i++
+			}
 		} else {
 			i++
 		}
 	}
 	if len(syllables) == charCount {
-		// Clean any syllables with commas (multiple readings).
 		for i, s := range syllables {
 			syllables[i] = cleanSyllable(s)
 		}
@@ -533,6 +550,12 @@ func splitBySyllablePattern(pinyin string, charCount int) []string {
 
 func isPinyinLetter(c rune) bool {
 	return (c >= 'a' && c <= 'z') || c == 'ü' || c == 'v' || c == ':'
+}
+
+// isApostrophe returns true for apostrophe-like characters used as
+// pinyin syllable separators (e.g. Xī'ān → xi1'an1).
+func isApostrophe(c rune) bool {
+	return c == '\'' || c == '’' || c == '‘' || c == 'ʼ'
 }
 
 func (d *bkrsDict) LookupPinyin(simplified string) string {

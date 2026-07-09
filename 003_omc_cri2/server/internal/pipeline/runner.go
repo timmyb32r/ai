@@ -262,6 +262,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 							parts = append(parts, resolved)
 						} else {
 							charPinyin = append(charPinyin, "?")
+							parts = append(parts, "?")
 						}
 					}
 				}
@@ -326,6 +327,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 							parts = append(parts, resolved)
 						} else {
 							charPinyin = append(charPinyin, "?")
+							parts = append(parts, "?")
 						}
 					}
 				}
