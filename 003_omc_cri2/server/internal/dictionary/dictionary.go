@@ -40,12 +40,15 @@ func (s *Stats) HitRate() float64 {
 	return float64(s.Hits) / float64(s.Total)
 }
 
-// Dictionary provides lookups against the CC-CEDICT database.
+// Dictionary provides lookups against the CC-CEDICT/BKRS database.
 type Dictionary interface {
 	// Lookup finds a word in the dictionary and returns its full entry.
 	Lookup(simplified string) (*Entry, error)
 	// LookupPinyin returns only the pinyin for a word (faster than full lookup).
 	LookupPinyin(simplified string) string
+	// CharReadings returns all known pinyin readings for a single character.
+	// Returns nil if the character is unknown.
+	CharReadings(ch string) []string
 	// Stats returns current lookup statistics.
 	Stats() Stats
 	// Close releases resources.

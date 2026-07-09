@@ -151,3 +151,6 @@ func (d *cedictDict) Close() error {
 	d.entries = nil
 	return nil
 }
+
+// CharReadings returns nil — CC-CEDICT does not track per-character readings.
+func (d *cedictDict) CharReadings(ch string) []string { return nil }

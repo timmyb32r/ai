@@ -46,9 +46,81 @@ func (m *mockDict) Lookup(s string) (*dictionary.Entry, error) {
 	}
 	return nil, fmt.Errorf("not found")
 }
-func (m *mockDict) LookupPinyin(s string) string { return "" }
-func (m *mockDict) Stats() dictionary.Stats       { return dictionary.Stats{} }
-func (m *mockDict) Close() error                  { return nil }
+func (m *mockDict) LookupPinyin(s string) string       { return "" }
+func (m *mockDict) CharReadings(ch string) []string    { return nil }
+func (m *mockDict) Stats() dictionary.Stats            { return dictionary.Stats{} }
+func (m *mockDict) Close() error                       { return nil }
+
+// contextDict is a mock dictionary with per-character readings and sub-word lookups
+// for testing resolveByContext.
+type contextDict struct {
+	charReadings map[string][]string
+	entries      map[string]*dictionary.Entry
+}
+
+func (d *contextDict) Lookup(s string) (*dictionary.Entry, error) {
+	if e, ok := d.entries[s]; ok {
+		return e, nil
+	}
+	return nil, fmt.Errorf("not found")
+}
+func (d *contextDict) LookupPinyin(s string) string {
+	if e, ok := d.entries[s]; ok { return e.Pinyin }
+	return ""
+}
+func (d *contextDict) CharReadings(ch string) []string { return d.charReadings[ch] }
+func (d *contextDict) Stats() dictionary.Stats         { return dictionary.Stats{} }
+func (d *contextDict) Close() error                    { return nil }
+
+func TestResolveByContext_DisambiguatesMiddleChar(t *testing.T) {
+	// Scenario: word "人方式" is NOT in dictionary, but "人方" (rénfāng)
+	// and "方式" (fāngshì) are. For 方, readings are [fang1, pang2].
+	// Context resolves to fang1.
+	dict := &contextDict{
+		charReadings: map[string][]string{
+			"人": {"ren2"},
+			"方": {"fang1", "pang2"},
+			"式": {"shi4"},
+		},
+		entries: map[string]*dictionary.Entry{
+			"人方": {Pinyin: "ren2 fang1", CharPinyins: []string{"ren2", "fang1"}},
+			"方式": {Pinyin: "fang1 shi4", CharPinyins: []string{"fang1", "shi4"}},
+		},
+	}
+
+	chars := []rune("人方式")
+	// Character at index 1 is 方 — should resolve to fang1.
+	result := resolveByContext(1, chars, dict)
+	if result != "fang1" {
+		t.Errorf("got %q, want fang1", result)
+	}
+}
+
+func TestResolveByContext_UnambiguousChar_ReturnsEmpty(t *testing.T) {
+	// Single reading — no need to resolve.
+	dict := &contextDict{
+		charReadings: map[string][]string{"人": {"ren2"}},
+		entries:      map[string]*dictionary.Entry{},
+	}
+	result := resolveByContext(0, []rune("人"), dict)
+	if result != "" {
+		t.Errorf("expected empty for unambiguous char, got %q", result)
+	}
+}
+
+func TestResolveByContext_NoContextMatch_ReturnsEmpty(t *testing.T) {
+	// Multiple readings but no adjacent sub-words to disambiguate.
+	dict := &contextDict{
+		charReadings: map[string][]string{
+			"有": {"you3", "you4"},
+		},
+		entries: map[string]*dictionary.Entry{},
+	}
+	result := resolveByContext(0, []rune("有"), dict)
+	if result != "" {
+		t.Errorf("expected empty for unresolvable char, got %q", result)
+	}
+}
 
 func TestPipelineOneSegment(t *testing.T) {
 	store, _ := storage.New(t.TempDir())

@@ -288,6 +288,69 @@ func TestLoadBKRS_CharPinyins_AfterLookup(t *testing.T) {
 	}
 }
 
+func TestSplitWordPinyin_CommaSeparatedReadings_SingleChar(t *testing.T) {
+	// 度 has readings "du4, duo2" — should become "?".
+	result := splitWordPinyin("度", "du4, duo2", nil)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 syllable, got %d: %v", len(result), result)
+	}
+	if result[0] != "?" {
+		t.Errorf("got %q, want ? (ambiguous multi-reading)", result[0])
+	}
+}
+
+func TestSplitWordPinyin_CommaSeparatedReadings_SingleCharNoSpace(t *testing.T) {
+	result := splitWordPinyin("度", "du4,duo2", nil)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 syllable, got %d: %v", len(result), result)
+	}
+	if result[0] != "?" {
+		t.Errorf("got %q, want ?", result[0])
+	}
+}
+
+func TestCleanSyllable_Comma(t *testing.T) {
+	if got := cleanSyllable("du4, duo2"); got != "?" {
+		t.Errorf("comma reading: got %q, want ?", got)
+	}
+	if got := cleanSyllable("du4,duo2"); got != "?" {
+		t.Errorf("comma no space: got %q, want ?", got)
+	}
+	if got := cleanSyllable("du4; duo2"); got != "?" {
+		t.Errorf("semicolon: got %q, want ?", got)
+	}
+	if got := cleanSyllable("du4"); got != "du4" {
+		t.Errorf("clean: got %q, want du4", got)
+	}
+	if got := cleanSyllable("zhong4"); got != "zhong4" {
+		t.Errorf("clean: got %q, want zhong4", got)
+	}
+}
+
+func TestSplitWordPinyin_MultiCharWithComma(t *testing.T) {
+	// Two-char word where pinyin has comma → each comma-containing field becomes "?".
+	result := splitWordPinyin("大度", "da4, dai4 du4", nil)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 syllables, got %d: %v", len(result), result)
+	}
+	// "da4," → "?"; "dai4" is the 2nd field of the first char's alternatives.
+	// Fields: ["da4,", "dai4", "du4"]. 3 fields > 2 chars → result[0]="da4,", result[1]="dai4"
+	if result[0] != "?" {
+		t.Errorf("char 0: got %q, want ?", result[0])
+	}
+}
+
+func TestSplitWordPinyin_UnspacedWithComma(t *testing.T) {
+	// Unspaced pinyin with comma — should also be handled.
+	result := splitWordPinyin("度", "du4,duo2", map[string][]string{})
+	if len(result) != 1 {
+		t.Fatalf("expected 1 syllable, got %d: %v", len(result), result)
+	}
+	if result[0] != "?" {
+		t.Errorf("got %q, want ?", result[0])
+	}
+}
+
 func TestParseBKRSRecord_Typical(t *testing.T) {
 	entry := parseBKRSRecord("方面", "fang1 mian4", "[m1]сторона, аспект[/m] [m2][p]перен.[/p]грань[/m]")
 

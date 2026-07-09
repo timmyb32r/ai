@@ -245,6 +245,29 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 					})
 				}
 				charPinyin = entry.CharPinyins
+			} else {
+				chars := []rune(t.Text)
+				var parts []string
+				for i, ch := range chars {
+					readings := p.Dictionary.CharReadings(string(ch))
+					switch len(readings) {
+					case 0:
+						charPinyin = append(charPinyin, "")
+					case 1:
+						charPinyin = append(charPinyin, readings[0])
+						parts = append(parts, readings[0])
+					default:
+						if resolved := resolveByContext(i, chars, p.Dictionary); resolved != "" {
+							charPinyin = append(charPinyin, resolved)
+							parts = append(parts, resolved)
+						} else {
+							charPinyin = append(charPinyin, "?")
+						}
+					}
+				}
+				if len(parts) > 0 {
+					pinyin = strings.Join(parts, " ")
+				}
 			}
 			startSec := segment.TimelineStartSec
 			endSec := segment.TimelineEndSec
@@ -286,6 +309,29 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 					})
 				}
 				charPinyin = entry.CharPinyins
+			} else {
+				chars := []rune(t.Text)
+				var parts []string
+				for i, ch := range chars {
+					readings := p.Dictionary.CharReadings(string(ch))
+					switch len(readings) {
+					case 0:
+						charPinyin = append(charPinyin, "")
+					case 1:
+						charPinyin = append(charPinyin, readings[0])
+						parts = append(parts, readings[0])
+					default:
+						if resolved := resolveByContext(i, chars, p.Dictionary); resolved != "" {
+							charPinyin = append(charPinyin, resolved)
+							parts = append(parts, resolved)
+						} else {
+							charPinyin = append(charPinyin, "?")
+						}
+					}
+				}
+				if len(parts) > 0 {
+					pinyin = strings.Join(parts, " ")
+				}
 			}
 			charFraction := float64(t.CharEnd-t.CharStart) / float64(totalChars)
 			wordDuration := segDuration * charFraction
@@ -522,4 +568,38 @@ func logStderr(r io.Reader, logger logging.Logger, module string) {
 			logger.Info(module, "line", "msg", line)
 		}
 	}
+}
+
+// resolveByContext picks the correct reading for a character by checking
+// adjacent 2-char sub-words in the dictionary. If both "人方" and "方式"
+// use fāng for 方, we can confidently pick fāng over páng.
+func resolveByContext(charIdx int, chars []rune, dict dictionary.Dictionary) string {
+	target := string(chars[charIdx])
+	readings := dict.CharReadings(target)
+	if len(readings) <= 1 {
+		return ""
+	}
+	// Try left+current window.
+	if charIdx > 0 {
+		sub := string(chars[charIdx-1 : charIdx+1])
+		if entry, err := dict.Lookup(sub); err == nil && len(entry.CharPinyins) == 2 {
+			for _, r := range readings {
+				if entry.CharPinyins[1] == r {
+					return r
+				}
+			}
+		}
+	}
+	// Try current+right window.
+	if charIdx < len(chars)-1 {
+		sub := string(chars[charIdx : charIdx+2])
+		if entry, err := dict.Lookup(sub); err == nil && len(entry.CharPinyins) == 2 {
+			for _, r := range readings {
+				if entry.CharPinyins[0] == r {
+					return r
+				}
+			}
+		}
+	}
+	return ""
 }

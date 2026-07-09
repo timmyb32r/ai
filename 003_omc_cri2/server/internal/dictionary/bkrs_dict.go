@@ -396,6 +396,15 @@ func (d *bkrsDict) Lookup(simplified string) (*Entry, error) {
 	return entry, nil
 }
 
+// cleanSyllable returns "?" if the syllable contains comma/semicolon
+// (indicating multiple alternative readings), otherwise returns it unchanged.
+func cleanSyllable(syl string) string {
+	if strings.ContainsAny(syl, ",;") {
+		return "?"
+	}
+	return syl
+}
+
 // splitWordPinyin splits a word's pinyin string into per-character syllables.
 func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string {
 	chars := []rune(word)
@@ -411,7 +420,7 @@ func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string 
 	if len(syllables) == len(chars) {
 		result := make([]string, len(chars))
 		for i := range chars {
-			result[i] = syllables[i]
+			result[i] = cleanSyllable(syllables[i])
 		}
 		return result
 	}
@@ -420,7 +429,7 @@ func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string 
 		result := make([]string, len(chars))
 		ci := 0
 		for _, syl := range syllables {
-			result[ci] = syl
+			result[ci] = cleanSyllable(syl)
 			ci++
 		}
 		for ci < len(chars) {
@@ -433,12 +442,17 @@ func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string 
 	// More syllables than characters — merge excess.
 	result := make([]string, len(chars))
 	if len(chars) == 1 {
-		result[0] = pinyin
+		// Single char with multiple readings (e.g. "du4, duo2") → "?".
+		if strings.ContainsAny(pinyin, ",;") {
+			result[0] = "?"
+		} else {
+			result[0] = pinyin
+		}
 		return result
 	}
 	for i := range chars {
 		if i < len(syllables) {
-			result[i] = syllables[i]
+			result[i] = cleanSyllable(syllables[i])
 		}
 	}
 	return result
@@ -508,6 +522,10 @@ func splitBySyllablePattern(pinyin string, charCount int) []string {
 		}
 	}
 	if len(syllables) == charCount {
+		// Clean any syllables with commas (multiple readings).
+		for i, s := range syllables {
+			syllables[i] = cleanSyllable(s)
+		}
 		return syllables
 	}
 	return nil
@@ -544,6 +562,12 @@ func (d *bkrsDict) Close() error {
 	defer d.mu.Unlock()
 	d.entries = nil
 	return nil
+}
+
+func (d *bkrsDict) CharReadings(ch string) []string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.charPinyins[ch]
 }
 
 // isGzip checks whether a seekable file starts with the gzip magic bytes.
