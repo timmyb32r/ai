@@ -113,12 +113,15 @@ func TestSplitWordPinyin_FewerSyllables(t *testing.T) {
 	if result[0] != "yi1" && result[0] != "yi2" {
 		t.Errorf("char 一: got %q, want yi1 or yi2", result[0])
 	}
-	// Last syllable covers remaining chars
 	if result[1] != "hui4" {
 		t.Errorf("char 会: got %q, want hui4", result[1])
 	}
-	if result[2] != "hui4" {
-		t.Errorf("char 儿: got %q, want hui4 (shares with 会)", result[2])
+	// The source pinyin "yi2 hui4" has only two syllables for three
+	// characters — the 儿 (erhua) syllable is missing. An unresolved
+	// character must be marked unknown, NOT filled with the previous
+	// character's reading (which is exactly the whole-word-pinyin-leak bug).
+	if result[2] != "?" {
+		t.Errorf("char 儿: got %q, want ? (unresolved, must not copy 会's reading)", result[2])
 	}
 }
 
@@ -617,5 +620,105 @@ func TestParseBKRSRecord_Typical(t *testing.T) {
 	}
 	if len(entry.Senses[1].Labels) != 1 || entry.Senses[1].Labels[0] != "перен." {
 		t.Errorf("Sense[1].Labels: got %v, want [перен.]", entry.Senses[1].Labels)
+	}
+}
+
+// TestSplitWordPinyin_MultiReadingChar is a unit-level regression for the
+// whole-word-pinyin-leak bug: when a character has MULTIPLE readings it must
+// still appear in the char map, so unspaced diacritic word pinyin splits
+// per-character instead of duplicating the whole word onto every character.
+func TestSplitWordPinyin_MultiReadingChar(t *testing.T) {
+	// 拉 has several readings; before the fix it was absent from the char map,
+	// so 土拉 ("tǔlā") collapsed to ["tǔlā", "tǔlā"].
+	charMap := map[string][]string{
+		"土": {"tǔ", "tù"},
+		"拉": {"lā", "lá", "là", "lǎ"},
+	}
+	result := splitWordPinyin("土拉", "tǔlā", charMap)
+	want := []string{"tǔ", "lā"}
+	if len(result) != len(want) {
+		t.Fatalf("expected %d syllables, got %d: %v", len(want), len(result), result)
+	}
+	for i, w := range want {
+		if result[i] != w {
+			t.Errorf("[%d]: got %q, want %q", i, result[i], w)
+		}
+	}
+}
+
+// TestLoadBKRS_MultiReadingCharMap is the end-to-end regression covering the
+// reported cases (呵护 → he/hu, 他们 → ta/men). It exercises the full LoadBKRS
+// char-map construction from single-character entries whose pinyin lists
+// multiple comma-separated readings.
+func TestLoadBKRS_MultiReadingCharMap(t *testing.T) {
+	dump := "" +
+		"呵\n hē, ā, kē\n[m1]дуть[/m]\n\n" +
+		"护\n hù\n[m1]защищать[/m]\n\n" +
+		"呵护\n hēhù\n[m1]оберегать[/m]\n\n" +
+		"他\n tā\n[m1]он[/m]\n\n" +
+		"们\n mén, men\n[m1]суффикс мн. ч.[/m]\n\n" +
+		"他们\n tāmen\n[m1]они[/m]\n\n" +
+		"拉\n lā, lá, là, lǎ\n[m1]тянуть[/m]\n\n" +
+		"土\n tǔ\n[m1]земля[/m]\n\n" +
+		"土拉\n tǔlā\n[m1]Тула[/m]\n\n"
+
+	tmpFile := t.TempDir() + "/multi.dump"
+	if err := os.WriteFile(tmpFile, []byte(dump), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dict, err := LoadBKRS(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		word string
+		want []string
+	}{
+		{"呵护", []string{"hē", "hù"}},
+		{"他们", []string{"tā", "men"}},
+		{"土拉", []string{"tǔ", "lā"}},
+	}
+	for _, tc := range cases {
+		entry, err := dict.Lookup(tc.word)
+		if err != nil {
+			t.Fatalf("%s: lookup failed: %v", tc.word, err)
+		}
+		if len(entry.CharPinyins) != len(tc.want) {
+			t.Fatalf("%s: got %v, want %v", tc.word, entry.CharPinyins, tc.want)
+		}
+		for i, w := range tc.want {
+			cp := entry.CharPinyins[i]
+			// 们 legitimately has two readings; accept either.
+			if tc.word == "他们" && i == 1 {
+				if cp != "men" && cp != "mén" {
+					t.Errorf("%s[%d]: got %q, want men/mén", tc.word, i, cp)
+				}
+				continue
+			}
+			if cp != w {
+				t.Errorf("%s[%d]: got %q, want %q", tc.word, i, cp, w)
+			}
+			// The core bug: a per-character syllable must never equal the
+			// stripped whole-word pinyin.
+			if cp == "hēhù" || cp == "tāmen" || cp == "tǔlā" {
+				t.Errorf("%s[%d]: whole-word pinyin leaked onto character: %q", tc.word, i, cp)
+			}
+		}
+	}
+}
+
+func TestIsPinyinSyllable(t *testing.T) {
+	good := []string{"hē", "hù", "tā", "men", "fang1", "lǎ", "er2", "r5", "ü", "nv3"}
+	bad := []string{"", "оберегать", "[m1]", "he,hu", "he hu", "12"}
+	for _, s := range good {
+		if !isPinyinSyllable(s) {
+			t.Errorf("isPinyinSyllable(%q) = false, want true", s)
+		}
+	}
+	for _, s := range bad {
+		if isPinyinSyllable(s) {
+			t.Errorf("isPinyinSyllable(%q) = true, want false", s)
+		}
 	}
 }

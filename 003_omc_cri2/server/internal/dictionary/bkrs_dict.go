@@ -111,23 +111,38 @@ func LoadBKRS(dumpPath string) (Dictionary, error) {
 	// Build character→pinyins map from single-character entries AND
 	// from multi-character entries with space-separated pinyin (1:1 alignment).
 	d.charPinyins = make(map[string][]string, 20000)
+	addReading := func(ch, syl string) {
+		syl = strings.Trim(syl, " \t.,;()[]")
+		if !isPinyinSyllable(syl) {
+			return
+		}
+		for _, existing := range d.charPinyins[ch] {
+			if existing == syl {
+				return
+			}
+		}
+		d.charPinyins[ch] = append(d.charPinyins[ch], syl)
+	}
 	for word, entry := range d.entries {
 		chars := []rune(word)
+		if len(chars) == 1 {
+			// Single-character entry: the pinyin field may list several
+			// alternative readings separated by commas/semicolons
+			// (e.g. 拉 → "lā, lá, là, lǎ"). Register EVERY reading — otherwise
+			// multi-reading characters never enter the map, and words that
+			// contain them cannot be split per-character (the whole-word
+			// pinyin then leaks onto each character).
+			for _, syl := range splitReadings(entry.Pinyin) {
+				addReading(string(chars[0]), syl)
+			}
+			continue
+		}
+		// Multi-character entry with 1:1 space-separated pinyin
+		// (e.g. "fang1 mian4") — align each syllable to its character.
 		syllables := strings.Fields(entry.Pinyin)
 		if len(syllables) == len(chars) {
 			for i, ch := range chars {
-				chStr := string(ch)
-				syl := syllables[i]
-				seen := false
-				for _, existing := range d.charPinyins[chStr] {
-					if existing == syl {
-						seen = true
-						break
-					}
-				}
-				if !seen {
-					d.charPinyins[chStr] = append(d.charPinyins[chStr], syl)
-				}
+				addReading(string(ch), syllables[i])
 			}
 		}
 	}
@@ -423,6 +438,39 @@ func (d *bkrsDict) Lookup(simplified string) (*Entry, error) {
 	return entry, nil
 }
 
+// splitReadings splits a single character's pinyin field into its individual
+// alternative readings. BKRS lists them separated by commas/semicolons (and
+// occasionally slashes/whitespace), e.g. 拉 → "lā, lá, là, lǎ". Each resulting
+// token is one candidate syllable for that character.
+func splitReadings(pinyin string) []string {
+	return strings.FieldsFunc(pinyin, func(r rune) bool {
+		return r == ',' || r == ';' || r == '/' || r == ' ' || r == '\t'
+	})
+}
+
+// isPinyinSyllable reports whether s looks like a single pinyin syllable:
+// pinyin letters (incl. tone diacritics) optionally followed by a tone digit.
+// It filters out leaked markup / gloss text so the char map stays clean.
+func isPinyinSyllable(s string) bool {
+	if s == "" {
+		return false
+	}
+	runes := []rune(s)
+	n := len(runes)
+	if runes[n-1] >= '1' && runes[n-1] <= '5' {
+		n-- // trailing tone digit
+	}
+	if n == 0 {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		if !isPinyinLetter(runes[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // cleanSyllable returns "?" if the syllable contains comma/semicolon
 // (indicating multiple alternative readings), otherwise returns it unchanged.
 func cleanSyllable(syl string) string {
@@ -477,8 +525,11 @@ func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string 
 				}
 			}
 		}
+		// Any characters we could not resolve are marked unknown rather than
+		// duplicating the previous syllable — copying would spread one
+		// character's (or the whole word's) pinyin onto unrelated characters.
 		for ci < len(chars) {
-			result[ci] = result[ci-1]
+			result[ci] = "?"
 			ci++
 		}
 		return result
