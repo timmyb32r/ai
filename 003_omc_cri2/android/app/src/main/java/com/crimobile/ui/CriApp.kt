@@ -1175,145 +1175,150 @@ private fun WordPopupDialog(
         sheetState = sheetState,
         dragHandle = { BottomSheetDefaults.DragHandle(color = TextSecondary) }
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 24.dp)
-        ) {
-            // Header: character + copy button
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    popup.word.text,
-                    fontSize = 36.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Amber
-                )
-                Spacer(Modifier.width(8.dp))
-                IconButton(onClick = {
-                    clipboard.setText(AnnotatedString(popup.word.text))
-                }) {
-                    Icon(
-                        Icons.Default.ContentCopy, "Copy", tint = TextSecondary,
-                        modifier = Modifier.size(20.dp)
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Scrollable content area
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+            ) {
+                // Header: character + copy button
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        popup.word.text,
+                        fontSize = 36.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Amber
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = {
+                        clipboard.setText(AnnotatedString(popup.word.text))
+                    }) {
+                        Icon(
+                            Icons.Default.ContentCopy, "Copy", tint = TextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                // Pinyin with diacritics
+                if (popup.pinyin.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = pinyinToDiacritic(popup.pinyin),
+                        color = TextPinyin,
+                        fontSize = 16.sp
                     )
                 }
-            }
 
-            // Pinyin with diacritics
-            if (popup.pinyin.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = pinyinToDiacritic(popup.pinyin),
-                    color = TextPinyin,
-                    fontSize = 16.sp
-                )
-            }
-
-            // Structured senses (BKRS) or flat translation (CC-CEDICT)
-            if (popup.senses.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                popup.senses.forEach { sense ->
-                    Spacer(Modifier.height(8.dp))
-                    Row {
-                        // Sense number
-                        if (sense.number > 0) {
-                            Text(
-                                "${sense.number}. ",
-                                color = Amber,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Column {
-                            // Labels as small tag chips
-                            if (sense.labels.isNotEmpty()) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    sense.labels.forEach { label ->
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = TextSecondary.copy(alpha = 0.15f)
-                                        ) {
-                                            Text(
-                                                label,
-                                                color = TextSecondary,
-                                                fontSize = 12.sp,
-                                                modifier = Modifier.padding(
-                                                    horizontal = 4.dp,
-                                                    vertical = 1.dp
+                // Structured senses (BKRS) or flat translation (CC-CEDICT)
+                if (popup.senses.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    popup.senses.forEach { sense ->
+                        Spacer(Modifier.height(8.dp))
+                        Row {
+                            if (sense.number > 0) {
+                                Text(
+                                    "${sense.number}. ",
+                                    color = Amber,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Column {
+                                if (sense.labels.isNotEmpty()) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        sense.labels.forEach { label ->
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = TextSecondary.copy(alpha = 0.15f)
+                                            ) {
+                                                Text(
+                                                    label,
+                                                    color = TextSecondary,
+                                                    fontSize = 12.sp,
+                                                    modifier = Modifier.padding(
+                                                        horizontal = 4.dp,
+                                                        vertical = 1.dp
+                                                    )
                                                 )
-                                            )
+                                            }
                                         }
                                     }
+                                    Spacer(Modifier.height(2.dp))
                                 }
-                                Spacer(Modifier.height(2.dp))
-                            }
-                            // Translation text
-                            Text(
-                                sense.text,
-                                color = TextPrimary,
-                                fontSize = 15.sp
-                            )
-                            // Usage notes (italic)
-                            if (sense.notes.isNotBlank()) {
-                                Text(
-                                    sense.notes,
-                                    color = TextSecondary,
-                                    fontSize = 13.sp,
-                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
-                                )
+                                Text(sense.text, color = TextPrimary, fontSize = 15.sp)
+                                if (sense.notes.isNotBlank()) {
+                                    Text(
+                                        sense.notes,
+                                        color = TextSecondary,
+                                        fontSize = 13.sp,
+                                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                    )
+                                }
                             }
                         }
                     }
+                } else {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Translation",
+                        color = TextSecondary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(popup.translation, color = TextPrimary, fontSize = 15.sp)
                 }
-            } else {
-                // Fallback: flat translation display
+
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "Translation",
-                    color = TextSecondary,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(popup.translation, color = TextPrimary, fontSize = 15.sp)
             }
 
-            // Action buttons
-            Spacer(Modifier.height(16.dp))
-            val durationSec = popup.word.end_sec - popup.word.start_sec
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            // Fixed bottom action bar — always visible, no scrolling needed
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .requiredHeight(128.dp)
             ) {
-                TextButton(onClick = onPlayFromHere) {
-                    Icon(Icons.Default.PlayArrow, null, tint = Amber)
-                    Spacer(Modifier.width(4.dp))
-                    Text("Play", color = Amber)
-                }
-                TextButton(onClick = onPronounce) {
-                    Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = Amber)
-                    Spacer(Modifier.width(4.dp))
-                    Text("Pronounce (${"%.2f".format(durationSec)})", color = Amber)
-                }
-                TextButton(onClick = onSave) {
-                    Icon(Icons.Default.Add, null, tint = Green)
-                    Spacer(Modifier.width(4.dp))
-                    Text("Save", color = Green)
+                Surface(
+                    color = Color(0xFF2A2A2A),
+                    shadowElevation = 4.dp,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                    TextButton(onClick = onPlayFromHere) {
+                        Icon(Icons.Default.PlayArrow, null, tint = Amber, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Play", color = Amber, fontSize = 14.sp)
+                    }
+                    TextButton(onClick = onPronounce) {
+                        Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = Amber, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(4.dp))
+                        val durationSec = popup.word.end_sec - popup.word.start_sec
+                        Text("Pron. ${"%.1f".format(durationSec)}s", color = Amber, fontSize = 14.sp)
+                    }
+                    TextButton(onClick = onSave) {
+                        Icon(Icons.Default.Add, null, tint = Green, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Save", color = Green, fontSize = 14.sp)
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text("Close", color = TextSecondary, fontSize = 14.sp)
+                    }
                 }
             }
-
-            // Close button
-            TextButton(
-                onClick = onDismiss,
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-            ) {
-                Text("Close", color = TextSecondary)
+                }
             }
         }
     }
-}
 
 // ── Pinyin numbered → diacritic conversion ──────────────────────────────
 // Ported from 001_omc_cri/internal/broadcast/enrich.go

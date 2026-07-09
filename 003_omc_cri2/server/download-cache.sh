@@ -15,8 +15,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CACHE_DIR="${SCRIPT_DIR}/.docker-cache"
 
 MODEL="${1:-}"
-if [ -z "${MODEL}" ]; then
+DICT_ONLY=false
+if [ "${MODEL}" = "--dict-only" ]; then
+    DICT_ONLY=true
+    MODEL=""
+fi
+
+if [ -z "${MODEL}" ] && [ "${DICT_ONLY}" = false ]; then
     echo "USAGE: $0 <model-short-name>" >&2
+    echo "   or: $0 --dict-only         (download only dictionaries: CC-CEDICT + BKRS + gse)" >&2
     echo "" >&2
     echo "sherpa-onnx models:" >&2
     echo "  sense-voice-2024      SenseVoice Small (zh/en/ja/ko/yue, int8, ~140MB)" >&2
@@ -32,102 +39,108 @@ if [ -z "${MODEL}" ]; then
     exit 1
 fi
 
-# Determine engine from model name
-case "${MODEL}" in
-    sense-voice-2024|sense-voice-v1|paraformer-zh|sherpa-whisper-small|sherpa-whisper)
-        ENGINE="sherpa-onnx" ;;
-    ggml-*)
-        ENGINE="whisper" ;;
-    *)
-        echo "ERROR: unknown model '${MODEL}'" >&2
-        exit 1
-        ;;
-esac
-
 mkdir -p "${CACHE_DIR}"
 cd "${CACHE_DIR}"
 
-echo "=== CRI Radio: Download Cache ==="
-echo "Model:  ${MODEL}"
-echo "Engine: ${ENGINE}"
-echo "Cache:  ${CACHE_DIR}"
-echo ""
+if [ "${DICT_ONLY}" = true ]; then
+    echo "=== CRI Radio: Download Cache (dictionaries only) ==="
+    echo "Cache:  ${CACHE_DIR}"
+    echo ""
+else
+    # Determine engine from model name
+    case "${MODEL}" in
+        sense-voice-2024|sense-voice-v1|paraformer-zh|sherpa-whisper-small|sherpa-whisper)
+            ENGINE="sherpa-onnx" ;;
+        ggml-*)
+            ENGINE="whisper" ;;
+        *)
+            echo "ERROR: unknown model '${MODEL}'" >&2
+            exit 1
+            ;;
+    esac
 
-# ── Download model ────────────────────────────────────────────────────────
+    echo "=== CRI Radio: Download Cache ==="
+    echo "Model:  ${MODEL}"
+    echo "Engine: ${ENGINE}"
+    echo "Cache:  ${CACHE_DIR}"
+    echo ""
 
-case "${MODEL}" in
-    sense-voice-2024|sense-voice-v1)
-        DIR="sense-voice-2024"
-        URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2"
-        if [ -f "${DIR}/model.int8.onnx" ] && [ -f "${DIR}/tokens.txt" ]; then
-            echo "==> SenseVoice int8 already cached"
-        else
-            echo "==> Downloading SenseVoice int8 (~140MB)..."
-            rm -rf "${DIR}"
-            mkdir -p "${DIR}"
-            curl -L --progress-bar "${URL}" -o /tmp/sense-voice.tar.bz2
-            tar xjf /tmp/sense-voice.tar.bz2 -C "${DIR}" --strip-components=1
-            rm /tmp/sense-voice.tar.bz2
-            echo "   ✓ model.int8.onnx ($(du -h "${DIR}/model.int8.onnx" | cut -f1))"
-        fi
-        ;;
+    # ── Download model ────────────────────────────────────────────────────────
 
-    paraformer-zh)
-        DIR="paraformer-zh"
-        URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2"
-        if [ -f "${DIR}/model.int8.onnx" ]; then
-            echo "==> Paraformer already cached"
-        else
-            echo "==> Downloading Paraformer..."
-            rm -rf "${DIR}"
-            mkdir -p "${DIR}"
-            curl -L --progress-bar "${URL}" -o /tmp/paraformer.tar.bz2
-            tar xjf /tmp/paraformer.tar.bz2 -C "${DIR}" --strip-components=1
-            rm /tmp/paraformer.tar.bz2
-            echo "   ✓ model.int8.onnx ($(du -h "${DIR}/model.int8.onnx" | cut -f1))"
-        fi
-        ;;
+    case "${MODEL}" in
+        sense-voice-2024|sense-voice-v1)
+            DIR="sense-voice-2024"
+            URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2"
+            if [ -f "${DIR}/model.int8.onnx" ] && [ -f "${DIR}/tokens.txt" ]; then
+                echo "==> SenseVoice int8 already cached"
+            else
+                echo "==> Downloading SenseVoice int8 (~140MB)..."
+                rm -rf "${DIR}"
+                mkdir -p "${DIR}"
+                curl -L --progress-bar "${URL}" -o /tmp/sense-voice.tar.bz2
+                tar xjf /tmp/sense-voice.tar.bz2 -C "${DIR}" --strip-components=1
+                rm /tmp/sense-voice.tar.bz2
+                echo "   ✓ model.int8.onnx ($(du -h "${DIR}/model.int8.onnx" | cut -f1))"
+            fi
+            ;;
 
-    sherpa-whisper-small|sherpa-whisper)
-        DIR="sherpa-whisper"
-        URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.tar.bz2"
-        if [ -f "${DIR}/encoder.onnx" ]; then
-            echo "==> Sherpa-whisper already cached"
-        else
-            echo "==> Downloading sherpa-onnx whisper-small..."
-            rm -rf "${DIR}"
-            mkdir -p "${DIR}"
-            curl -L --progress-bar "${URL}" -o /tmp/sherpa-whisper.tar.bz2
-            tar xjf /tmp/sherpa-whisper.tar.bz2 -C "${DIR}" --strip-components=1
-            rm /tmp/sherpa-whisper.tar.bz2
-            echo "   ✓ ${DIR}/"
-        fi
-        ;;
+        paraformer-zh)
+            DIR="paraformer-zh"
+            URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2"
+            if [ -f "${DIR}/model.int8.onnx" ]; then
+                echo "==> Paraformer already cached"
+            else
+                echo "==> Downloading Paraformer..."
+                rm -rf "${DIR}"
+                mkdir -p "${DIR}"
+                curl -L --progress-bar "${URL}" -o /tmp/paraformer.tar.bz2
+                tar xjf /tmp/paraformer.tar.bz2 -C "${DIR}" --strip-components=1
+                rm /tmp/paraformer.tar.bz2
+                echo "   ✓ model.int8.onnx ($(du -h "${DIR}/model.int8.onnx" | cut -f1))"
+            fi
+            ;;
 
-    ggml-tiny|ggml-small|ggml-medium)
-        FILE="${MODEL}.bin"
-        URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${FILE}"
-        if [ -f "${FILE}" ]; then
-            echo "==> ${FILE} already cached ($(du -h "${FILE}" | cut -f1))"
-        else
-            echo "==> Downloading ${FILE}..."
-            curl -L --progress-bar "${URL}" -o "${FILE}"
-            echo "   ✓ ${FILE} ($(du -h "${FILE}" | cut -f1))"
-        fi
-        ;;
+        sherpa-whisper-small|sherpa-whisper)
+            DIR="sherpa-whisper"
+            URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.tar.bz2"
+            if [ -f "${DIR}/encoder.onnx" ]; then
+                echo "==> Sherpa-whisper already cached"
+            else
+                echo "==> Downloading sherpa-onnx whisper-small..."
+                rm -rf "${DIR}"
+                mkdir -p "${DIR}"
+                curl -L --progress-bar "${URL}" -o /tmp/sherpa-whisper.tar.bz2
+                tar xjf /tmp/sherpa-whisper.tar.bz2 -C "${DIR}" --strip-components=1
+                rm /tmp/sherpa-whisper.tar.bz2
+                echo "   ✓ ${DIR}/"
+            fi
+            ;;
 
-    ggml-large)
-        FILE="ggml-large-v3.bin"
-        URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${FILE}"
-        if [ -f "${FILE}" ]; then
-            echo "==> ${FILE} already cached ($(du -h "${FILE}" | cut -f1))"
-        else
-            echo "==> Downloading ${FILE} (~3.1GB)..."
-            curl -L --progress-bar "${URL}" -o "${FILE}"
-            echo "   ✓ ${FILE} ($(du -h "${FILE}" | cut -f1))"
-        fi
-        ;;
-esac
+        ggml-tiny|ggml-small|ggml-medium)
+            FILE="${MODEL}.bin"
+            URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${FILE}"
+            if [ -f "${FILE}" ]; then
+                echo "==> ${FILE} already cached ($(du -h "${FILE}" | cut -f1))"
+            else
+                echo "==> Downloading ${FILE}..."
+                curl -L --progress-bar "${URL}" -o "${FILE}"
+                echo "   ✓ ${FILE} ($(du -h "${FILE}" | cut -f1))"
+            fi
+            ;;
+
+        ggml-large)
+            FILE="ggml-large-v3.bin"
+            URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${FILE}"
+            if [ -f "${FILE}" ]; then
+                echo "==> ${FILE} already cached ($(du -h "${FILE}" | cut -f1))"
+            else
+                echo "==> Downloading ${FILE} (~3.1GB)..."
+                curl -L --progress-bar "${URL}" -o "${FILE}"
+                echo "   ✓ ${FILE} ($(du -h "${FILE}" | cut -f1))"
+            fi
+            ;;
+    esac
+fi
 
 # ── CC-CEDICT dictionary ──────────────────────────────────────────────────
 CEDICT_FILE="cedict_ts.u8"
@@ -177,11 +190,22 @@ else
 fi
 
 # ── Write build config for docker-build.sh ────────────────────────────────
-cat > "${CACHE_DIR}/.build-config" <<EOF
+if [ "${DICT_ONLY}" = true ] && [ -f "${CACHE_DIR}/.build-config" ]; then
+    # Preserve existing ASR_ENGINE/ASR_MODEL, update BKRS_PATH
+    ENGINE=$(grep ASR_ENGINE= "${CACHE_DIR}/.build-config" | cut -d= -f2)
+    MODEL=$(grep ASR_MODEL= "${CACHE_DIR}/.build-config" | cut -d= -f2)
+    cat > "${CACHE_DIR}/.build-config" <<EOF
 ASR_ENGINE=${ENGINE}
 ASR_MODEL=${MODEL}
 BKRS_PATH=/opt/dabkrs.gz
 EOF
+else
+    cat > "${CACHE_DIR}/.build-config" <<EOF
+ASR_ENGINE=${ENGINE}
+ASR_MODEL=${MODEL}
+BKRS_PATH=/opt/dabkrs.gz
+EOF
+fi
 
 # ── Write .env for docker-compose (static vars only; ASR is baked into image) ─
 cat > "${SCRIPT_DIR}/.env" <<EOF
@@ -189,5 +213,10 @@ MODEL_PATH=/opt/models
 EOF
 
 echo ""
-echo "=== Done! ${ENGINE} / ${MODEL} ==="
-echo "Next: ./docker-build.sh --rebuild-base"
+if [ "${DICT_ONLY}" = true ]; then
+    echo "=== Done! Dictionaries cached ==="
+    echo "Next: ./docker-build.sh --rebuild-base"
+else
+    echo "=== Done! ${ENGINE} / ${MODEL} ==="
+    echo "Next: ./docker-build.sh --rebuild-base"
+fi

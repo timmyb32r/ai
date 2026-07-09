@@ -3,7 +3,9 @@ package dictionary
 
 import (
 	"bufio"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -31,7 +33,8 @@ type bkrsDict struct {
 	mu      sync.RWMutex
 }
 
-// LoadBKRS loads a raw BKRS dump file and returns a ready-to-use Dictionary.
+// LoadBKRS loads a raw BKRS dump file (optionally gzip-compressed) and
+// returns a ready-to-use Dictionary.
 func LoadBKRS(dumpPath string) (Dictionary, error) {
 	f, err := os.Open(dumpPath)
 	if err != nil {
@@ -39,11 +42,25 @@ func LoadBKRS(dumpPath string) (Dictionary, error) {
 	}
 	defer f.Close()
 
+	// Detect and decompress gzip (BKRS daily dumps are .gz files).
+	var reader io.Reader = f
+	if isGzip(f) {
+		if _, err := f.Seek(0, 0); err != nil {
+			return nil, fmt.Errorf("seek bkrs dump: %w", err)
+		}
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return nil, fmt.Errorf("decompress bkrs dump: %w", err)
+		}
+		defer gz.Close()
+		reader = gz
+	}
+
 	d := &bkrsDict{
 		entries: make(map[string]*Entry, 300000), // BKRS has ~300K+ entries
 	}
 
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
 	var (
@@ -355,4 +372,14 @@ func (d *bkrsDict) Close() error {
 	defer d.mu.Unlock()
 	d.entries = nil
 	return nil
+}
+
+// isGzip checks whether a seekable file starts with the gzip magic bytes.
+func isGzip(f *os.File) bool {
+	var magic [2]byte
+	n, err := f.Read(magic[:])
+	if err != nil || n < 2 {
+		return false
+	}
+	return magic[0] == 0x1f && magic[1] == 0x8b
 }
