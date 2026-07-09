@@ -428,11 +428,27 @@ func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string 
 	}
 
 	if len(syllables) < len(chars) {
+		// Some syllables cover multiple characters (e.g. "meiguo" for 美国).
+		// Try to split each syllable into per-char readings using charMap/pattern.
 		result := make([]string, len(chars))
 		ci := 0
 		for _, syl := range syllables {
-			result[ci] = cleanSyllable(syl)
-			ci++
+			// Try splitting this syllable into N chars (N = 1..remaining).
+			bestSplit := []string{syl} // fallback: whole syllable
+			for n := len(chars) - ci; n >= 1; n-- {
+				subChars := chars[ci : ci+n]
+				if sub := splitUnspacedPinyin(syl, subChars, charMap); sub != nil && len(sub) == n {
+					bestSplit = sub
+					break
+				}
+			}
+			for _, s := range bestSplit {
+				result[ci] = cleanSyllable(s)
+				ci++
+				if ci >= len(chars) {
+					break
+				}
+			}
 		}
 		for ci < len(chars) {
 			result[ci] = result[ci-1]

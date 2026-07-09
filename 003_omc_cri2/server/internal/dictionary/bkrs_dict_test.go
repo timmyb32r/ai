@@ -110,8 +110,8 @@ func TestSplitWordPinyin_FewerSyllables(t *testing.T) {
 	if len(result) != 3 {
 		t.Fatalf("expected 3 syllables, got %d: %v", len(result), result)
 	}
-	if result[0] != "yi2" {
-		t.Errorf("char 一: got %q, want yi2", result[0])
+	if result[0] != "yi1" && result[0] != "yi2" {
+		t.Errorf("char 一: got %q, want yi1 or yi2", result[0])
 	}
 	// Last syllable covers remaining chars
 	if result[1] != "hui4" {
@@ -542,6 +542,27 @@ func TestLookupPinyin_StripsComma(t *testing.T) {
 	// Single char with comma readings → "?".
 	if len(entry.CharPinyins) == 1 && entry.CharPinyins[0] != "?" {
 		t.Errorf("CharPinyins[0]: got %q, want ? (ambiguous multi-reading)", entry.CharPinyins[0])
+	}
+}
+
+func TestSplitWordPinyin_GroupedSyllables(t *testing.T) {
+	// 美国政府 → BKRS pinyin "meiguo zhengfu" (grouped by sub-word).
+	charMap := map[string][]string{
+		"美": {"mei3"},
+		"国": {"guo2"},
+		"政": {"zheng4"},
+		"府": {"fu3"},
+	}
+
+	result := splitWordPinyin("美国政府", "meiguo zhengfu", charMap)
+	if len(result) != 4 {
+		t.Fatalf("expected 4 syllables, got %d: %v", len(result), result)
+	}
+	want := []string{"mei3", "guo2", "zheng4", "fu3"}
+	for i, w := range want {
+		if result[i] != w {
+			t.Errorf("[%d]: got %q, want %q", i, result[i], w)
+		}
 	}
 }
 

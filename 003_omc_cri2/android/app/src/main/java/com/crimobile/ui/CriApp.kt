@@ -326,6 +326,8 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                 sessions = state.offlineSessions,
                 segments = state.offlineSessionSegments,
                 selectedSessionId = state.selectedOfflineSessionId,
+                currentSegmentId = state.activeSegment?.segment_id,
+                currentTimelineSec = state.activeSegment?.timeline_start_sec,
                 onSelectSession = { onAction(CriAction.SelectOfflineSession(it)) },
                 onSelectSegment = { onAction(CriAction.SelectOfflineSegment(it)) },
                 onDismiss = { onAction(CriAction.DismissOfflineNavDialog) }
@@ -2344,12 +2346,41 @@ private fun OfflineNavDialog(
     sessions: List<com.crimobile.viewmodel.OfflineSessionInfo>,
     segments: List<SubtitleSegment>,
     selectedSessionId: String?,
+    currentSegmentId: Int?,
+    currentTimelineSec: Double?,
     onSelectSession: (String) -> Unit,
     onSelectSegment: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sessionsState = rememberLazyListState()
     val segmentsState = rememberLazyListState()
+
+    // Auto-select the current session once on dialog open.
+    var autoSelected by remember { mutableStateOf(false) }
+    LaunchedEffect(sessions) {
+        if (autoSelected || currentTimelineSec == null) return@LaunchedEffect
+        val session = sessions.firstOrNull { s ->
+            val start = s.startSec.toDouble()
+            currentTimelineSec in start..(start + s.durationSec)
+        }
+        if (session != null) {
+            autoSelected = true
+            if (session.sessionId != selectedSessionId) {
+                onSelectSession(session.sessionId)
+            }
+        }
+    }
+
+    // Auto-scroll segments list to the current segment (once loaded).
+    var segmentsScrolled by remember { mutableStateOf(false) }
+    LaunchedEffect(segments, currentSegmentId) {
+        if (segmentsScrolled || currentSegmentId == null) return@LaunchedEffect
+        val segIdx = segments.indexOfFirst { it.segment_id == currentSegmentId }
+        if (segIdx >= 0) {
+            segmentsScrolled = true
+            segmentsState.scrollToItem(segIdx, 0)
+        }
+    }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
