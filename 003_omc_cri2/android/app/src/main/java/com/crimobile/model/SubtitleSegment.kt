@@ -26,6 +26,7 @@ data class WordEntry(
     val start_sec: Double,
     val end_sec: Double,
     val pinyin: String,
+    val char_pinyin: List<String> = emptyList(),
     val translation: String,
     val senses: List<WordSense> = emptyList()
 )

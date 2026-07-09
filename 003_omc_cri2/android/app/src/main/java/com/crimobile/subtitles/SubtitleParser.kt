@@ -39,6 +39,14 @@ object SubtitleParser {
                     )
                 }
             }
+            // Parse per-character pinyin
+            val charPinyinArray = w.optJSONArray("char_pinyin")
+            val charPinyin = mutableListOf<String>()
+            if (charPinyinArray != null) {
+                for (j in 0 until charPinyinArray.length()) {
+                    charPinyin.add(charPinyinArray.optString(j, ""))
+                }
+            }
             words.add(
                 WordEntry(
                     text = w.optString("text", ""),
@@ -47,6 +55,7 @@ object SubtitleParser {
                     start_sec = w.optDouble("start_sec", 0.0),
                     end_sec = w.optDouble("end_sec", 0.0),
                     pinyin = w.optString("pinyin", ""),
+                    char_pinyin = charPinyin,
                     translation = w.optString("translation", ""),
                     senses = senses
                 )

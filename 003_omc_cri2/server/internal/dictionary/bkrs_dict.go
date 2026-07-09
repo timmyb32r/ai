@@ -28,9 +28,10 @@ import (
 //
 // Parser strips all markup and builds structured Sense entries.
 type bkrsDict struct {
-	entries map[string]*Entry // key: simplified Chinese word
-	stats   Stats
-	mu      sync.RWMutex
+	entries     map[string]*Entry  // key: simplified Chinese word
+	charPinyins map[string][]string // key: single character → possible pinyin readings
+	stats       Stats
+	mu          sync.RWMutex
 }
 
 // LoadBKRS loads a raw BKRS dump file (optionally gzip-compressed) and
@@ -43,11 +44,13 @@ func LoadBKRS(dumpPath string) (Dictionary, error) {
 	defer f.Close()
 
 	// Detect and decompress gzip (BKRS daily dumps are .gz files).
+	// isGzip reads 2 bytes to check magic — always rewind after.
+	gzipped := isGzip(f)
+	if _, err := f.Seek(0, 0); err != nil {
+		return nil, fmt.Errorf("seek bkrs dump: %w", err)
+	}
 	var reader io.Reader = f
-	if isGzip(f) {
-		if _, err := f.Seek(0, 0); err != nil {
-			return nil, fmt.Errorf("seek bkrs dump: %w", err)
-		}
+	if gzipped {
 		gz, err := gzip.NewReader(f)
 		if err != nil {
 			return nil, fmt.Errorf("decompress bkrs dump: %w", err)
@@ -105,6 +108,30 @@ func LoadBKRS(dumpPath string) (Dictionary, error) {
 		return nil, fmt.Errorf("scan bkrs dump: %w", err)
 	}
 
+	// Build character→pinyins map from single-character entries AND
+	// from multi-character entries with space-separated pinyin (1:1 alignment).
+	d.charPinyins = make(map[string][]string, 20000)
+	for word, entry := range d.entries {
+		chars := []rune(word)
+		syllables := strings.Fields(entry.Pinyin)
+		if len(syllables) == len(chars) {
+			for i, ch := range chars {
+				chStr := string(ch)
+				syl := syllables[i]
+				seen := false
+				for _, existing := range d.charPinyins[chStr] {
+					if existing == syl {
+						seen = true
+						break
+					}
+				}
+				if !seen {
+					d.charPinyins[chStr] = append(d.charPinyins[chStr], syl)
+				}
+			}
+		}
+	}
+
 	return d, nil
 }
 
@@ -138,6 +165,27 @@ func parseBKRSRecord(headword, pinyin, body string) *Entry {
 	}
 }
 
+// indexRunes returns the index of the first occurrence of substr in s,
+// or -1 if not found. Uses rune-based comparison (safe for UTF-8).
+func indexRunes(s, substr []rune) int {
+	if len(substr) == 0 {
+		return 0
+	}
+	for i := 0; i <= len(s)-len(substr); i++ {
+		match := true
+		for k := 0; k < len(substr); k++ {
+			if s[i+k] != substr[k] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
 // parseBKRSSenses parses BKRS body markup into structured Sense entries.
 //
 // Markup reference (from bkrs.info/p47):
@@ -153,9 +201,10 @@ func parseBKRSRecord(headword, pinyin, body string) *Entry {
 func parseBKRSSenses(body string) []Sense {
 	// Find all [mN] markers and their positions.
 	type marker struct {
-		num  int
-		pos  int
-		end  int // position after [/m]
+		num   int
+		start int // position of '[' in [mN]
+		pos   int // position after [mN] (content start)
+		end   int // position after [/m]
 	}
 	var markers []marker
 
@@ -163,9 +212,7 @@ func parseBKRSSenses(body string) []Sense {
 	i := 0
 	runes := []rune(body)
 	for i < len(runes) {
-		// Look for [m
 		if i+2 < len(runes) && runes[i] == '[' && runes[i+1] == 'm' {
-			// Read the number after [m
 			j := i + 2
 			for j < len(runes) && runes[j] >= '0' && runes[j] <= '9' {
 				j++
@@ -174,13 +221,13 @@ func parseBKRSSenses(body string) []Sense {
 				numStr := string(runes[i+2 : j])
 				num, err := strconv.Atoi(numStr)
 				if err == nil {
-					// Find matching [/m]
-					endTag := strings.Index(string(runes[j+1:]), "[/m]")
+					endTag := indexRunes(runes[j+1:], []rune("[/m]"))
 					if endTag >= 0 {
 						markers = append(markers, marker{
-							num: num,
-							pos: j + 1,                         // after [mN]
-							end: j + 1 + endTag + len("[/m]"), // after [/m]
+							num:   num,
+							start: i,
+							pos:   j + 1,
+							end:   j + 1 + endTag + len("[/m]"),
 						})
 						i = j + 1 + endTag + len("[/m]")
 						continue
@@ -191,7 +238,6 @@ func parseBKRSSenses(body string) []Sense {
 		i++
 	}
 
-	// If no [mN] markers, treat the whole body as one sense.
 	if len(markers) == 0 {
 		labels, notes, text := extractBKRSTags(body)
 		if text == "" {
@@ -212,12 +258,15 @@ func parseBKRSSenses(body string) []Sense {
 		if idx+1 < len(markers) {
 			blockEnd = markers[idx+1].pos
 		}
-		block := string(runes[m.pos:blockEnd])
-
-		// Strip the [/m] at the end of this block's content
-		if m.end < blockEnd {
-			block = string(runes[m.pos:m.end])
+		// Take content up to the [/m] close tag for this block.
+		contentEnd := blockEnd
+		if m.end <= blockEnd {
+			contentEnd = m.end - len("[/m]") // exclude [/m] itself
 		}
+		if contentEnd < m.pos {
+			contentEnd = m.pos
+		}
+		block := string(runes[m.pos:contentEnd])
 
 		labels, notes, text := extractBKRSTags(block)
 		if text == "" && len(labels) == 0 && notes == "" {
@@ -232,12 +281,11 @@ func parseBKRSSenses(body string) []Sense {
 	}
 
 	// Handle text before the first [mN] marker (preamble).
-	if len(markers) > 0 && markers[0].pos > 0 {
-		preamble := strings.TrimSpace(string(runes[:markers[0].pos]))
+	if len(markers) > 0 && markers[0].start > 0 {
+		preamble := strings.TrimSpace(string(runes[:markers[0].start]))
 		if preamble != "" {
 			labels, notes, text := extractBKRSTags(preamble)
 			if text != "" {
-				// Prepend as unnumbered sense
 				senses = append([]Sense{{
 					Number: 0,
 					Labels: labels,
@@ -342,7 +390,131 @@ func (d *bkrsDict) Lookup(simplified string) (*Entry, error) {
 		return nil, fmt.Errorf("word %q not found in bkrs dictionary", simplified)
 	}
 	atomic.AddInt64(&d.stats.Hits, 1)
+
+	// Split word pinyin into per-character syllables with disambiguation.
+	entry.CharPinyins = splitWordPinyin(simplified, entry.Pinyin, d.charPinyins)
 	return entry, nil
+}
+
+// splitWordPinyin splits a word's pinyin string into per-character syllables.
+func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string {
+	chars := []rune(word)
+	syllables := strings.Fields(pinyin)
+
+	// Un-spaced pinyin (e.g. "zhi3chu1") — split using char map or regex.
+	if len(syllables) == 1 && len(chars) > 1 {
+		if result := splitUnspacedPinyin(syllables[0], chars, charMap); result != nil {
+			return result
+		}
+	}
+
+	if len(syllables) == len(chars) {
+		result := make([]string, len(chars))
+		for i := range chars {
+			result[i] = syllables[i]
+		}
+		return result
+	}
+
+	if len(syllables) < len(chars) {
+		result := make([]string, len(chars))
+		ci := 0
+		for _, syl := range syllables {
+			result[ci] = syl
+			ci++
+		}
+		for ci < len(chars) {
+			result[ci] = result[ci-1]
+			ci++
+		}
+		return result
+	}
+
+	// More syllables than characters — merge excess.
+	result := make([]string, len(chars))
+	if len(chars) == 1 {
+		result[0] = pinyin
+		return result
+	}
+	for i := range chars {
+		if i < len(syllables) {
+			result[i] = syllables[i]
+		}
+	}
+	return result
+}
+
+// splitUnspacedPinyin splits continuous pinyin (no spaces) into per-char syllables.
+func splitUnspacedPinyin(pinyin string, chars []rune, charMap map[string][]string) []string {
+	if r := splitWithCharMap(pinyin, chars, charMap); r != nil {
+		return r
+	}
+	if r := splitBySyllablePattern(pinyin, len(chars)); r != nil {
+		return r
+	}
+	return nil
+}
+
+func splitWithCharMap(pinyin string, chars []rune, charMap map[string][]string) []string {
+	result := make([]string, len(chars))
+	remaining := pinyin
+	for i, ch := range chars {
+		candidates := charMap[string(ch)]
+		if len(candidates) == 0 {
+			return nil
+		}
+		best := ""
+		for _, c := range candidates {
+			plain := strings.TrimRight(c, "0123456789")
+			plainRem := strings.TrimRight(remaining, "0123456789")
+			if strings.HasPrefix(plainRem, plain) && len(c) > len(best) {
+				best = c
+			}
+		}
+		if best == "" {
+			return nil
+		}
+		result[i] = best
+		// Consume only the plain (no-tone) part from remaining,
+		// since remaining may not have tone digits.
+		plainLen := len(strings.TrimRight(best, "0123456789"))
+		if plainLen > len(remaining) {
+			plainLen = len(remaining)
+		}
+		remaining = remaining[plainLen:]
+	}
+	if remaining != "" {
+		return nil
+	}
+	return result
+}
+
+func splitBySyllablePattern(pinyin string, charCount int) []string {
+	var syllables []string
+	i := 0
+	runes := []rune(pinyin)
+	for i < len(runes) {
+		start := i
+		for i < len(runes) && isPinyinLetter(runes[i]) {
+			i++
+		}
+		if i < len(runes) && runes[i] >= '1' && runes[i] <= '5' {
+			i++
+			syllables = append(syllables, string(runes[start:i]))
+		} else if i > start {
+			syllables = append(syllables, string(runes[start:i]))
+		} else {
+			i++
+		}
+	}
+	if len(syllables) == charCount {
+		return syllables
+	}
+	return nil
+}
+
+func isPinyinLetter(c rune) bool {
+	return (c >= 'a' && c <= 'z') || c == 'ü' || c == 'v' || c == ':'
 }
 
 func (d *bkrsDict) LookupPinyin(simplified string) string {

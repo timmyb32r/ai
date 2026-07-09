@@ -234,6 +234,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 			entry, err := p.Dictionary.Lookup(t.Text)
 			pinyin, trans := "", ""
 			var senses []models.WordSense
+			var charPinyin []string
 			if err == nil {
 				pinyin = entry.Pinyin
 				if len(entry.Meanings) > 0 { trans = entry.Meanings[0] }
@@ -243,6 +244,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 						Text: s.Text, Notes: s.Notes,
 					})
 				}
+				charPinyin = entry.CharPinyins
 			}
 			startSec := segment.TimelineStartSec
 			endSec := segment.TimelineEndSec
@@ -261,7 +263,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 			wordEntries = append(wordEntries, models.WordEntry{
 				Text: t.Text, CharStart: t.CharStart, CharEnd: t.CharEnd,
 				StartSec: startSec, EndSec: endSec,
-				Pinyin: pinyin, Trans: trans, Senses: senses,
+				Pinyin: pinyin, CharPinyin: charPinyin, Trans: trans, Senses: senses,
 			})
 		}
 	} else {
@@ -273,6 +275,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 			entry, err := p.Dictionary.Lookup(t.Text)
 			pinyin, trans := "", ""
 			var senses []models.WordSense
+			var charPinyin []string
 			if err == nil {
 				pinyin = entry.Pinyin
 				if len(entry.Meanings) > 0 { trans = entry.Meanings[0] }
@@ -282,6 +285,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 						Text: s.Text, Notes: s.Notes,
 					})
 				}
+				charPinyin = entry.CharPinyins
 			}
 			charFraction := float64(t.CharEnd-t.CharStart) / float64(totalChars)
 			wordDuration := segDuration * charFraction
@@ -291,7 +295,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 			wordEntries = append(wordEntries, models.WordEntry{
 				Text: t.Text, CharStart: t.CharStart, CharEnd: t.CharEnd,
 				StartSec: timeCursor, EndSec: wordEnd,
-				Pinyin: pinyin, Trans: trans, Senses: senses,
+				Pinyin: pinyin, CharPinyin: charPinyin, Trans: trans, Senses: senses,
 			})
 			timeCursor = wordEnd
 		}

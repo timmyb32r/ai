@@ -2140,10 +2140,20 @@ data class CharCell(val text: String, val word: WordEntry, val syllable: String)
 fun buildCharCells(words: List<WordEntry>, showPinyin: Boolean): List<CharCell> {
     val cells = buildList<CharCell> {
         words.forEach { word ->
-            val pinyin = pinyinToDiacritic(word.pinyin.lowercase())
-            val syllables = pinyin.split(" ")
             val chars = word.text.toList()
-            val pinyinAligned = showPinyin && syllables.size == chars.size
+
+            // Per-character pinyin from server (BKRS disambiguation).
+            val charSyllables: List<String> = if (word.char_pinyin.isNotEmpty() && word.char_pinyin.size == chars.size) {
+                word.char_pinyin.map { pinyinToDiacritic(it.lowercase()) }
+            } else {
+                // Fallback: split word pinyin by spaces (legacy / CC-CEDICT).
+                val wp = pinyinToDiacritic(word.pinyin.lowercase())
+                val syllables = wp.split(" ")
+                if (showPinyin && syllables.size == chars.size) syllables
+                else emptyList()
+            }
+
+            val pinyinAligned = showPinyin && charSyllables.isNotEmpty()
             var ci = 0
             while (ci < chars.size) {
                 val ch = chars[ci]
@@ -2152,12 +2162,12 @@ fun buildCharCells(words: List<WordEntry>, showPinyin: Boolean): List<CharCell> 
                     add(CharCell(ch.toString(), word, ""))
                     ci++
                 } else {
-                    val syll = if (pinyinAligned) syllables.getOrElse(ci) { "" }
-                        else if (ci == 0) pinyin else ""
+                    val syll = if (pinyinAligned) charSyllables.getOrElse(ci) { "" }
+                        else if (ci == 0) pinyinToDiacritic(word.pinyin.lowercase()) else ""
                     if (ci + 1 < chars.size && isCJKPunctuation(chars[ci + 1])) {
-                        // Char + following punct: punct gets minimal width
-                        add(CharCell(ch.toString(), word, syll))  // char with pinyin
-                        add(CharCell(chars[ci + 1].toString(), word, ""))  // punct, no pinyin
+                        // Char + following punct
+                        add(CharCell(ch.toString(), word, syll))
+                        add(CharCell(chars[ci + 1].toString(), word, ""))
                         ci += 2
                     } else {
                         add(CharCell(ch.toString(), word, syll))

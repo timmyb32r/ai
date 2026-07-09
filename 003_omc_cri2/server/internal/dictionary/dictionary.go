@@ -15,9 +15,10 @@ type Sense struct {
 type Entry struct {
 	Traditional string   `json:"traditional"`
 	Simplified  string   `json:"simplified"`
-	Pinyin      string   `json:"pinyin"`
-	Meanings    []string `json:"meanings"`        // flat list (CC-CEDICT compat)
-	Senses      []Sense  `json:"senses,omitempty"` // structured (BKRS)
+	Pinyin      string   `json:"pinyin"`                // word-level pinyin (e.g. "zhi3 chu1")
+	CharPinyins []string `json:"char_pinyins,omitempty"` // per-character pinyin (e.g. ["zhi3", "chu1"])
+	Meanings    []string `json:"meanings"`              // flat list (CC-CEDICT compat)
+	Senses      []Sense  `json:"senses,omitempty"`      // structured (BKRS)
 }
 
 func (e *Entry) String() string {

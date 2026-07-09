@@ -33,14 +33,15 @@ type WordSense struct {
 
 // WordEntry represents a single Chinese word with timing, pronunciation, and meaning.
 type WordEntry struct {
-	Text      string      `json:"text"`
-	CharStart int         `json:"char_start"`
-	CharEnd   int         `json:"char_end"`
-	StartSec  float64     `json:"start_sec"`
-	EndSec    float64     `json:"end_sec"`
-	Pinyin    string      `json:"pinyin"`
-	Trans     string      `json:"translation"`       // flat translation (backward compat)
-	Senses    []WordSense `json:"senses,omitempty"`   // structured senses (BKRS)
+	Text       string      `json:"text"`
+	CharStart  int         `json:"char_start"`
+	CharEnd    int         `json:"char_end"`
+	StartSec   float64     `json:"start_sec"`
+	EndSec     float64     `json:"end_sec"`
+	Pinyin     string      `json:"pinyin"`                // word-level pinyin
+	CharPinyin []string    `json:"char_pinyin,omitempty"`  // per-character pinyin syllables
+	Trans      string      `json:"translation"`            // flat translation (backward compat)
+	Senses     []WordSense `json:"senses,omitempty"`       // structured senses (BKRS)
 }
 
 // SegmentIndex is the index.json mapping segment IDs to files and timeline positions.
