@@ -481,8 +481,8 @@ func splitWithCharMap(pinyin string, chars []rune, charMap map[string][]string) 
 		}
 		best := ""
 		for _, c := range candidates {
-			plain := strings.TrimRight(c, "0123456789")
-			plainRem := strings.TrimRight(remaining, "0123456789")
+			plain := stripDiacritics(strings.TrimRight(c, "0123456789"))
+			plainRem := stripDiacritics(strings.TrimRight(remaining, "0123456789"))
 			if strings.HasPrefix(plainRem, plain) && len(c) > len(best) {
 				best = c
 			}
@@ -549,13 +549,43 @@ func splitBySyllablePattern(pinyin string, charCount int) []string {
 }
 
 func isPinyinLetter(c rune) bool {
-	return (c >= 'a' && c <= 'z') || c == 'ü' || c == 'v' || c == ':'
+	if (c >= 'a' && c <= 'z') || c == 'ü' || c == 'v' || c == ':' {
+		return true
+	}
+	// Diacritic-marked pinyin vowels: à-ǜ range covers all tone-marked
+	// a, e, i, o, u, ü variants used in Hanyu Pinyin.
+	return (c >= 0x00E0 && c <= 0x01DC) && c != 0x00F0 && c != 0x00F7 && c != 0x00FE
 }
 
 // isApostrophe returns true for apostrophe-like characters used as
 // pinyin syllable separators (e.g. Xī'ān → xi1'an1).
 func isApostrophe(c rune) bool {
 	return c == '\'' || c == '’' || c == '‘' || c == 'ʼ'
+}
+
+// stripDiacritics removes tone diacritics from pinyin vowels,
+// converting e.g. "mén" → "men" for comparison purposes.
+func stripDiacritics(s string) string {
+	var b strings.Builder
+	for _, c := range s {
+		switch c {
+		case 'ā', 'á', 'ǎ', 'à':
+			b.WriteRune('a')
+		case 'ē', 'é', 'ě', 'è':
+			b.WriteRune('e')
+		case 'ī', 'í', 'ǐ', 'ì':
+			b.WriteRune('i')
+		case 'ō', 'ó', 'ǒ', 'ò':
+			b.WriteRune('o')
+		case 'ū', 'ú', 'ǔ', 'ù':
+			b.WriteRune('u')
+		case 'ǖ', 'ǘ', 'ǚ', 'ǜ':
+			b.WriteRune('ü')
+		default:
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
 }
 
 func (d *bkrsDict) LookupPinyin(simplified string) string {
@@ -569,7 +599,12 @@ func (d *bkrsDict) LookupPinyin(simplified string) string {
 		return ""
 	}
 	atomic.AddInt64(&d.stats.Hits, 1)
-	return entry.Pinyin
+	// Return first reading only (strip comma-separated alternatives).
+	pinyin := entry.Pinyin
+	if idx := strings.IndexAny(pinyin, ",;"); idx >= 0 {
+		pinyin = strings.TrimSpace(pinyin[:idx])
+	}
+	return pinyin
 }
 
 func (d *bkrsDict) Stats() Stats {

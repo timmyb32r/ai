@@ -483,6 +483,68 @@ func TestSplitWordPinyin_ZhongYao_Unspaced(t *testing.T) {
 	}
 }
 
+func TestSplitWordPinyin_DiacriticVowels(t *testing.T) {
+	// 他们 with diacritic pinyin (tāmen) — BKRS uses macrons, not tone numbers.
+	charMap := map[string][]string{
+		"他": {"tā"},
+		"们": {"mén", "men"},
+		"我": {"wǒ"},
+	}
+
+	tests := []struct {
+		name   string
+		pinyin string
+		want   []string
+	}{
+		{"tā men", "tā men", []string{"tā", "men"}},
+		{"tāmén via charMap", "tāmén", []string{"tā", "mén"}},
+		{"tāmen via charMap", "tāmen", []string{"tā", "mén"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chars := []rune("他们")
+			result := splitWordPinyin(string(chars), tt.pinyin, charMap)
+			if len(result) != len(tt.want) {
+				t.Fatalf("expected %d syllables, got %d: %v", len(tt.want), len(result), result)
+			}
+			for i, w := range tt.want {
+				if result[i] != w {
+					t.Errorf("[%d]: got %q, want %q", i, result[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestLookupPinyin_StripsComma(t *testing.T) {
+	// Simulate: single-char entry with comma-separated readings.
+	dump := "有\n" + "you3, you4\n" + "[m1]иметь[/m]\n\n"
+	tmpFile := t.TempDir() + "/test.dump"
+	os.WriteFile(tmpFile, []byte(dump), 0644)
+
+	dict, err := LoadBKRS(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// LookupPinyin should return just "you3", not "you3, you4".
+	got := dict.LookupPinyin("有")
+	if got != "you3" {
+		t.Errorf("got %q, want you3", got)
+	}
+
+	// Lookup should still have full CharPinyins.
+	entry, err := dict.Lookup("有")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Single char with comma readings → "?".
+	if len(entry.CharPinyins) == 1 && entry.CharPinyins[0] != "?" {
+		t.Errorf("CharPinyins[0]: got %q, want ? (ambiguous multi-reading)", entry.CharPinyins[0])
+	}
+}
+
 func TestParseBKRSRecord_Typical(t *testing.T) {
 	entry := parseBKRSRecord("方面", "fang1 mian4", "[m1]сторона, аспект[/m] [m2][p]перен.[/p]грань[/m]")
 
