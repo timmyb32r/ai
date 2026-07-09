@@ -12,11 +12,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
@@ -64,6 +67,7 @@ import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import com.crimobile.R
 import com.crimobile.ServerConfig
 import com.crimobile.model.*
@@ -1092,15 +1096,20 @@ private fun SubtitleList(
     // ScrollResult is a top-level sealed class (see above CriApp).
     // Snapshot-safe computation returns a ScrollResult; execution happens here.
 
-    LazyColumn(
-        state = listState, modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-    ) {
-        itemsIndexed(segments, key = { _, s -> s.segment_id }) { index, segment ->
-            val isTsBoundary = index > 0 && segments[index - 1].ts_file != segment.ts_file
-            SegmentCard(segment, activeWord, showPinyin, fontSizeSp, showWordBoundaries, isTsBoundary, showAudioBoundaries, pinyinFontSizeSp, lastActiveWord, onWordTapped)
-            Spacer(Modifier.height(6.dp))
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState, modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            itemsIndexed(segments, key = { _, s -> s.segment_id }) { index, segment ->
+                val isTsBoundary = index > 0 && segments[index - 1].ts_file != segment.ts_file
+                SegmentCard(segment, activeWord, showPinyin, fontSizeSp, showWordBoundaries, isTsBoundary, showAudioBoundaries, pinyinFontSizeSp, lastActiveWord, onWordTapped)
+                Spacer(Modifier.height(6.dp))
+            }
         }
+
+        // Draggable amber scroll thumb.
+        ScrollThumb(listState, modifier = Modifier.align(Alignment.TopEnd).padding(end = 4.dp))
     }
 }
 
@@ -1199,6 +1208,78 @@ private fun SegmentCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ScrollThumb(
+    listState: LazyListState,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    val coroutineScope = rememberCoroutineScope()
+    val totalItems = listState.layoutInfo.totalItemsCount
+    if (totalItems <= 0) return
+
+    val viewportH = listState.layoutInfo.viewportSize.height.toFloat()
+    val firstVisible = listState.firstVisibleItemIndex
+    val visibleCount = listState.layoutInfo.visibleItemsInfo.size
+    val thumbH = with(density) { 40.dp.toPx() }
+    val maxScroll = (totalItems - visibleCount).coerceAtLeast(1)
+    val fraction = (firstVisible.toFloat() / maxScroll).coerceIn(0f, 1f)
+    val thumbY = fraction * (viewportH - thumbH)
+
+    var dragStartData by remember { mutableStateOf<Triple<Int, Float, Float>?>(null) } // (maxScroll, startFrac, totalDy)
+
+    // Invisible wide touch target; visible thumb drawn inside at original width.
+    Box(
+        modifier = modifier
+            .offset(y = with(density) { thumbY.toDp() })
+            .width(24.dp) // wide touch target
+            .height(with(density) { 40.dp })
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        val curTotal = listState.layoutInfo.totalItemsCount
+                        val curVis = listState.layoutInfo.visibleItemsInfo.size
+                        val curMax = (curTotal - curVis).coerceAtLeast(1)
+                        val startFrac = listState.firstVisibleItemIndex.toFloat() / curMax
+                        Log.i("CRIRadio:thumb", "start: first=${listState.firstVisibleItemIndex} total=$curTotal frac=$startFrac")
+                        dragStartData = Triple(curMax, startFrac, 0f)
+                    },
+                    onDragEnd = {
+                        Log.i("CRIRadio:thumb", "end: first=${listState.firstVisibleItemIndex}")
+                        dragStartData = null
+                    },
+                    onDragCancel = {
+                        Log.i("CRIRadio:thumb", "cancel")
+                        dragStartData = null
+                    },
+                    onVerticalDrag = { _, dragAmount ->
+                        val (curMax, startFrac, prevTotal) = dragStartData ?: return@detectVerticalDragGestures
+                        // Accumulate total drag distance; dragAmount is delta since last event.
+                        val totalDy = prevTotal + dragAmount
+                        dragStartData = Triple(curMax, startFrac, totalDy)
+                        val vpH = listState.layoutInfo.viewportSize.height.toFloat()
+                        val range = vpH - thumbH
+                        if (range <= 0) return@detectVerticalDragGestures
+                        val newFraction = (startFrac + totalDy / range).coerceIn(0f, 1f)
+                        val targetIdx = (newFraction * curMax).toInt().coerceIn(0, curMax)
+                        Log.d("CRIRadio:thumb", "drag: dY=$dragAmount totalDy=$totalDy newF=$newFraction target=$targetIdx firstNow=${listState.firstVisibleItemIndex}")
+                        coroutineScope.launch { listState.scrollToItem(targetIdx, 0) }
+                    }
+                )
+            },
+        contentAlignment = Alignment.CenterEnd
+    ) {
+        // Visible thumb — narrow amber pill.
+        Box(
+            modifier = Modifier
+                .width(8.dp)
+                .height(with(density) { 40.dp })
+                .clip(RoundedCornerShape(4.dp))
+                .background(Amber.copy(alpha = 0.5f))
+        )
     }
 }
 
@@ -2350,28 +2431,7 @@ private fun OfflineNavDialog(
                             }
                         }
                         }
-                        // Amber scroll thumb — fixed size, moves with scroll
-                        val totalItems = sessionsState.layoutInfo.totalItemsCount
-                        if (totalItems > 0) {
-                            val density = LocalDensity.current
-                            val viewportH = sessionsState.layoutInfo.viewportSize.height
-                            val firstVisible = sessionsState.firstVisibleItemIndex
-                            val visibleCount = sessionsState.layoutInfo.visibleItemsInfo.size
-                            val thumbH = with(density) { 40.dp.toPx() }
-                            val maxScroll = (totalItems - visibleCount).coerceAtLeast(1)
-                            val fraction = (firstVisible.toFloat() / maxScroll).coerceIn(0f, 1f)
-                            val thumbY = fraction * (viewportH - thumbH)
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(end = 4.dp)
-                                    .offset(y = with(density) { thumbY.toDp() })
-                                    .width(3.dp)
-                                    .height(with(density) { 40.dp })
-                                    .clip(RoundedCornerShape(1.5.dp))
-                                    .background(Amber.copy(alpha = 0.5f))
-                            )
-                        }
+                        ScrollThumb(sessionsState, modifier = Modifier.align(Alignment.TopEnd).padding(end = 4.dp))
                     }
 
                     // Vertical divider
@@ -2439,28 +2499,7 @@ private fun OfflineNavDialog(
                             }
                         }
                         }
-                        // Amber scroll thumb — fixed size, moves with scroll
-                        val segTotal = segmentsState.layoutInfo.totalItemsCount
-                        if (segTotal > 0) {
-                            val density = LocalDensity.current
-                            val viewportH = segmentsState.layoutInfo.viewportSize.height
-                            val segFirst = segmentsState.firstVisibleItemIndex
-                            val visibleCount = segmentsState.layoutInfo.visibleItemsInfo.size
-                            val thumbH = with(density) { 40.dp.toPx() }
-                            val maxScroll = (segTotal - visibleCount).coerceAtLeast(1)
-                            val segFraction = (segFirst.toFloat() / maxScroll).coerceIn(0f, 1f)
-                            val segThumbY = segFraction * (viewportH - thumbH)
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(end = 4.dp)
-                                    .offset(y = with(density) { segThumbY.toDp() })
-                                    .width(3.dp)
-                                    .height(with(density) { 40.dp })
-                                    .clip(RoundedCornerShape(1.5.dp))
-                                    .background(Amber.copy(alpha = 0.5f))
-                            )
-                        }
+                        ScrollThumb(segmentsState, modifier = Modifier.align(Alignment.TopEnd).padding(end = 4.dp))
                     }
                 }
             }
