@@ -126,6 +126,43 @@ func TestFillProbableReadings_EndToEndWithDict(t *testing.T) {
 	}
 }
 
+// TestFillProbableReadings_CedictFallback covers the 天问 case: BKRS has the
+// word but with no pinyin, so its per-char readings are "?". CEDICT provides the
+// context-correct word-level pinyin, which is split 1:1 per character with no
+// uncertainty marker.
+func TestFillProbableReadings_CedictFallback(t *testing.T) {
+	cedictData := "天問 天问 [Tian1 wen4] /Tianwen (Mars mission)/\n"
+	cf := t.TempDir() + "/cedict.u8"
+	if err := os.WriteFile(cf, []byte(cedictData), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cd, err := dictionary.Load(cf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Pipeline{Cedict: cd, Unihan: testUnihan(t)}
+
+	// 天问 — resolved from CEDICT, certain (no flag).
+	tw := []models.WordEntry{{Text: "天问", CharPinyin: []string{"?", "?"}, Pinyin: "_"}}
+	p.fillProbableReadings(tw)
+	if got := tw[0].CharPinyin; len(got) != 2 || got[0] != "tiān" || got[1] != "wèn" {
+		t.Errorf("天问: CharPinyin=%v, want [tiān wèn]", got)
+	}
+	if tw[0].CharPinyinUncertain != nil {
+		t.Errorf("天问: uncertain=%v, want nil (CEDICT is authoritative)", tw[0].CharPinyinUncertain)
+	}
+	if tw[0].Pinyin != "tiān wèn" {
+		t.Errorf("天问: word Pinyin=%q, want 'tiān wèn'", tw[0].Pinyin)
+	}
+
+	// A multi-char word absent from CEDICT keeps its "?".
+	other := []models.WordEntry{{Text: "嫦娥", CharPinyin: []string{"?", "?"}, Pinyin: "_"}}
+	p.fillProbableReadings(other)
+	if other[0].CharPinyin[0] != "?" || other[0].CharPinyin[1] != "?" {
+		t.Errorf("嫦娥: got %v, want [? ?] (not in CEDICT)", other[0].CharPinyin)
+	}
+}
+
 func TestFillProbableReadings_NilResolver(t *testing.T) {
 	p := &Pipeline{Unihan: nil}
 	words := []models.WordEntry{{Text: "的", CharPinyin: []string{"?"}, Pinyin: "?"}}

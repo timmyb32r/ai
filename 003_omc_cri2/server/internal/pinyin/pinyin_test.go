@@ -72,6 +72,29 @@ func TestValidateHierogliphPinyin_JunkRejected(t *testing.T) {
 	}
 }
 
+func TestNumberedToDiacritic(t *testing.T) {
+	cases := map[string]string{
+		"tian1": "tiān",
+		"Wen4":  "wèn", // capitalised (CEDICT proper noun)
+		"wen4":  "wèn",
+		"de5":   "de", // neutral tone → digit dropped
+		"de":    "de", // no digit
+		"ma3":   "mǎ",
+		"lu:3":  "lǚ", // u: → ü
+		"lv3":   "lǚ", // v → ü
+		"hao3":  "hǎo",
+		"gou3":  "gǒu", // ou → mark o
+		"jiu4":  "jiù", // no a/e, last vowel u
+		"shi4":  "shì",
+		"er2":   "ér",
+	}
+	for in, want := range cases {
+		if got := NumberedToDiacritic(in); got != want {
+			t.Errorf("NumberedToDiacritic(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestValidateHierogliphPinyin_TableCoverage(t *testing.T) {
 	// Every canonical syllable must validate (guards against typos in the list
 	// and against splitInitial/compat drifting apart).

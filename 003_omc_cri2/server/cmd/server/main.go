@@ -95,6 +95,20 @@ func main() {
 		logger.Info("main", "unihan_loaded", "path", cfg.UnihanPath, "chars", unihanResolver.Size())
 	}
 
+	// CEDICT fallback: word-level pinyin for multi-char words BKRS can't read
+	// (e.g. entries with missing pinyin "_" like 天问). Only needed when BKRS is
+	// primary; in cedict mode the main dict already covers it. Optional.
+	var cedictFallback dictionary.Dictionary
+	if cfg.Dict == "bkrs" {
+		if cd, cerr := dictionary.Load(cfg.DictPath); cerr != nil {
+			logger.Warn("main", "cedict_fallback_disabled", "path", cfg.DictPath, "err", cerr)
+		} else {
+			cedictFallback = cd
+			defer cedictFallback.Close()
+			logger.Info("main", "cedict_fallback_loaded", "path", cfg.DictPath)
+		}
+	}
+
 	// Storage
 	store, err := storage.New(cfg.OutputDir)
 	if err != nil {
@@ -185,6 +199,7 @@ func main() {
 		Tokenizer:   tok,
 		Dictionary:  dict,
 		Unihan:      unihanResolver,
+		Cedict:      cedictFallback,
 		Store:       store,
 		Logger:      logger,
 		OutputDir:   cfg.OutputDir,

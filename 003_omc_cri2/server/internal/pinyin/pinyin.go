@@ -215,6 +215,78 @@ func IsValidHierogliphPinyin(s string) bool {
 	return ValidateHierogliphPinyin(s) == nil
 }
 
+// toneMarks maps a base vowel to its tone-marked forms for tones 1..4.
+var toneMarks = map[rune][4]rune{
+	'a': {'ā', 'á', 'ǎ', 'à'},
+	'e': {'ē', 'é', 'ě', 'è'},
+	'i': {'ī', 'í', 'ǐ', 'ì'},
+	'o': {'ō', 'ó', 'ǒ', 'ò'},
+	'u': {'ū', 'ú', 'ǔ', 'ù'},
+	'ü': {'ǖ', 'ǘ', 'ǚ', 'ǜ'},
+}
+
+func isPlainVowel(r rune) bool {
+	return r == 'a' || r == 'e' || r == 'i' || r == 'o' || r == 'u' || r == 'ü'
+}
+
+// NumberedToDiacritic converts a numbered pinyin syllable (e.g. "tian1",
+// "Wen4", "lu:3", "lv3") to its tone-mark form ("tiān", "wèn", "lǚ"). Neutral
+// tone (5, 0, or no digit) yields the plain syllable. Input is lower-cased and
+// v / u: are treated as ü. Non-pinyin input is returned lower-cased unchanged.
+func NumberedToDiacritic(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "u:", "ü")
+	s = strings.ReplaceAll(s, "v", "ü")
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	tone := 0
+	if last := r[len(r)-1]; last >= '1' && last <= '5' {
+		tone = int(last - '0')
+		r = r[:len(r)-1]
+	}
+	if tone == 0 || tone == 5 {
+		return string(r)
+	}
+	idx := toneVowelIndex(r)
+	if idx < 0 {
+		return string(r)
+	}
+	marks, ok := toneMarks[r[idx]]
+	if !ok {
+		return string(r)
+	}
+	r[idx] = marks[tone-1]
+	return string(r)
+}
+
+// toneVowelIndex picks which vowel carries the tone mark, per standard rules:
+// 'a' or 'e' if present; otherwise the 'o' in "ou"; otherwise the last vowel.
+func toneVowelIndex(r []rune) int {
+	for i, c := range r {
+		if c == 'a' {
+			return i
+		}
+	}
+	for i, c := range r {
+		if c == 'e' {
+			return i
+		}
+	}
+	for i := 0; i+1 < len(r); i++ {
+		if r[i] == 'o' && r[i+1] == 'u' {
+			return i
+		}
+	}
+	for i := len(r) - 1; i >= 0; i-- {
+		if isPlainVowel(r[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
 // SegmentByCount splits an un-spaced Pinyin string into exactly n valid
 // syllables and returns them with their original spelling and tone marks
 // preserved. It is the structural counterpart to per-character alignment:
