@@ -14,7 +14,8 @@ func testUnihan(t *testing.T) *unihan.Resolver {
 	const fixture = "U+7684\tkHanyuPinlu\tde(75596) dì(157) dí(84)\n" +
 		"U+7684\tkMandarin\tde\n" +
 		"U+5730\tkHanyuPinlu\tde(7394) dì(4976)\n" +
-		"U+4E86\tkHanyuPinlu\tle(30101) liǎo(654)\n"
+		"U+4E86\tkHanyuPinlu\tle(30101) liǎo(654)\n" +
+		"U+4E00\tkHanyuPinlu\tyī(84490) yì(2) yí(1)\n" // 一
 	f := t.TempDir() + "/Unihan_Readings.txt"
 	if err := os.WriteFile(f, []byte(fixture), 0644); err != nil {
 		t.Fatal(err)
@@ -34,7 +35,7 @@ func TestFillProbableReadings(t *testing.T) {
 		{Text: "地", CharPinyin: []string{"?"}, Pinyin: "?"},             // ambiguous (~60%) still filled + uncertain
 		{Text: "銀", CharPinyin: []string{"?"}, Pinyin: "?"},             // unknown to Unihan → stays "?"
 		{Text: "我", CharPinyin: []string{"wǒ"}, Pinyin: "wǒ"},           // deterministic single char → untouched
-		{Text: "什么", CharPinyin: []string{"?", "me"}, Pinyin: "shénme"}, // multi-char with "?" → out of scope, untouched
+		{Text: "什么", CharPinyin: []string{"?", "me"}, Pinyin: "shénme"}, // 什 unknown to this fixture + no dict → stays "?"
 	}
 	p.fillProbableReadings(words)
 
@@ -160,6 +161,50 @@ func TestFillProbableReadings_CedictFallback(t *testing.T) {
 	p.fillProbableReadings(other)
 	if other[0].CharPinyin[0] != "?" || other[0].CharPinyin[1] != "?" {
 		t.Errorf("嫦娥: got %v, want [? ?] (not in CEDICT)", other[0].CharPinyin)
+	}
+}
+
+// TestFillPerChar_DeterministicAndUnihan covers 一状: a "word" present in no
+// dictionary (BKRS stub with pinyin "_", absent from CEDICT). Per character:
+// 状 has one reading → deterministic zhuàng (certain); 一 has several → Unihan
+// top yī (uncertain).
+func TestFillPerChar_DeterministicAndUnihan(t *testing.T) {
+	dump := "" +
+		"状\n zhuàng\n[m1]вид[/m]\n\n" +
+		"一\n yī, yì, yí\n[m1]один[/m]\n\n" +
+		"一状\n _\n[m1](не слово)[/m]\n\n"
+	df := t.TempDir() + "/bkrs.dump"
+	if err := os.WriteFile(df, []byte(dump), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dict, err := dictionary.LoadBKRS(df)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Pipeline{Dictionary: dict, Unihan: testUnihan(t)} // Cedict nil
+
+	e, err := dict.Lookup("一状")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(e.CharPinyins) != 2 || e.CharPinyins[0] != "?" || e.CharPinyins[1] != "?" {
+		t.Fatalf("一状: dict CharPinyins=%v, want [? ?]", e.CharPinyins)
+	}
+	words := []models.WordEntry{{
+		Text: "一状", CharPinyin: append([]string{}, e.CharPinyins...), Pinyin: e.Pinyin,
+	}}
+	p.fillProbableReadings(words)
+
+	if got := words[0].CharPinyin; len(got) != 2 || got[0] != "yī" || got[1] != "zhuàng" {
+		t.Errorf("一状: CharPinyin=%v, want [yī zhuàng]", got)
+	}
+	unc := words[0].CharPinyinUncertain
+	if len(unc) != 2 || !unc[0] || unc[1] {
+		t.Errorf("一状: uncertain=%v, want [true false] (一 guessed, 状 certain)", unc)
+	}
+	if words[0].Pinyin != "yī zhuàng" {
+		t.Errorf("一状: word Pinyin=%q, want 'yī zhuàng'", words[0].Pinyin)
 	}
 }
 

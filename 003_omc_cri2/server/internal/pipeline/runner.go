@@ -641,13 +641,12 @@ func (p *Pipeline) fillProbableReadings(words []models.WordEntry) {
 			continue
 		}
 		chars := []rune(w.Text)
-		if len(chars) > 1 {
-			p.fillFromCedict(w, chars)
+		// Prefer a whole-word CEDICT reading for multi-char words; if the word
+		// is in neither BKRS nor CEDICT, fall back to per-character resolution.
+		if len(chars) > 1 && p.fillFromCedict(w, chars) {
 			continue
 		}
-		if len(chars) == 1 {
-			p.fillSingleFromUnihan(w, chars)
-		}
+		p.fillPerChar(w, chars)
 	}
 }
 
@@ -667,23 +666,23 @@ func hasUnknownReading(charPinyin []string) bool {
 // so the result is treated as certain (no uncertainty marker). Words missing
 // from CEDICT — or whose pinyin does not align 1:1 with the characters — are
 // left untouched.
-func (p *Pipeline) fillFromCedict(w *models.WordEntry, chars []rune) {
+func (p *Pipeline) fillFromCedict(w *models.WordEntry, chars []rune) bool {
 	if p.Cedict == nil {
-		return
+		return false
 	}
 	entry, err := p.Cedict.Lookup(w.Text)
 	if err != nil {
-		return
+		return false
 	}
 	fields := strings.Fields(entry.Pinyin)
 	if len(fields) != len(chars) {
-		return
+		return false
 	}
 	syllables := make([]string, len(fields))
 	for i, f := range fields {
 		syl := pinyinlib.NumberedToDiacritic(f)
 		if !pinyinlib.IsValidHierogliphPinyin(syl) {
-			return // don't emit anything unless the whole word is clean
+			return false // don't emit anything unless the whole word is clean
 		}
 		syllables[i] = syl
 	}
@@ -693,22 +692,55 @@ func (p *Pipeline) fillFromCedict(w *models.WordEntry, chars []rune) {
 	copy(w.CharPinyin, syllables)
 	w.CharPinyinUncertain = nil // CEDICT word reading is authoritative
 	w.Pinyin = strings.Join(syllables, " ")
+	return true
 }
 
-// fillSingleFromUnihan replaces a lone character's "?" with its most-probable
-// Unihan reading, marked uncertain (a frequency-based guess, e.g. 的 → de).
-func (p *Pipeline) fillSingleFromUnihan(w *models.WordEntry, chars []rune) {
-	if p.Unihan == nil || len(w.CharPinyin) != 1 || w.CharPinyin[0] != "?" {
+// fillPerChar resolves each remaining "?" position independently — the general
+// fallback when neither BKRS nor CEDICT yields a whole-word reading (e.g. 一状,
+// which is in no dictionary as a word). Per character:
+//   - exactly one dictionary reading → set it deterministically (certain);
+//   - several readings → most-probable Unihan reading, marked uncertain
+//     (e.g. 一 → yī with a trailing "?" in the UI);
+//   - unknown to both → keep "?".
+//
+// It also covers lone single-character words (的 → de + "?").
+func (p *Pipeline) fillPerChar(w *models.WordEntry, chars []rune) {
+	if len(w.CharPinyin) != len(chars) {
 		return
 	}
-	reading, ok := p.Unihan.Lookup(chars[0])
-	if !ok {
-		return
+	uncertain := w.CharPinyinUncertain
+	changed := false
+	for i, ch := range chars {
+		if w.CharPinyin[i] != "?" {
+			continue
+		}
+		var readings []string
+		if p.Dictionary != nil {
+			readings = p.Dictionary.CharReadings(string(ch))
+		}
+		if len(readings) == 1 {
+			// Unambiguous character — deterministic, no uncertainty marker.
+			w.CharPinyin[i] = readings[0]
+			changed = true
+			continue
+		}
+		// Ambiguous (>1) or unknown (0) — take the most-probable Unihan reading.
+		if reading, ok := p.Unihan.Lookup(ch); ok {
+			w.CharPinyin[i] = reading.Pinyin
+			if uncertain == nil {
+				uncertain = make([]bool, len(chars))
+			}
+			uncertain[i] = true
+			changed = true
+		}
 	}
-	w.CharPinyin[0] = reading.Pinyin
-	w.CharPinyinUncertain = []bool{true}
-	if w.Pinyin == "" || w.Pinyin == "?" || strings.ContainsAny(w.Pinyin, ",;?") {
-		w.Pinyin = reading.Pinyin
+	if uncertain != nil {
+		w.CharPinyinUncertain = uncertain
+	}
+	// Rebuild the word-level pinyin from the resolved syllables when the source
+	// was missing/ambiguous, so the full-line romanisation is clean too.
+	if changed && (w.Pinyin == "" || w.Pinyin == "_" || w.Pinyin == "?" || strings.ContainsAny(w.Pinyin, ",;?")) {
+		w.Pinyin = strings.Join(w.CharPinyin, " ")
 	}
 }
 
