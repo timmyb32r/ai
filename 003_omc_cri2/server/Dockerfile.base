@@ -89,15 +89,12 @@ RUN if [ -s /opt/dabkrs.gz ]; then \
     fi
 
 # ── Unihan readings — probable pinyin for ambiguous single characters ───
-# Optional: fills a lone character's "?" reading with its most frequent
-# Mandarin reading (Unihan kHanyuPinlu). Missing file → feature stays off.
-# Sourced from .docker-cache/ (already copied to /tmp/docker-cache above).
-RUN if [ -f /tmp/docker-cache/Unihan_Readings.txt ]; then \
-      cp /tmp/docker-cache/Unihan_Readings.txt /opt/Unihan_Readings.txt && \
-      echo "Unihan readings: $(wc -l < /opt/Unihan_Readings.txt) lines"; \
-    else \
-      echo "WARNING: Unihan_Readings.txt not found — single-char '?' fill disabled" >&2; \
-    fi
+# Required: fills a lone character's "?" reading with its most frequent
+# Mandarin reading (Unihan kHanyuPinlu). A missing/empty file fails the build
+# (the COPY errors if absent; the test guards against an empty file).
+COPY .docker-cache/Unihan_Readings.txt /opt/Unihan_Readings.txt
+RUN test -s /opt/Unihan_Readings.txt \
+ && echo "Unihan readings: $(wc -l < /opt/Unihan_Readings.txt) lines"
 
 # ── gse Chinese word segmentation dictionaries ──────────────────────────
 COPY .docker-cache/gse-dict/ /opt/gse-dict/

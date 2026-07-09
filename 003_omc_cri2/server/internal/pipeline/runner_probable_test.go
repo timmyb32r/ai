@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/criradio/server/internal/dictionary"
 	"github.com/criradio/server/internal/models"
 	"github.com/criradio/server/internal/unihan"
 )
@@ -69,6 +70,59 @@ func TestFillProbableReadings(t *testing.T) {
 	// 什么 multi-char → untouched (out of scope)
 	if words[4].CharPinyin[0] != "?" || words[4].CharPinyinUncertain != nil {
 		t.Errorf("什么: got %v uncertain=%v, want [? me]/nil", words[4].CharPinyin, words[4].CharPinyinUncertain)
+	}
+}
+
+// TestFillProbableReadings_EndToEndWithDict drives the real production path:
+// a multi-reading single character (的) is looked up in BKRS, where
+// splitWordPinyin collapses its ambiguous reading to "?", and the pipeline then
+// fills it from Unihan. This is exactly what produces "de?" on screen (server
+// emits "de" + uncertain flag; the client appends the "?").
+func TestFillProbableReadings_EndToEndWithDict(t *testing.T) {
+	dump := "" +
+		"的\n de, dí, dì, dī\n[m1]притяжательная частица[/m]\n\n" +
+		"是\n shì\n[m1]быть[/m]\n\n"
+	df := t.TempDir() + "/bkrs.dump"
+	if err := os.WriteFile(df, []byte(dump), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dict, err := dictionary.LoadBKRS(df)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Pipeline{Unihan: testUnihan(t)}
+
+	// 的 — dictionary reading is ambiguous → "?" from splitWordPinyin.
+	de, err := dict.Lookup("的")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(de.CharPinyins) != 1 || de.CharPinyins[0] != "?" {
+		t.Fatalf("的: dict CharPinyins=%v, want [?] (ambiguous)", de.CharPinyins)
+	}
+	deWords := []models.WordEntry{{
+		Text: "的", CharPinyin: append([]string{}, de.CharPinyins...), Pinyin: de.Pinyin,
+	}}
+	p.fillProbableReadings(deWords)
+	if deWords[0].CharPinyin[0] != "de" {
+		t.Errorf("的: after fill CharPinyin=%q, want de", deWords[0].CharPinyin[0])
+	}
+	if len(deWords[0].CharPinyinUncertain) != 1 || !deWords[0].CharPinyinUncertain[0] {
+		t.Errorf("的: uncertain=%v, want [true]", deWords[0].CharPinyinUncertain)
+	}
+
+	// 是 — deterministic single reading, must stay untouched and unflagged.
+	shi, err := dict.Lookup("是")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shiWords := []models.WordEntry{{
+		Text: "是", CharPinyin: append([]string{}, shi.CharPinyins...), Pinyin: shi.Pinyin,
+	}}
+	p.fillProbableReadings(shiWords)
+	if shiWords[0].CharPinyin[0] != "shì" || shiWords[0].CharPinyinUncertain != nil {
+		t.Errorf("是: got %q uncertain=%v, want shì/nil", shiWords[0].CharPinyin[0], shiWords[0].CharPinyinUncertain)
 	}
 }
 

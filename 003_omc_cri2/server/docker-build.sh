@@ -51,8 +51,51 @@ if [ ! -d "${CACHE_DIR}" ]; then
     exit 1
 fi
 
+# Required data files — the build MUST NOT proceed without them, otherwise the
+# image silently ships without a dictionary / Unihan readings and features
+# (e.g. single-char pinyin fill) break at runtime.
+REQUIRED_FILES=(
+    "cedict_ts.u8"
+    "Unihan_Readings.txt"
+    "gse-dict/zh/s_1.txt"
+    "gse-dict/zh/t_1.txt"
+    "gse-dict/zh/stop_word.txt"
+)
+# BKRS dump is required only when running in bkrs mode (the default).
+if [ "${DICT:-bkrs}" = "bkrs" ]; then
+    REQUIRED_FILES+=("dabkrs.gz")
+fi
+
+MISSING=()
+for f in "${REQUIRED_FILES[@]}"; do
+    [ -s "${CACHE_DIR}/${f}" ] || MISSING+=("$f")
+done
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo "ERROR: required cache files missing in ${CACHE_DIR}:" >&2
+    for f in "${MISSING[@]}"; do echo "  - ${f}" >&2; done
+    echo "Run ./download-cache.sh to fetch them, then re-run this script." >&2
+    exit 1
+fi
+
 # ── build base image (if needed) ─────────────────────────────────────────
 BASE_EXISTS=$(docker images -q "$BASE_IMAGE" 2>/dev/null || true)
+
+# A cached base image may predate a newly-added required data file (e.g. the
+# Unihan readings): the file lives in the base layer, so an old base silently
+# ships without it and the feature no-ops at runtime. Probe the cached base for
+# the required /opt files and force a rebuild if any are missing.
+if [ -n "$BASE_EXISTS" ] && [ "$REBUILD_BASE" = false ]; then
+    BASE_CHECK_PATHS="/opt/Unihan_Readings.txt /opt/cedict_ts.u8 /opt/gse-dict/zh/s_1.txt"
+    if [ "${DICT:-bkrs}" = "bkrs" ]; then
+        BASE_CHECK_PATHS="${BASE_CHECK_PATHS} /opt/dabkrs.gz"
+    fi
+    if ! docker run --rm --entrypoint sh "$BASE_IMAGE" -c \
+        "for f in ${BASE_CHECK_PATHS}; do [ -s \"\$f\" ] || exit 1; done" >/dev/null 2>&1; then
+        echo "==> Cached base image is missing required data files — forcing base rebuild"
+        REBUILD_BASE=true
+    fi
+fi
+
 if [ -z "$BASE_EXISTS" ] || [ "$REBUILD_BASE" = true ]; then
     echo "==> Building base image (${ASR_ENGINE}/${ASR_MODEL})..."
     docker build \

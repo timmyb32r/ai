@@ -55,7 +55,6 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
@@ -1196,10 +1195,10 @@ private fun SegmentCard(
                         // Pinyin slot — min height for alignment, but allows descenders
                         if (showPinyin) {
                             Box(modifier = Modifier.heightIn(min = 18.dp), contentAlignment = Alignment.Center) {
-                                // Probabilistic (Unihan) readings are dimmed + italic to mark them as guesses.
-                                Text(charCell.syllable, fontSize = pinyinFontSizeSp.sp,
-                                    color = if (charCell.uncertain) TextPinyin.copy(alpha = 0.45f) else TextPinyin,
-                                    fontStyle = if (charCell.uncertain) FontStyle.Italic else FontStyle.Normal,
+                                // Probabilistic (Unihan) readings get a trailing "?" to mark them as guesses.
+                                val shownSyllable = if (charCell.uncertain && charCell.syllable.isNotEmpty())
+                                    charCell.syllable + "?" else charCell.syllable
+                                Text(shownSyllable, fontSize = pinyinFontSizeSp.sp, color = TextPinyin,
                                     maxLines = 1, softWrap = false)
                             }
                         }
