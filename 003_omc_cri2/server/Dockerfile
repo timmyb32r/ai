@@ -5,4 +5,5 @@
 #   ./docker-build.sh                # Go build (native) + Docker image
 
 FROM criradio-base:latest
+ARG CACHE_BUST
 COPY criradio-server /usr/local/bin/criradio-server

@@ -566,6 +566,34 @@ func TestSplitWordPinyin_GroupedSyllables(t *testing.T) {
 	}
 }
 
+func TestCleanPinyin_StripsMarkup(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"xiàng; xiang; [c][i]в именах[/c]shàng", "xiàng; xiang; shàng"},
+		{"zhuó, zhāo, zháo, zhe", "zhuó, zhāo, zháo, zhe"},
+		{"de, dí, dì, dī", "de, dí, dì, dī"},
+		{"  huán; hái; xuán  ", "huán; hái; xuán"},
+	}
+	for _, tt := range tests {
+		got := cleanPinyin(tt.in)
+		if got != tt.want {
+			t.Errorf("cleanPinyin(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestParseBKRSRecord_CleansPinyinMarkup(t *testing.T) {
+	// 向 — pinyin line has BKRS markup embedded.
+	entry := parseBKRSRecord("向",
+		"xiàng; xiang; [c][i]в coбcтв. имeнax тakжe[/c] [c][/i][/c]shàng",
+		"[m1]направление[/m]")
+	if entry == nil {
+		t.Fatal("expected non-nil entry")
+	}
+	if entry.Pinyin != "xiàng; xiang; shàng" {
+		t.Errorf("Pinyin: got %q, want 'xiàng; xiang; shàng'", entry.Pinyin)
+	}
+}
+
 func TestParseBKRSRecord_Typical(t *testing.T) {
 	entry := parseBKRSRecord("方面", "fang1 mian4", "[m1]сторона, аспект[/m] [m2][p]перен.[/p]грань[/m]")
 

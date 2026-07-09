@@ -141,8 +141,9 @@ func parseBKRSRecord(headword, pinyin, body string) *Entry {
 		return nil
 	}
 
-	// Normalise pinyin: BKRS uses tone numbers (e.g. "zhe4"), same as CC-CEDICT.
-	pinyin = strings.TrimSpace(pinyin)
+	// Normalise pinyin: strip BKRS body markup that leaks into pinyin line
+	// (e.g. "xiàng; xiang; [c][i]в именах также[/c] [c][/i][/c]shàng").
+	pinyin = cleanPinyin(pinyin)
 
 	// Parse the body into structured senses.
 	senses := parseBKRSSenses(body)
@@ -184,6 +185,32 @@ func indexRunes(s, substr []rune) int {
 		}
 	}
 	return -1
+}
+
+// cleanPinyin strips BKRS markup tags (and their content) that leak into pinyin lines.
+// Example: "xiàng; xiang; [c][i]в именах[/i][/c]shàng" → "xiàng; xiang; shàng"
+func cleanPinyin(p string) string {
+	p = strings.TrimSpace(p)
+	// Remove paired tags with their content: [c]...[/c], [i]...[/i], [ref]...[/ref], [ex]...[/ex]
+	for _, tag := range []string{"c", "i", "ref", "ex"} {
+		for {
+			start := strings.Index(p, "["+tag+"]")
+			if start < 0 {
+				break
+			}
+			end := strings.Index(p, "[/"+tag+"]")
+			if end < start {
+				break
+			}
+			p = p[:start] + p[end+len("[/"+tag+"]"):]
+		}
+	}
+	// Remove unpaired closing tags: [/c], [/i], [/p], [/ref], [/b], [/ex]
+	for _, tag := range []string{"[/c]", "[/i]", "[/p]", "[/ref]", "[/b]", "[/ex]", "[/*]", "[*]", "[p]", "[b]"} {
+		p = strings.ReplaceAll(p, tag, "")
+	}
+	p = strings.Join(strings.Fields(p), " ")
+	return p
 }
 
 // parseBKRSSenses parses BKRS body markup into structured Sense entries.
@@ -507,15 +534,33 @@ func splitWithCharMap(pinyin string, chars []rune, charMap map[string][]string) 
 			return nil
 		}
 		result[i] = best
-		// Consume the plain (no-tone) letters from remaining.
-		plainLen := len(strings.TrimRight(best, "0123456789"))
-		if plainLen > len(remaining) {
-			plainLen = len(remaining)
+		// Consume the matching prefix from remaining.
+		// We can't use len(best) directly because remaining may have
+		// diacritics while best has ASCII+tone. Instead, scan remaining
+		// for the first non-matching character.
+		plainBest := strings.TrimRight(best, "0123456789")
+		plainRunes := []rune(plainBest)
+		remRunes := []rune(remaining)
+		consume := 0
+		plainIdx := 0
+		for consume < len(remRunes) && plainIdx < len(plainRunes) {
+			rc := stripDiacriticsRune(remRunes[consume])
+			pc := stripDiacriticsRune(plainRunes[plainIdx])
+			if rc == pc {
+				consume++
+				plainIdx++
+			} else {
+				break
+			}
 		}
-		remaining = remaining[plainLen:]
-		// Also consume trailing tone digit if present in remaining.
-		if len(remaining) > 0 && remaining[0] >= '1' && remaining[0] <= '5' {
-			remaining = remaining[1:]
+		// Also skip trailing tone digit in remaining after the matched prefix.
+		if consume < len(remRunes) && remRunes[consume] >= '1' && remRunes[consume] <= '5' {
+			consume++
+		}
+		if consume > 0 {
+			remaining = string(remRunes[consume:])
+		} else {
+			return nil
 		}
 	}
 	if remaining != "" {
@@ -577,6 +622,26 @@ func isPinyinLetter(c rune) bool {
 // pinyin syllable separators (e.g. Xī'ān → xi1'an1).
 func isApostrophe(c rune) bool {
 	return c == '\'' || c == '’' || c == '‘' || c == 'ʼ'
+}
+
+// stripDiacriticsRune converts a single diacritic vowel to its base form.
+func stripDiacriticsRune(c rune) rune {
+	switch c {
+	case 'ā', 'á', 'ǎ', 'à':
+		return 'a'
+	case 'ē', 'é', 'ě', 'è':
+		return 'e'
+	case 'ī', 'í', 'ǐ', 'ì':
+		return 'i'
+	case 'ō', 'ó', 'ǒ', 'ò':
+		return 'o'
+	case 'ū', 'ú', 'ǔ', 'ù':
+		return 'u'
+	case 'ǖ', 'ǘ', 'ǚ', 'ǜ':
+		return 'ü'
+	default:
+		return c
+	}
 }
 
 // stripDiacritics removes tone diacritics from pinyin vowels,

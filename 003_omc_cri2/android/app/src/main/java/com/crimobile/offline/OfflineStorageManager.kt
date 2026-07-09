@@ -308,6 +308,15 @@ class OfflineStorageManager(private val context: Context) {
 
     // ── Delete / Prune ─────────────────────────────────────────────────
 
+    fun deleteAllData() {
+        synchronized(lock) {
+            if (rootDir.exists()) {
+                rootDir.deleteRecursively()
+                Log.i(TAG, "All offline data deleted")
+            }
+        }
+    }
+
     fun deleteSession(sessionId: String) {
         synchronized(lock) {
             val d = sessionDir(sessionId)
@@ -387,6 +396,21 @@ class OfflineStorageManager(private val context: Context) {
                 put("end_sec", w.end_sec)
                 put("pinyin", w.pinyin)
                 put("translation", w.translation)
+                if (w.char_pinyin.isNotEmpty()) {
+                    put("char_pinyin", JSONArray(w.char_pinyin))
+                }
+                if (w.senses.isNotEmpty()) {
+                    val sa = JSONArray()
+                    w.senses.forEach { s ->
+                        sa.put(JSONObject().apply {
+                            put("number", s.number)
+                            put("labels", JSONArray(s.labels))
+                            put("text", s.text)
+                            put("notes", s.notes)
+                        })
+                    }
+                    put("senses", sa)
+                }
             })
         }
         return JSONObject().apply {

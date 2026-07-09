@@ -77,6 +77,7 @@ echo "   binary: $(ls -lh criradio-server | awk '{print $5}')"
 echo "==> Building server image: $SERVER_IMAGE..."
 docker build \
     -t "$SERVER_IMAGE" \
+    --build-arg "CACHE_BUST=$(date +%s)" \
     ${SERVER_ARGS[@]+"${SERVER_ARGS[@]}"} \
     "$SCRIPT_DIR"
 
