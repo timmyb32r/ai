@@ -176,6 +176,23 @@ else
     echo "   ✓ dabkrs.gz ($(du -h "${BKRS_FILE}" | cut -f1))"
 fi
 
+# ── Unihan readings (probable pinyin for ambiguous single characters) ──────
+# Unicode UCD Unihan.zip → Unihan_Readings.txt. Provides kHanyuPinlu frequency
+# data used to fill single-character "?" readings with the most common one.
+UNIHAN_FILE="Unihan_Readings.txt"
+if [ -f "${UNIHAN_FILE}" ]; then
+    echo "==> Unihan readings already cached ($(wc -l < "${UNIHAN_FILE}") lines)"
+else
+    echo "==> Downloading Unihan database..."
+    if curl -fL --progress-bar "https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip" -o /tmp/unihan.zip 2>/dev/null; then
+        unzip -o /tmp/unihan.zip Unihan_Readings.txt -d . >/dev/null
+        rm -f /tmp/unihan.zip
+        echo "   ✓ Unihan_Readings.txt ($(wc -l < "${UNIHAN_FILE}") lines)"
+    else
+        echo "   ! Unihan download failed — single-char '?' fill will be disabled" >&2
+    fi
+fi
+
 # ── gse dictionaries ──────────────────────────────────────────────────────
 if [ -d "gse-dict" ] && [ -f "gse-dict/zh/s_1.txt" ]; then
     echo "==> gse dictionaries already cached"

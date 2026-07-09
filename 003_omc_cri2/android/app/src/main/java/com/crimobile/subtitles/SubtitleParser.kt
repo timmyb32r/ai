@@ -51,6 +51,14 @@ object SubtitleParser {
             if (charPinyin.isEmpty() && !w.optString("pinyin", "").isNullOrBlank()) {
                 Log.w("CRIRadio:parse", "word=${w.optString("text")} — char_pinyin MISSING, pinyin=${w.optString("pinyin")}")
             }
+            // Parse per-character uncertainty flags (probabilistic fills).
+            val uncertainArray = w.optJSONArray("char_pinyin_uncertain")
+            val charUncertain = mutableListOf<Boolean>()
+            if (uncertainArray != null) {
+                for (j in 0 until uncertainArray.length()) {
+                    charUncertain.add(uncertainArray.optBoolean(j, false))
+                }
+            }
             words.add(
                 WordEntry(
                     text = w.optString("text", ""),
@@ -60,6 +68,7 @@ object SubtitleParser {
                     end_sec = w.optDouble("end_sec", 0.0),
                     pinyin = w.optString("pinyin", ""),
                     char_pinyin = charPinyin,
+                    char_pinyin_uncertain = charUncertain,
                     translation = w.optString("translation", ""),
                     senses = senses
                 )

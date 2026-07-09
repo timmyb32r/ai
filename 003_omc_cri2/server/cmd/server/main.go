@@ -33,6 +33,7 @@ import (
 	"github.com/criradio/server/internal/pipeline"
 	"github.com/criradio/server/internal/storage"
 	"github.com/criradio/server/internal/tokenizer"
+	"github.com/criradio/server/internal/unihan"
 )
 
 func main() {
@@ -83,6 +84,16 @@ func main() {
 	}
 	defer dict.Close()
 	logger.Info("main", "dictionary_loaded", "hits", dict.Stats().Hits, "total", dict.Stats().Total)
+
+	// Unihan: optional probable-reading source for single-char "?" words.
+	// Missing file is not fatal — the feature simply stays off.
+	unihanResolver, uerr := unihan.Load(cfg.UnihanPath)
+	if uerr != nil {
+		logger.Warn("main", "unihan_disabled", "path", cfg.UnihanPath, "err", uerr)
+		unihanResolver = nil
+	} else {
+		logger.Info("main", "unihan_loaded", "path", cfg.UnihanPath, "chars", unihanResolver.Size())
+	}
 
 	// Storage
 	store, err := storage.New(cfg.OutputDir)
@@ -173,6 +184,7 @@ func main() {
 		Transcriber: transcriber,
 		Tokenizer:   tok,
 		Dictionary:  dict,
+		Unihan:      unihanResolver,
 		Store:       store,
 		Logger:      logger,
 		OutputDir:   cfg.OutputDir,

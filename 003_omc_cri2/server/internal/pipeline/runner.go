@@ -22,6 +22,7 @@ import (
 	"github.com/criradio/server/internal/models"
 	"github.com/criradio/server/internal/storage"
 	"github.com/criradio/server/internal/tokenizer"
+	"github.com/criradio/server/internal/unihan"
 )
 
 type Pipeline struct {
@@ -29,6 +30,7 @@ type Pipeline struct {
 	Transcriber asr.Transcriber
 	Tokenizer   tokenizer.Tokenizer
 	Dictionary  dictionary.Dictionary
+	Unihan      *unihan.Resolver // optional: fills probable readings for single-char "?" words
 	Store       storage.MetadataStore
 	Logger      logging.Logger
 	OutputDir   string
@@ -44,7 +46,7 @@ type Pipeline struct {
 	subtitledFirstID int // first segment ID still in the window
 
 	asrCompleted atomic.Int64 // total segments transcribed by whisper
-	epochBase  float64       // Unix epoch at pipeline start — base for monotonic timeline
+	epochBase    float64      // Unix epoch at pipeline start — base for monotonic timeline
 }
 
 func (p *Pipeline) Run(ctx context.Context) error {
@@ -179,8 +181,12 @@ func (p *Pipeline) writePCMToHLS(samples []float32) {
 	buf := make([]byte, len(samples)*2)
 	for i, s := range samples {
 		v := s
-		if v > 1.0 { v = 1.0 }
-		if v < -1.0 { v = -1.0 }
+		if v > 1.0 {
+			v = 1.0
+		}
+		if v < -1.0 {
+			v = -1.0
+		}
 		val := int16(v * 32767)
 		buf[i*2] = byte(val)
 		buf[i*2+1] = byte(val >> 8)
@@ -196,7 +202,9 @@ func (p *Pipeline) asrWorker(ctx context.Context, queue <-chan models.PCMChunk) 
 		case <-ctx.Done():
 			return
 		case chunk, ok := <-queue:
-			if !ok { return }
+			if !ok {
+				return
+			}
 			p.processASR(chunk)
 		}
 	}
@@ -237,7 +245,9 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 			var charPinyin []string
 			if err == nil {
 				pinyin = entry.Pinyin
-				if len(entry.Meanings) > 0 { trans = entry.Meanings[0] }
+				if len(entry.Meanings) > 0 {
+					trans = entry.Meanings[0]
+				}
 				for _, s := range entry.Senses {
 					senses = append(senses, models.WordSense{
 						Number: s.Number, Labels: s.Labels,
@@ -263,11 +273,11 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 						} else {
 							// Context failed — fall back to old per-character lookup.
 							if cp := p.Dictionary.LookupPinyin(string(ch)); cp != "" && !strings.ContainsAny(cp, ",;") {
-							charPinyin = append(charPinyin, cp)
-							parts = append(parts, cp)
+								charPinyin = append(charPinyin, cp)
+								parts = append(parts, cp)
 							} else {
-							charPinyin = append(charPinyin, "?")
-							parts = append(parts, "?")
+								charPinyin = append(charPinyin, "?")
+								parts = append(parts, "?")
 							}
 						}
 					}
@@ -289,7 +299,9 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 				medianGap := estimateMedianGap(segment.RawTimestamps)
 				endSec = segment.TimelineStartSec + last + medianGap
 			}
-			if endSec > segment.TimelineEndSec { endSec = segment.TimelineEndSec }
+			if endSec > segment.TimelineEndSec {
+				endSec = segment.TimelineEndSec
+			}
 			wordEntries = append(wordEntries, models.WordEntry{
 				Text: t.Text, CharStart: t.CharStart, CharEnd: t.CharEnd,
 				StartSec: startSec, EndSec: endSec,
@@ -299,7 +311,9 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 	} else {
 		// Fallback: proportional character-count distribution (whisper path)
 		totalChars := 0
-		for _, t := range words { totalChars += t.CharEnd - t.CharStart }
+		for _, t := range words {
+			totalChars += t.CharEnd - t.CharStart
+		}
 		timeCursor := segment.TimelineStartSec
 		for _, t := range words {
 			entry, err := p.Dictionary.Lookup(t.Text)
@@ -308,7 +322,9 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 			var charPinyin []string
 			if err == nil {
 				pinyin = entry.Pinyin
-				if len(entry.Meanings) > 0 { trans = entry.Meanings[0] }
+				if len(entry.Meanings) > 0 {
+					trans = entry.Meanings[0]
+				}
 				for _, s := range entry.Senses {
 					senses = append(senses, models.WordSense{
 						Number: s.Number, Labels: s.Labels,
@@ -328,11 +344,11 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 						charPinyin = append(charPinyin, readings[0])
 						// Context failed — fall back to old per-character lookup.
 						if cp := p.Dictionary.LookupPinyin(string(ch)); cp != "" && !strings.ContainsAny(cp, ",;") {
-					charPinyin = append(charPinyin, cp)
-					parts = append(parts, cp)
+							charPinyin = append(charPinyin, cp)
+							parts = append(parts, cp)
 						} else {
-					charPinyin = append(charPinyin, "?")
-					parts = append(parts, "?")
+							charPinyin = append(charPinyin, "?")
+							parts = append(parts, "?")
 						}
 						if resolved := resolveByContext(i, chars, p.Dictionary); resolved != "" {
 							charPinyin = append(charPinyin, resolved)
@@ -349,9 +365,13 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 			}
 			charFraction := float64(t.CharEnd-t.CharStart) / float64(totalChars)
 			wordDuration := segDuration * charFraction
-			if totalChars == 0 { wordDuration = segDuration / float64(len(words)) }
+			if totalChars == 0 {
+				wordDuration = segDuration / float64(len(words))
+			}
 			wordEnd := timeCursor + wordDuration
-			if wordEnd > segment.TimelineEndSec { wordEnd = segment.TimelineEndSec }
+			if wordEnd > segment.TimelineEndSec {
+				wordEnd = segment.TimelineEndSec
+			}
 			wordEntries = append(wordEntries, models.WordEntry{
 				Text: t.Text, CharStart: t.CharStart, CharEnd: t.CharEnd,
 				StartSec: timeCursor, EndSec: wordEnd,
@@ -361,6 +381,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 		}
 	}
 	segment.Words = wordEntries
+	p.fillProbableReadings(segment.Words)
 	dictMs := time.Since(dictStart).Milliseconds()
 	segment.TextPinyin = buildPinyinText(wordEntries)
 	segment.TextEn = buildEnText(wordEntries)
@@ -408,10 +429,14 @@ func (p *Pipeline) updateSubtitledPlaylist(latestCompletedID int) {
 	// Keep last hour of subtitled segments
 	window := p.HLSTime * 1200
 	startID := p.subtitledLastID - window
-	if startID < 0 { startID = 0 }
+	if startID < 0 {
+		startID = 0
+	}
 
 	f, err := os.Create(playlistPath)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	defer f.Close()
 
 	fmt.Fprintf(f, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:%d\n",
@@ -439,13 +464,19 @@ func (p *Pipeline) updateSubtitledPlaylist(latestCompletedID int) {
 // (in seconds). Used to estimate the end time of the last word when the
 // raw timestamps array is one element short.
 func estimateMedianGap(ts []float64) float64 {
-	if len(ts) < 2 { return 0.5 } // default 500ms
+	if len(ts) < 2 {
+		return 0.5
+	} // default 500ms
 	gaps := make([]float64, 0, len(ts)-1)
 	for i := 1; i < len(ts); i++ {
 		gap := ts[i] - ts[i-1]
-		if gap > 0 { gaps = append(gaps, gap) }
+		if gap > 0 {
+			gaps = append(gaps, gap)
+		}
 	}
-	if len(gaps) == 0 { return 0.5 }
+	if len(gaps) == 0 {
+		return 0.5
+	}
 	sort.Float64s(gaps)
 	return gaps[len(gaps)/2]
 }
@@ -477,7 +508,9 @@ func (p *Pipeline) SubtitledSegmentsReady() int {
 func buildPinyinText(words []models.WordEntry) string {
 	var s string
 	for i, w := range words {
-		if i > 0 { s += " " }
+		if i > 0 {
+			s += " "
+		}
 		s += w.Pinyin
 	}
 	return s
@@ -486,7 +519,9 @@ func buildPinyinText(words []models.WordEntry) string {
 func buildEnText(words []models.WordEntry) string {
 	var s string
 	for i, w := range words {
-		if i > 0 { s += " " }
+		if i > 0 {
+			s += " "
+		}
 		s += w.Trans
 	}
 	return s
@@ -500,7 +535,9 @@ func (p *Pipeline) writeEmptyPlaylist(hlsDir string) {
 		return // already exists
 	}
 	f, err := os.Create(path)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	defer f.Close()
 	fmt.Fprintf(f, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n", p.HLSTime)
 }
@@ -587,6 +624,35 @@ func logStderr(r io.Reader, logger logging.Logger, module string) {
 // resolveByContext picks the correct reading for a character by checking
 // adjacent 2-char sub-words in the dictionary. If both "人方" and "方式"
 // use fāng for 方, we can confidently pick fāng over páng.
+// fillProbableReadings replaces "?" with the most-probable Unihan reading for
+// lone single-character words (e.g. the particle 的, tokenised as its own
+// word). Any reading filled this way is marked uncertain — it is a
+// frequency-based guess, not a deterministic dictionary/segmentation result,
+// even when the top reading dominates (的 → de at 99.7%). Characters unknown to
+// Unihan keep their "?". Multi-character words are left untouched (out of scope).
+func (p *Pipeline) fillProbableReadings(words []models.WordEntry) {
+	if p.Unihan == nil {
+		return
+	}
+	for i := range words {
+		w := &words[i]
+		chars := []rune(w.Text)
+		if len(chars) != 1 || len(w.CharPinyin) != 1 || w.CharPinyin[0] != "?" {
+			continue
+		}
+		reading, ok := p.Unihan.Lookup(chars[0])
+		if !ok {
+			continue
+		}
+		w.CharPinyin[0] = reading.Pinyin
+		w.CharPinyinUncertain = []bool{true}
+		// Clean up the word-level pinyin too, if it was ambiguous/empty.
+		if w.Pinyin == "" || w.Pinyin == "?" || strings.ContainsAny(w.Pinyin, ",;?") {
+			w.Pinyin = reading.Pinyin
+		}
+	}
+}
+
 func resolveByContext(charIdx int, chars []rune, dict dictionary.Dictionary) string {
 	target := string(chars[charIdx])
 	readings := dict.CharReadings(target)

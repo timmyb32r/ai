@@ -27,6 +27,9 @@ data class WordEntry(
     val end_sec: Double,
     val pinyin: String,
     val char_pinyin: List<String> = emptyList(),
+    // Aligned with char_pinyin: true = reading was filled probabilistically
+    // (Unihan frequency), not derived deterministically. Absent → all false.
+    val char_pinyin_uncertain: List<Boolean> = emptyList(),
     val translation: String,
     val senses: List<WordSense> = emptyList()
 )

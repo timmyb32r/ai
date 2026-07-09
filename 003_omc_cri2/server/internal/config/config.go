@@ -19,6 +19,7 @@ type Config struct {
 	Dict            string        // Dictionary: "bkrs" or "cedict" (env DICT, default "bkrs")
 	DictPath        string        // Path to CC-CEDICT dictionary (cedict_ts.u8) — used when DICT=cedict
 	BKRSPath        string        // Path to BKRS raw dump (dabkrs.gz) — used when DICT=bkrs
+	UnihanPath      string        // Path to Unihan_Readings.txt — optional; enables probable-reading fill for single-char "?"
 	GSEDictDir      string        // Path to gse dictionary directory
 	HLSTime         int           // Seconds per HLS segment (default: 3)
 	HLSWindow       int           // Number of HLS segments to keep (default: 3600 = 3 hours)
@@ -40,6 +41,7 @@ func FromEnv() *Config {
 		Dict:            envStr("DICT", "bkrs"),
 		DictPath:        envStr("CEDICT_PATH", "/opt/cedict_ts.u8"),
 		BKRSPath:        envStr("BKRS_PATH", "/opt/dabkrs.gz"),
+		UnihanPath:      envStr("UNIHAN_PATH", "/opt/Unihan_Readings.txt"),
 		GSEDictDir:      envStr("GSE_DICT_PATH", "/opt/gse-dict"),
 		HLSTime:         envInt("HLS_TIME", 3),
 		HLSWindow:       envInt("HLS_WINDOW", 3600),

@@ -55,6 +55,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
@@ -1195,7 +1196,10 @@ private fun SegmentCard(
                         // Pinyin slot — min height for alignment, but allows descenders
                         if (showPinyin) {
                             Box(modifier = Modifier.heightIn(min = 18.dp), contentAlignment = Alignment.Center) {
-                                Text(charCell.syllable, fontSize = pinyinFontSizeSp.sp, color = TextPinyin,
+                                // Probabilistic (Unihan) readings are dimmed + italic to mark them as guesses.
+                                Text(charCell.syllable, fontSize = pinyinFontSizeSp.sp,
+                                    color = if (charCell.uncertain) TextPinyin.copy(alpha = 0.45f) else TextPinyin,
+                                    fontStyle = if (charCell.uncertain) FontStyle.Italic else FontStyle.Normal,
                                     maxLines = 1, softWrap = false)
                             }
                         }
@@ -2258,7 +2262,7 @@ private fun SyncSettingsDialog(
 
 // ── CJK punctuation-aware cell builder (extracted for testability) ──────
 
-data class CharCell(val text: String, val word: WordEntry, val syllable: String)
+data class CharCell(val text: String, val word: WordEntry, val syllable: String, val uncertain: Boolean = false)
 
 /** Builds display cells. CJK punctuation is placed in separate zero-width
  *  cells so it visually sticks to the previous char without affecting pinyin
@@ -2284,6 +2288,11 @@ fun buildCharCells(words: List<WordEntry>, showPinyin: Boolean): List<CharCell> 
             }
 
             val pinyinAligned = showPinyin && charSyllables.isNotEmpty()
+            // Per-character uncertainty (probabilistic Unihan fills). Aligned
+            // with char_pinyin; only meaningful when char_pinyin drives the split.
+            val usedCharPinyin = word.char_pinyin.isNotEmpty() && word.char_pinyin.size == chars.size
+            fun uncertainAt(i: Int): Boolean =
+                pinyinAligned && usedCharPinyin && word.char_pinyin_uncertain.getOrElse(i) { false }
             var ci = 0
             while (ci < chars.size) {
                 val ch = chars[ci]
@@ -2294,13 +2303,14 @@ fun buildCharCells(words: List<WordEntry>, showPinyin: Boolean): List<CharCell> 
                 } else {
                     val syll = if (pinyinAligned) charSyllables.getOrElse(ci) { "" }
                         else if (ci == 0) pinyinToDiacritic(word.pinyin.lowercase()) else ""
+                    val unc = uncertainAt(ci)
                     if (ci + 1 < chars.size && isCJKPunctuation(chars[ci + 1])) {
                         // Char + following punct
-                        add(CharCell(ch.toString(), word, syll))
+                        add(CharCell(ch.toString(), word, syll, unc))
                         add(CharCell(chars[ci + 1].toString(), word, ""))
                         ci += 2
                     } else {
-                        add(CharCell(ch.toString(), word, syll))
+                        add(CharCell(ch.toString(), word, syll, unc))
                         ci++
                     }
                 }

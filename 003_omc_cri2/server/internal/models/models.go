@@ -33,15 +33,20 @@ type WordSense struct {
 
 // WordEntry represents a single Chinese word with timing, pronunciation, and meaning.
 type WordEntry struct {
-	Text       string      `json:"text"`
-	CharStart  int         `json:"char_start"`
-	CharEnd    int         `json:"char_end"`
-	StartSec   float64     `json:"start_sec"`
-	EndSec     float64     `json:"end_sec"`
-	Pinyin     string      `json:"pinyin"`                // word-level pinyin
-	CharPinyin []string    `json:"char_pinyin"`  // per-character pinyin syllables
-	Trans      string      `json:"translation"`            // flat translation (backward compat)
-	Senses     []WordSense `json:"senses,omitempty"`       // structured senses (BKRS)
+	Text       string   `json:"text"`
+	CharStart  int      `json:"char_start"`
+	CharEnd    int      `json:"char_end"`
+	StartSec   float64  `json:"start_sec"`
+	EndSec     float64  `json:"end_sec"`
+	Pinyin     string   `json:"pinyin"`      // word-level pinyin
+	CharPinyin []string `json:"char_pinyin"` // per-character pinyin syllables
+	// CharPinyinUncertain is aligned with CharPinyin: true marks a syllable
+	// filled in probabilistically (from Unihan frequency data) rather than
+	// derived deterministically from the dictionary/word segmentation. Omitted
+	// when nothing is uncertain; absent on the wire → treat all as certain.
+	CharPinyinUncertain []bool      `json:"char_pinyin_uncertain,omitempty"`
+	Trans               string      `json:"translation"`      // flat translation (backward compat)
+	Senses              []WordSense `json:"senses,omitempty"` // structured senses (BKRS)
 }
 
 // SegmentIndex is the index.json mapping segment IDs to files and timeline positions.
@@ -72,12 +77,12 @@ type PipelineStats struct {
 
 // ServerStatus is the JSON response for GET /api/status.
 type ServerStatus struct {
-	Status              string  `json:"status"`
-	ChannelURL          string  `json:"channel_url"`
-	SegmentsTotal       int64   `json:"segments_total"`
-	MetadataFiles       int     `json:"metadata_files"`
-	LiveEdgeOffsetSec   float64 `json:"live_edge_offset_sec"`
-	ClientsConnected    int     `json:"clients_connected"`
+	Status                string  `json:"status"`
+	ChannelURL            string  `json:"channel_url"`
+	SegmentsTotal         int64   `json:"segments_total"`
+	MetadataFiles         int     `json:"metadata_files"`
+	LiveEdgeOffsetSec     float64 `json:"live_edge_offset_sec"`
+	ClientsConnected      int     `json:"clients_connected"`
 	OldestSegmentStartSec float64 `json:"oldest_segment_start_sec"`
 	NewestSegmentEndSec   float64 `json:"newest_segment_end_sec"`
 }

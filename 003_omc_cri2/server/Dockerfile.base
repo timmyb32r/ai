@@ -88,6 +88,17 @@ RUN if [ -s /opt/dabkrs.gz ]; then \
       echo "WARNING: BKRS dump not found — set DICT=cedict for English mode" >&2; \
     fi
 
+# ── Unihan readings — probable pinyin for ambiguous single characters ───
+# Optional: fills a lone character's "?" reading with its most frequent
+# Mandarin reading (Unihan kHanyuPinlu). Missing file → feature stays off.
+# Sourced from .docker-cache/ (already copied to /tmp/docker-cache above).
+RUN if [ -f /tmp/docker-cache/Unihan_Readings.txt ]; then \
+      cp /tmp/docker-cache/Unihan_Readings.txt /opt/Unihan_Readings.txt && \
+      echo "Unihan readings: $(wc -l < /opt/Unihan_Readings.txt) lines"; \
+    else \
+      echo "WARNING: Unihan_Readings.txt not found — single-char '?' fill disabled" >&2; \
+    fi
+
 # ── gse Chinese word segmentation dictionaries ──────────────────────────
 COPY .docker-cache/gse-dict/ /opt/gse-dict/
 RUN test -f /opt/gse-dict/zh/s_1.txt \
@@ -105,6 +116,7 @@ ENV ADDR=:8080 \
     DICT=bkrs \
     BKRS_PATH=/opt/dabkrs.gz \
     CEDICT_PATH=/opt/cedict_ts.u8 \
+    UNIHAN_PATH=/opt/Unihan_Readings.txt \
     CHANNEL_URL=https://sk.cri.cn/905.m3u8 \
     OUTPUT_DIR=/tmp/china_radio_international \
     DELAY=180s \
