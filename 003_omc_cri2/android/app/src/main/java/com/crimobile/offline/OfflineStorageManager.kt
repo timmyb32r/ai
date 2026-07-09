@@ -3,7 +3,6 @@ package com.crimobile.offline
 import android.content.Context
 import android.util.Log
 import com.crimobile.model.SubtitleSegment
-import com.crimobile.model.WordEntry
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -89,18 +88,115 @@ class OfflineStorageManager(private val context: Context) {
         synchronized(lock) {
             val file = File(sessionMetaDir(sessionId), fileName(segmentId, "json"))
             if (!file.exists()) return null
-            return parseSegment(file.readText())
+            val obj = org.json.JSONObject(file.readText())
+            return com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
         }
     }
 
     fun loadSegmentsForSession(sessionId: String): List<SubtitleSegment> {
-        synchronized(lock) {
-            val metaDir = sessionMetaDir(sessionId)
-            if (!metaDir.exists()) return emptyList()
-            return metaDir.listFiles()
-                ?.mapNotNull { parseSegment(it.readText()) }
-                ?.sortedBy { it.segment_id }
-                ?: emptyList()
+        val metaDir = sessionMetaDir(sessionId)
+        if (!metaDir.exists()) return emptyList()
+
+        // Immutable cache: read a single JSON array file if valid.
+        val cacheFile = File(metaDir, "_segments_cache.json")
+        val segmentFiles = metaDir.listFiles { f -> f.name.endsWith(".json") && f.name != "_segments_cache.json" }
+            ?: return emptyList()
+        if (segmentFiles.isEmpty()) return emptyList()
+
+        // Use cache if it exists AND is newer than the segment directory
+        // (i.e. no new segments were added after cache was written).
+        val cached = if (cacheFile.exists()) readCache(cacheFile) else null
+        if (cached != null && cached.size == segmentFiles.size && cacheFile.lastModified() >= metaDir.lastModified()) {
+            return cached
+        }
+        // Stale or missing cache — delete and rebuild.
+        cacheFile.delete()
+
+        // Build from individual files (parallel I/O), then cache for next time.
+        val segments = segmentFiles.toList().parallelStream()
+            .map { f ->
+                try {
+                    val obj = org.json.JSONObject(f.readText())
+                    com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
+                } catch (e: Exception) {
+                    Log.w(TAG, "parse segment ${f.name}: ${e.message}")
+                    null
+                }
+            }
+            .filter { it != null }
+            .sorted(Comparator.comparingInt { s -> s!!.segment_id })
+            .toList()
+            .filterNotNull()
+
+        writeCache(cacheFile, segments)
+        return segments
+    }
+
+    private fun readCache(file: File): List<SubtitleSegment> {
+        return try {
+            val arr = org.json.JSONArray(file.readText())
+            (0 until arr.length()).mapNotNull { i ->
+                com.crimobile.subtitles.SubtitleParser.parseSegment(arr.getJSONObject(i))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "cache read failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    private fun writeCache(file: File, segments: List<SubtitleSegment>) {
+        try {
+            val arr = org.json.JSONArray()
+            // Re-serialize each segment as its source JSON (compact, no re-parsing needed).
+            // We don't have the original JSON, so build from SubtitleSegment fields.
+            for (seg in segments) {
+                arr.put(toCacheJson(seg))
+            }
+            file.writeText(arr.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "cache write failed: ${e.message}")
+        }
+    }
+
+    private fun toCacheJson(seg: SubtitleSegment): org.json.JSONObject {
+        return org.json.JSONObject().apply {
+            put("segment_id", seg.segment_id)
+            put("timeline_start_sec", seg.timeline_start_sec)
+            put("timeline_end_sec", seg.timeline_end_sec)
+            put("ts_file", seg.ts_file)
+            put("text_zh", seg.text_zh)
+            put("text_pinyin", seg.text_pinyin)
+            put("text_en", seg.text_en)
+            val wordsArr = org.json.JSONArray()
+            for (w in seg.words) {
+                val wj = org.json.JSONObject().apply {
+                    put("text", w.text)
+                    put("char_start", w.char_start)
+                    put("char_end", w.char_end)
+                    put("start_sec", w.start_sec)
+                    put("end_sec", w.end_sec)
+                    put("pinyin", w.pinyin)
+                    put("translation", w.translation)
+                    // Per-char pinyin and senses.
+                    if (w.char_pinyin.isNotEmpty()) {
+                        put("char_pinyin", org.json.JSONArray(w.char_pinyin))
+                    }
+                    if (w.senses.isNotEmpty()) {
+                        val sa = org.json.JSONArray()
+                        for (s in w.senses) {
+                            sa.put(org.json.JSONObject().apply {
+                                put("number", s.number)
+                                put("labels", org.json.JSONArray(s.labels))
+                                put("text", s.text)
+                                put("notes", s.notes)
+                            })
+                        }
+                        put("senses", sa)
+                    }
+                }
+                wordsArr.put(wj)
+            }
+            put("words", wordsArr)
         }
     }
 
@@ -114,6 +210,10 @@ class OfflineStorageManager(private val context: Context) {
             return File(sessionMetaDir(sessionId), fileName(segmentId, "json")).exists() &&
                    getAudioFile(sessionId, segmentId) != null
         }
+    }
+
+    fun invalidateCache(sessionId: String) {
+        File(sessionMetaDir(sessionId), "_segments_cache.json").delete()
     }
 
     fun countSegmentsInSession(sessionId: String): Int {
@@ -261,6 +361,7 @@ class OfflineStorageManager(private val context: Context) {
     // ── Internal ───────────────────────────────────────────────────────
 
     private fun fileName(id: Int, ext: String) = "${zeroPad(id)}.$ext"
+    private fun segmentIdFromName(name: String): Int = name.substringBefore('.').toIntOrNull() ?: -1
 
     private fun parseSessionsIndex(json: String): List<SessionMeta> {
         val arr = JSONArray(json)
@@ -300,35 +401,4 @@ class OfflineStorageManager(private val context: Context) {
         }.toString(2)
     }
 
-    private fun parseSegment(json: String): SubtitleSegment? {
-        return try {
-            val obj = JSONObject(json)
-            val wordsArr = obj.optJSONArray("words") ?: JSONArray()
-            val words = (0 until wordsArr.length()).map { i ->
-                val w = wordsArr.getJSONObject(i)
-                WordEntry(
-                    text = w.optString("text", ""),
-                    char_start = w.optInt("char_start", 0),
-                    char_end = w.optInt("char_end", 0),
-                    start_sec = w.optDouble("start_sec", 0.0),
-                    end_sec = w.optDouble("end_sec", 0.0),
-                    pinyin = w.optString("pinyin", ""),
-                    translation = w.optString("translation", "")
-                )
-            }
-            SubtitleSegment(
-                segment_id = obj.optInt("segment_id", 0),
-                timeline_start_sec = obj.optDouble("timeline_start_sec", 0.0),
-                timeline_end_sec = obj.optDouble("timeline_end_sec", 0.0),
-                ts_file = obj.optString("ts_file", ""),
-                text_zh = obj.optString("text_zh", ""),
-                text_pinyin = obj.optString("text_pinyin", ""),
-                text_en = obj.optString("text_en", ""),
-                words = words
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to parse segment JSON: ${e.message}")
-            null
-        }
-    }
 }

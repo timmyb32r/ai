@@ -2500,13 +2500,15 @@ private fun OfflineNavDialog(
                             }
                         }
                         items(segments, key = { it.segment_id }) { seg ->
+                            val isCurrent = seg.segment_id == currentSegmentId
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 1.dp)
                                     .clickable { onSelectSegment(seg.segment_id) },
                                 shape = RoundedCornerShape(6.dp),
-                                color = Surface.copy(alpha = 0.5f)
+                                color = if (isCurrent) Amber.copy(alpha = 0.12f) else Surface.copy(alpha = 0.5f),
+                                border = if (isCurrent) BorderStroke(1.dp, Amber.copy(alpha = 0.5f)) else null
                             ) {
                                 Row(
                                     modifier = Modifier.padding(8.dp),
@@ -2515,13 +2517,13 @@ private fun OfflineNavDialog(
                                     Icon(
                                         Icons.Default.PlayArrow,
                                         "Play",
-                                        tint = Amber.copy(alpha = 0.6f),
+                                        tint = if (isCurrent) Amber else Amber.copy(alpha = 0.6f),
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(Modifier.width(6.dp))
                                     Text(
                                         "#${seg.segment_id} ${seg.text_zh.take(50)}",
-                                        color = TextPrimary,
+                                        color = if (isCurrent) Amber else TextPrimary,
                                         fontSize = 13.sp,
                                         maxLines = 1,
                                         softWrap = false

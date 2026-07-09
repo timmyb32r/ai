@@ -506,32 +506,33 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(showOfflineNavDialog = false)
             }
             is CriAction.SelectOfflineSession -> {
-                val segs = offlineStorageManager.loadSegmentsForSession(action.sessionId)
-                _state.value = _state.value.copy(
-                    selectedOfflineSessionId = action.sessionId,
-                    offlineSessionSegments = segs
-                )
-                // Rebuild player with new session's segments
-                if (segs.isNotEmpty()) {
-                    offlineStateJob?.cancel()
-                    offlinePlayer?.release()
-                    offlinePlayer = OfflineRadioPlayer(
-                        segs,
-                        offlineStorageManager,
-                        action.sessionId,
-                        getApplication()
-                    )
-                    offlinePlayer?.pause()
-                    val op = offlinePlayer!!
-                    offlineStateJob = viewModelScope.launch {
-                        op.playbackState.collect { ps ->
-                            if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
-                                _state.value = _state.value.copy(playbackState = ps)
+                _state.value = _state.value.copy(selectedOfflineSessionId = action.sessionId)
+                viewModelScope.launch(Dispatchers.IO) {
+                    val segs = offlineStorageManager.loadSegmentsForSession(action.sessionId)
+                    withContext(Dispatchers.Main) {
+                        _state.value = _state.value.copy(offlineSessionSegments = segs)
+                        // Rebuild player with new session's segments
+                        if (segs.isNotEmpty()) {
+                            offlineStateJob?.cancel()
+                            offlinePlayer?.release()
+                            offlinePlayer = OfflineRadioPlayer(
+                                segs,
+                                offlineStorageManager,
+                                action.sessionId,
+                                getApplication()
+                            )
+                            offlinePlayer?.pause()
+                            val op = offlinePlayer!!
+                            offlineStateJob = viewModelScope.launch {
+                                op.playbackState.collect { ps ->
+                                    if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
+                                        _state.value = _state.value.copy(playbackState = ps)
+                                    }
+                                }
                             }
+                            _state.value = _state.value.copy(segments = segs)
                         }
                     }
-                    // Update segments so sync loop + SubtitleList use new session
-                    _state.value = _state.value.copy(segments = segs)
                 }
             }
             is CriAction.SelectOfflineSegment -> {

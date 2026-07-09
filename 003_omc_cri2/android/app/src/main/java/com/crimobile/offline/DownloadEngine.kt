@@ -139,6 +139,9 @@ class DownloadEngine(
                 isRunning = false
             ))
 
+            // Invalidate cache so next load picks up fresh data.
+            storageManager.invalidateCache(sessionId)
+
             // Update session index with final segment count
             val sessions = storageManager.loadAllSessions().toMutableList()
             val startSecL = startSec.toLong()
