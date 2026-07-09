@@ -500,8 +500,9 @@ func TestSplitWordPinyin_DiacriticVowels(t *testing.T) {
 		want   []string
 	}{
 		{"tā men", "tā men", []string{"tā", "men"}},
-		{"tāmén via charMap", "tāmén", []string{"tā", "mén"}},
-		{"tāmen via charMap", "tāmen", []string{"tā", "mén"}},
+		// The segmenter preserves the source's own tone on each syllable.
+		{"tāmén segmented", "tāmén", []string{"tā", "mén"}},
+		{"tāmen segmented", "tāmen", []string{"tā", "men"}},
 	}
 
 	for _, tt := range tests {
@@ -704,21 +705,6 @@ func TestLoadBKRS_MultiReadingCharMap(t *testing.T) {
 			if cp == "hēhù" || cp == "tāmen" || cp == "tǔlā" {
 				t.Errorf("%s[%d]: whole-word pinyin leaked onto character: %q", tc.word, i, cp)
 			}
-		}
-	}
-}
-
-func TestIsPinyinSyllable(t *testing.T) {
-	good := []string{"hē", "hù", "tā", "men", "fang1", "lǎ", "er2", "r5", "ü", "nv3"}
-	bad := []string{"", "оберегать", "[m1]", "he,hu", "he hu", "12"}
-	for _, s := range good {
-		if !isPinyinSyllable(s) {
-			t.Errorf("isPinyinSyllable(%q) = false, want true", s)
-		}
-	}
-	for _, s := range bad {
-		if isPinyinSyllable(s) {
-			t.Errorf("isPinyinSyllable(%q) = true, want false", s)
 		}
 	}
 }

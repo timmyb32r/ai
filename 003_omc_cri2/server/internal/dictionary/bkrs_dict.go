@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	pinyinlib "github.com/criradio/server/internal/pinyin"
 )
 
 // bkrsDict implements Dictionary backed by a raw BKRS dump file.
@@ -28,7 +30,7 @@ import (
 //
 // Parser strips all markup and builds structured Sense entries.
 type bkrsDict struct {
-	entries     map[string]*Entry  // key: simplified Chinese word
+	entries     map[string]*Entry   // key: simplified Chinese word
 	charPinyins map[string][]string // key: single character → possible pinyin readings
 	stats       Stats
 	mu          sync.RWMutex
@@ -113,7 +115,10 @@ func LoadBKRS(dumpPath string) (Dictionary, error) {
 	d.charPinyins = make(map[string][]string, 20000)
 	addReading := func(ch, syl string) {
 		syl = strings.Trim(syl, " \t.,;()[]")
-		if !isPinyinSyllable(syl) {
+		// Only register genuine single syllables — this rejects markup, glosses
+		// AND multi-syllable strings (e.g. a whole-word reading "kōngfáng" that
+		// would otherwise pollute the map for 空).
+		if !pinyinlib.IsValidHierogliphPinyin(syl) {
 			return
 		}
 		for _, existing := range d.charPinyins[ch] {
@@ -138,7 +143,13 @@ func LoadBKRS(dumpPath string) (Dictionary, error) {
 			continue
 		}
 		// Multi-character entry with 1:1 space-separated pinyin
-		// (e.g. "fang1 mian4") — align each syllable to its character.
+		// (e.g. "fang1 mian4") — align each syllable to its character. Skip
+		// entries whose pinyin lists comma/semicolon-separated ALTERNATIVE
+		// whole-word readings (e.g. "kòngfáng, kōngfáng"): those fields are not
+		// a per-character syllable sequence.
+		if strings.ContainsAny(entry.Pinyin, ",;") {
+			continue
+		}
 		syllables := strings.Fields(entry.Pinyin)
 		if len(syllables) == len(chars) {
 			for i, ch := range chars {
@@ -224,8 +235,37 @@ func cleanPinyin(p string) string {
 	for _, tag := range []string{"[/c]", "[/i]", "[/p]", "[/ref]", "[/b]", "[/ex]", "[/*]", "[*]", "[p]", "[b]"} {
 		p = strings.ReplaceAll(p, tag, "")
 	}
+	// Remove parenthesised alternative readings / notes, e.g. "gōngqiǎo(què)"
+	// → "gōngqiǎo". These are secondary pronunciations, not part of the
+	// primary syllable sequence.
+	p = removeParenthes(p)
 	p = strings.Join(strings.Fields(p), " ")
 	return p
+}
+
+// removeParenthes drops balanced parenthetical groups (ASCII and full-width).
+func removeParenthes(p string) string {
+	var b strings.Builder
+	depth := 0
+	for _, r := range p {
+		switch r {
+		case '(', '（':
+			depth++
+		case ')', '）':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 {
+				b.WriteRune(r)
+			}
+		}
+	}
+	if depth != 0 {
+		// Unbalanced — fall back to the original to avoid dropping everything.
+		return p
+	}
+	return b.String()
 }
 
 // parseBKRSSenses parses BKRS body markup into structured Sense entries.
@@ -448,29 +488,6 @@ func splitReadings(pinyin string) []string {
 	})
 }
 
-// isPinyinSyllable reports whether s looks like a single pinyin syllable:
-// pinyin letters (incl. tone diacritics) optionally followed by a tone digit.
-// It filters out leaked markup / gloss text so the char map stays clean.
-func isPinyinSyllable(s string) bool {
-	if s == "" {
-		return false
-	}
-	runes := []rune(s)
-	n := len(runes)
-	if runes[n-1] >= '1' && runes[n-1] <= '5' {
-		n-- // trailing tone digit
-	}
-	if n == 0 {
-		return false
-	}
-	for i := 0; i < n; i++ {
-		if !isPinyinLetter(runes[i]) {
-			return false
-		}
-	}
-	return true
-}
-
 // cleanSyllable returns "?" if the syllable contains comma/semicolon
 // (indicating multiple alternative readings), otherwise returns it unchanged.
 func cleanSyllable(syl string) string {
@@ -481,94 +498,158 @@ func cleanSyllable(syl string) string {
 }
 
 // splitWordPinyin splits a word's pinyin string into per-character syllables.
+// The word's pinyin is treated as the ground truth: it is aligned or segmented
+// into exactly one syllable per character. Positions that cannot be resolved
+// become "?" — the whole-word pinyin is never leaked onto a character.
 func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string {
 	chars := []rune(word)
-	// Also split on dashes (e.g. "ke1-ji4-xin1-wen2").
+	n := len(chars)
+
+	// Single character: it must have exactly ONE reading, and that reading must
+	// be a real syllable. Multiple readings (comma/semicolon OR several
+	// space-separated tokens) are ambiguous → "?"; junk / "_" → "?".
+	if n == 1 {
+		if strings.ContainsAny(pinyin, ",;") {
+			return []string{"?"}
+		}
+		fields := strings.Fields(strings.ReplaceAll(pinyin, "-", " "))
+		if len(fields) == 1 && pinyinlib.IsValidHierogliphPinyin(fields[0]) {
+			return []string{cleanSyllable(fields[0])}
+		}
+		return []string{"?"}
+	}
+
+	// Comma/semicolon separate ALTERNATIVE readings of the whole word
+	// (e.g. "kòngdì, kōngdì"). They are NOT a per-character syllable sequence,
+	// so we keep only the first reading before splitting.
+	if idx := strings.IndexAny(pinyin, ",;"); idx >= 0 {
+		pinyin = strings.TrimSpace(pinyin[:idx])
+	}
+	// Dashes act as syllable separators (e.g. "ke1-ji4-xin1-wen2").
 	pinyin = strings.ReplaceAll(pinyin, "-", " ")
 	syllables := strings.Fields(pinyin)
 
-	// Un-spaced pinyin (e.g. "zhi3chu1") — split using char map or regex.
-	if len(syllables) == 1 && len(chars) > 1 {
-		if result := splitUnspacedPinyin(syllables[0], chars, charMap); result != nil {
-			return result
-		}
-	}
-
-	if len(syllables) == len(chars) {
-		result := make([]string, len(chars))
+	// A) Exact 1:1 spacing where every token is itself a single syllable
+	//    (e.g. "fang1 mian4", "tā men").
+	if len(syllables) == n && allSingleSyllables(syllables) {
+		result := make([]string, n)
 		for i := range chars {
 			result[i] = cleanSyllable(syllables[i])
 		}
 		return result
 	}
 
-	if len(syllables) < len(chars) {
-		// Some syllables cover multiple characters (e.g. "meiguo" for 美国).
-		// Try to split each syllable into per-char readings using charMap/pattern.
-		result := make([]string, len(chars))
-		ci := 0
-		for _, syl := range syllables {
-			// Try splitting this syllable into N chars (N = 1..remaining).
-			bestSplit := []string{syl} // fallback: whole syllable
-			for n := len(chars) - ci; n >= 1; n-- {
-				subChars := chars[ci : ci+n]
-				if sub := splitUnspacedPinyin(syl, subChars, charMap); sub != nil && len(sub) == n {
-					bestSplit = sub
-					break
-				}
-			}
-			for _, s := range bestSplit {
-				result[ci] = cleanSyllable(s)
-				ci++
-				if ci >= len(chars) {
-					break
-				}
-			}
+	// B) Segment the whole pinyin into exactly n syllables. Handles run-together
+	//    pinyin ("yánchǐ") and sub-word grouping ("meiguo zhengfu").
+	joined := strings.Join(syllables, "")
+	//    When the source has NO tone information, char-map alignment recovers
+	//    tones from the dictionary's own per-character readings. When the source
+	//    is already toned we skip it, since the structural segmenter preserves
+	//    the source's exact tone (char-map matching is tone-insensitive and
+	//    could otherwise substitute the wrong reading).
+	if !hasToneInfo(joined) {
+		if r := splitWithCharMap(joined, chars, charMap, false); r != nil {
+			return r
 		}
-		// Any characters we could not resolve are marked unknown rather than
-		// duplicating the previous syllable — copying would spread one
-		// character's (or the whole word's) pinyin onto unrelated characters.
-		for ci < len(chars) {
-			result[ci] = "?"
-			ci++
-		}
-		return result
+	}
+	//    Structural maximal-munch segmentation honouring space/apostrophe
+	//    boundaries — the fix for diacritic pinyin with no tone-digit marks.
+	if seg, ok := pinyinlib.SegmentByCount(pinyin, n); ok {
+		return seg
+	}
+	//    Toned source that the segmenter could not split — try char-map anyway.
+	if r := splitWithCharMap(joined, chars, charMap, false); r != nil {
+		return r
 	}
 
-	// More syllables than characters — merge excess.
-	result := make([]string, len(chars))
-	if len(chars) == 1 {
-		// Single char with multiple readings (e.g. "du4, duo2") → "?".
-		if strings.ContainsAny(pinyin, ",;") {
-			result[0] = "?"
-		} else {
-			result[0] = pinyin
+	// C) The tokens are ALTERNATIVE whole-word readings separated by spaces
+	//    (e.g. "tīngdèng chéngchéng"): each token already spans every character.
+	//    Take the first token and split it into n syllables.
+	if len(syllables) > 1 {
+		first := syllables[0]
+		if r := splitWithCharMap(first, chars, charMap, false); r != nil {
+			return r
 		}
-		return result
+		if seg, ok := pinyinlib.SegmentByCount(first, n); ok {
+			return seg
+		}
 	}
-	for i := range chars {
-		if i < len(syllables) {
-			result[i] = cleanSyllable(syllables[i])
+
+	// D) Numbered-pattern splitting, then a partial char-map alignment for the
+	//    elided-syllable case (e.g. erhua 儿 in "yi2hui4" → [yi2, hui4, ?]).
+	if r := splitBySyllablePattern(joined, n); r != nil {
+		return r
+	}
+	if r := splitWithCharMap(joined, chars, charMap, true); r != nil {
+		return r
+	}
+	// Genuinely unsplittable — mark unknown rather than leak the whole word.
+	return unknownSyllables(n)
+}
+
+// hasToneInfo reports whether the pinyin carries tone information — a tone
+// digit (1-5) or a diacritic-marked vowel.
+func hasToneInfo(pinyin string) bool {
+	for _, r := range pinyin {
+		if r >= '1' && r <= '5' {
+			return true
 		}
+		if isToneVowelRune(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// isToneVowelRune reports whether r is a tone-marked pinyin vowel.
+func isToneVowelRune(r rune) bool {
+	switch r {
+	case 'ā', 'á', 'ǎ', 'à',
+		'ē', 'é', 'ě', 'è',
+		'ī', 'í', 'ǐ', 'ì',
+		'ō', 'ó', 'ǒ', 'ò',
+		'ū', 'ú', 'ǔ', 'ù',
+		'ǖ', 'ǘ', 'ǚ', 'ǜ',
+		'ń', 'ň', 'ǹ':
+		return true
+	}
+	return false
+}
+
+// allSingleSyllables reports whether every token is exactly one valid syllable.
+func allSingleSyllables(syllables []string) bool {
+	for _, s := range syllables {
+		if !pinyinlib.IsValidHierogliphPinyin(s) {
+			return false
+		}
+	}
+	return true
+}
+
+// unknownSyllables returns a slice of n "?" markers.
+func unknownSyllables(n int) []string {
+	result := make([]string, n)
+	for i := range result {
+		result[i] = "?"
 	}
 	return result
 }
 
-// splitUnspacedPinyin splits continuous pinyin (no spaces) into per-char syllables.
-func splitUnspacedPinyin(pinyin string, chars []rune, charMap map[string][]string) []string {
-	if r := splitWithCharMap(pinyin, chars, charMap); r != nil {
-		return r
-	}
-	if r := splitBySyllablePattern(pinyin, len(chars)); r != nil {
-		return r
-	}
-	return nil
-}
-
-func splitWithCharMap(pinyin string, chars []rune, charMap map[string][]string) []string {
+// splitWithCharMap aligns the characters of a word to their readings by
+// consuming the (space-joined) pinyin left to right. When partial is true and
+// the pinyin runs out before every character is matched, the remaining
+// characters are marked "?" (the elided-syllable case, e.g. erhua 儿 in
+// "一会儿"/"yi2hui4"); when partial is false the alignment must be exact.
+func splitWithCharMap(pinyin string, chars []rune, charMap map[string][]string, partial bool) []string {
 	result := make([]string, len(chars))
 	remaining := pinyin
 	for i, ch := range chars {
+		if remaining == "" && partial {
+			for j := i; j < len(chars); j++ {
+				result[j] = "?"
+			}
+			return result
+		}
 		candidates := charMap[string(ch)]
 		if len(candidates) == 0 {
 			return nil
@@ -652,6 +733,14 @@ func splitBySyllablePattern(pinyin string, charCount int) []string {
 		}
 	}
 	if len(syllables) == charCount {
+		// Every piece must be a single valid syllable. Without tone digits this
+		// splitter treats a whole diacritic run (e.g. "gōngqiǎo") as one token,
+		// so we reject such bogus multi-syllable pieces instead of emitting them.
+		for _, s := range syllables {
+			if !pinyinlib.IsValidHierogliphPinyin(s) {
+				return nil
+			}
+		}
 		for i, s := range syllables {
 			syllables[i] = cleanSyllable(s)
 		}
