@@ -24,14 +24,14 @@ class SubtitleSyncEngineTest {
         text_pinyin = "",
         text_en = "",
         words = listOf(
-            WordEntry("東南部", 0, 3, 1_781_645_178.332, 1_781_645_178.974857, "", ""),
-            WordEntry("等", 3, 4, 1_781_645_178.974857, 1_781_645_179.1891427, "", ""),
-            WordEntry("地", 4, 5, 1_781_645_179.1891427, 1_781_645_179.4034283, "", ""),
-            WordEntry("部分", 5, 7, 1_781_645_179.4034283, 1_781_645_179.8319998, "", ""),
-            WordEntry("地區", 7, 9, 1_781_645_179.8319998, 1_781_645_180.2605712, "", ""),
-            WordEntry("有", 9, 10, 1_781_645_180.2605712, 1_781_645_180.4748569, "", ""),
-            WordEntry("大刀", 10, 12, 1_781_645_180.4748569, 1_781_645_180.9034283, "", ""),
-            WordEntry("暴雨", 12, 14, 1_781_645_180.9034283, 1_781_645_181.3319998, "", "")
+            WordEntry(text="東南部", char_start=0, char_end=3, start_sec=1_781_645_178.332, end_sec=1_781_645_178.974857, pinyin="", translation=""),
+            WordEntry(text="等", char_start=3, char_end=4, start_sec=1_781_645_178.974857, end_sec=1_781_645_179.1891427, pinyin="", translation=""),
+            WordEntry(text="地", char_start=4, char_end=5, start_sec=1_781_645_179.1891427, end_sec=1_781_645_179.4034283, pinyin="", translation=""),
+            WordEntry(text="部分", char_start=5, char_end=7, start_sec=1_781_645_179.4034283, end_sec=1_781_645_179.8319998, pinyin="", translation=""),
+            WordEntry(text="地區", char_start=7, char_end=9, start_sec=1_781_645_179.8319998, end_sec=1_781_645_180.2605712, pinyin="", translation=""),
+            WordEntry(text="有", char_start=9, char_end=10, start_sec=1_781_645_180.2605712, end_sec=1_781_645_180.4748569, pinyin="", translation=""),
+            WordEntry(text="大刀", char_start=10, char_end=12, start_sec=1_781_645_180.4748569, end_sec=1_781_645_180.9034283, pinyin="", translation=""),
+            WordEntry(text="暴雨", char_start=12, char_end=14, start_sec=1_781_645_180.9034283, end_sec=1_781_645_181.3319998, pinyin="", translation="")
         )
     )
 

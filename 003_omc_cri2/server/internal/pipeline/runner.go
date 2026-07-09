@@ -384,6 +384,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 	}
 	segment.Words = wordEntries
 	p.fillProbableReadings(segment.Words)
+	p.attachCedictMeanings(segment.Words)
 	dictMs := time.Since(dictStart).Milliseconds()
 	segment.TextPinyin = buildPinyinText(wordEntries)
 	segment.TextEn = buildEnText(wordEntries)
@@ -647,6 +648,21 @@ func (p *Pipeline) fillProbableReadings(words []models.WordEntry) {
 			continue
 		}
 		p.fillPerChar(w, chars)
+	}
+}
+
+// attachCedictMeanings adds CC-CEDICT English glosses to each word (as a second
+// dictionary source for the word popup). It never overwrites the primary
+// (BKRS) translation — the two are shown side by side in the UI. No-op when
+// CEDICT is not loaded (e.g. DICT=cedict mode, where CEDICT is already primary).
+func (p *Pipeline) attachCedictMeanings(words []models.WordEntry) {
+	if p.Cedict == nil {
+		return
+	}
+	for i := range words {
+		if entry, err := p.Cedict.Lookup(words[i].Text); err == nil {
+			words[i].CedictMeanings = entry.Meanings
+		}
 	}
 }
 

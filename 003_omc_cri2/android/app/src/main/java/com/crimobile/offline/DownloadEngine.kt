@@ -3,7 +3,6 @@ package com.crimobile.offline
 import android.content.Context
 import android.util.Log
 import com.crimobile.model.SubtitleSegment
-import com.crimobile.model.WordEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -13,7 +12,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -199,7 +197,7 @@ class DownloadEngine(
                 // If the server returns the segment directly (not wrapped in a "segment" key),
                 // parse it directly. Otherwise look for a "segment" key (SSE-like wrapper).
                 val segmentObj = if (item.has("segment")) item.getJSONObject("segment") else item
-                allSegments.add(parseSegment(segmentObj))
+                allSegments.add(com.crimobile.subtitles.SubtitleParser.parseSegment(segmentObj))
             }
 
             onPage(allSegments.size, total)
@@ -230,32 +228,6 @@ class DownloadEngine(
             Log.w(TAG, "Failed to download ${segment.ts_file}: ${e.message}")
             null
         }
-    }
-
-    private fun parseSegment(obj: JSONObject): SubtitleSegment {
-        val wordsArr = obj.optJSONArray("words") ?: JSONArray()
-        val words = (0 until wordsArr.length()).map { i ->
-            val w = wordsArr.getJSONObject(i)
-            WordEntry(
-                text = w.optString("text", ""),
-                char_start = w.optInt("char_start", 0),
-                char_end = w.optInt("char_end", 0),
-                start_sec = w.optDouble("start_sec", 0.0),
-                end_sec = w.optDouble("end_sec", 0.0),
-                pinyin = w.optString("pinyin", ""),
-                translation = w.optString("translation", "")
-            )
-        }
-        return SubtitleSegment(
-            segment_id = obj.optInt("segment_id", 0),
-            timeline_start_sec = obj.optDouble("timeline_start_sec", 0.0),
-            timeline_end_sec = obj.optDouble("timeline_end_sec", 0.0),
-            ts_file = obj.optString("ts_file", ""),
-            text_zh = obj.optString("text_zh", ""),
-            text_pinyin = obj.optString("text_pinyin", ""),
-            text_en = obj.optString("text_en", ""),
-            words = words
-        )
     }
 
     companion object {

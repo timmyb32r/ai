@@ -208,6 +208,38 @@ func TestFillPerChar_DeterministicAndUnihan(t *testing.T) {
 	}
 }
 
+func TestAttachCedictMeanings(t *testing.T) {
+	cedictData := "天問 天问 [Tian1 wen4] /Tianwen (Mars mission)/Questions to Heaven (poem)/\n"
+	cf := t.TempDir() + "/cedict.u8"
+	if err := os.WriteFile(cf, []byte(cedictData), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cd, err := dictionary.Load(cf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Pipeline{Cedict: cd}
+
+	words := []models.WordEntry{
+		{Text: "天问", Trans: "русский перевод"}, // present in CEDICT → meanings attached
+		{Text: "嫦娥"}, // absent from CEDICT → no meanings
+	}
+	p.attachCedictMeanings(words)
+
+	if len(words[0].CedictMeanings) != 2 || words[0].CedictMeanings[0] != "Tianwen (Mars mission)" {
+		t.Errorf("天问: CedictMeanings=%v, want 2 glosses", words[0].CedictMeanings)
+	}
+	if words[0].Trans != "русский перевод" {
+		t.Errorf("天问: primary Trans overwritten: %q", words[0].Trans)
+	}
+	if len(words[1].CedictMeanings) != 0 {
+		t.Errorf("嫦娥: CedictMeanings=%v, want empty", words[1].CedictMeanings)
+	}
+
+	// nil Cedict → no-op, no panic.
+	(&Pipeline{}).attachCedictMeanings(words)
+}
+
 func TestFillProbableReadings_NilResolver(t *testing.T) {
 	p := &Pipeline{Unihan: nil}
 	words := []models.WordEntry{{Text: "的", CharPinyin: []string{"?"}, Pinyin: "?"}}

@@ -31,7 +31,9 @@ data class WordEntry(
     // (Unihan frequency), not derived deterministically. Absent → all false.
     val char_pinyin_uncertain: List<Boolean> = emptyList(),
     val translation: String,
-    val senses: List<WordSense> = emptyList()
+    val senses: List<WordSense> = emptyList(),
+    // CC-CEDICT English glosses (second dictionary), if the word is in CEDICT.
+    val cedict_meanings: List<String> = emptyList()
 )
 
 
@@ -60,5 +62,6 @@ data class WordPopupState(
     val segment: SubtitleSegment,
     val pinyin: String,
     val translation: String,
-    val senses: List<WordSense> = emptyList()
+    val senses: List<WordSense> = emptyList(),
+    val cedictMeanings: List<String> = emptyList()
 )

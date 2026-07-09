@@ -47,6 +47,10 @@ type WordEntry struct {
 	CharPinyinUncertain []bool      `json:"char_pinyin_uncertain,omitempty"`
 	Trans               string      `json:"translation"`      // flat translation (backward compat)
 	Senses              []WordSense `json:"senses,omitempty"` // structured senses (BKRS)
+	// CedictMeanings are the CC-CEDICT English glosses for this word, shown as a
+	// second dictionary tab. Populated when the word exists in CEDICT; empty
+	// otherwise. Independent of Trans/Senses (which come from the primary dict).
+	CedictMeanings []string `json:"cedict_meanings,omitempty"`
 }
 
 // SegmentIndex is the index.json mapping segment IDs to files and timeline positions.

@@ -10,8 +10,8 @@ class CharCellTest {
     @Test
     fun `punctuation is separate zero-width cell`() {
         val words = listOf(
-            WordEntry("开始", 0, 2, 0.0, 1.0, "kai1 shi3", ""),
-            WordEntry("。", 2, 3, 1.0, 2.0, "。", ""),
+            WordEntry(text="开始", char_start=0, char_end=2, start_sec=0.0, end_sec=1.0, pinyin="kai1 shi3", translation=""),
+            WordEntry(text="。", char_start=2, char_end=3, start_sec=1.0, end_sec=2.0, pinyin="。", translation=""),
         )
         val cells = buildCharCells(words, showPinyin = false)
         // "开" "始" "。" — punctuation is separate cell
@@ -25,8 +25,8 @@ class CharCellTest {
     @Test
     fun `punctuation has empty syllable`() {
         val words = listOf(
-            WordEntry("江南北部", 0, 4, 0.0, 2.0, "jiang1 nan2 bei3 bu4", ""),
-            WordEntry("、", 4, 5, 2.0, 2.5, "、", ""),
+            WordEntry(text="江南北部", char_start=0, char_end=4, start_sec=0.0, end_sec=2.0, pinyin="jiang1 nan2 bei3 bu4", translation=""),
+            WordEntry(text="、", char_start=4, char_end=5, start_sec=2.0, end_sec=2.5, pinyin="、", translation=""),
         )
         val cells = buildCharCells(words, showPinyin = true)
         // All chars + punct separate
@@ -39,8 +39,8 @@ class CharCellTest {
     @Test
     fun `punctuation at start of first word stays alone`() {
         val words = listOf(
-            WordEntry("。", 0, 1, 0.0, 0.5, "。", ""),
-            WordEntry("开始", 1, 3, 0.5, 1.5, "kai1 shi3", ""),
+            WordEntry(text="。", char_start=0, char_end=1, start_sec=0.0, end_sec=0.5, pinyin="。", translation=""),
+            WordEntry(text="开始", char_start=1, char_end=3, start_sec=0.5, end_sec=1.5, pinyin="kai1 shi3", translation=""),
         )
         val cells = buildCharCells(words, showPinyin = false)
         assertEquals(3, cells.size)
@@ -52,7 +52,7 @@ class CharCellTest {
     @Test
     fun `no punctuation — cells match char count`() {
         val words = listOf(
-            WordEntry("开始江南", 0, 4, 0.0, 2.0, "kai1 shi3 jiang1 nan2", ""),
+            WordEntry(text="开始江南", char_start=0, char_end=4, start_sec=0.0, end_sec=2.0, pinyin="kai1 shi3 jiang1 nan2", translation=""),
         )
         val cells = buildCharCells(words, showPinyin = false)
         assertEquals(4, cells.size)
@@ -86,9 +86,9 @@ class CharCellTest {
     @Test
     fun `multiple punctuation marks are all separate`() {
         val words = listOf(
-            WordEntry("行", 0, 1, 0.0, 0.3, "xing2", ""),
-            WordEntry("。", 1, 2, 0.3, 0.6, "。", ""),
-            WordEntry("，", 2, 3, 0.6, 0.9, "，", ""),
+            WordEntry(text="行", char_start=0, char_end=1, start_sec=0.0, end_sec=0.3, pinyin="xing2", translation=""),
+            WordEntry(text="。", char_start=1, char_end=2, start_sec=0.3, end_sec=0.6, pinyin="。", translation=""),
+            WordEntry(text="，", char_start=2, char_end=3, start_sec=0.6, end_sec=0.9, pinyin="，", translation=""),
         )
         val cells = buildCharCells(words, showPinyin = false)
         // "行" "。" "，" — all separate

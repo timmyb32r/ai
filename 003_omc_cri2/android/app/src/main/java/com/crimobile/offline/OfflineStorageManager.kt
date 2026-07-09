@@ -158,47 +158,11 @@ class OfflineStorageManager(private val context: Context) {
         }
     }
 
-    private fun toCacheJson(seg: SubtitleSegment): org.json.JSONObject {
-        return org.json.JSONObject().apply {
-            put("segment_id", seg.segment_id)
-            put("timeline_start_sec", seg.timeline_start_sec)
-            put("timeline_end_sec", seg.timeline_end_sec)
-            put("ts_file", seg.ts_file)
-            put("text_zh", seg.text_zh)
-            put("text_pinyin", seg.text_pinyin)
-            put("text_en", seg.text_en)
-            val wordsArr = org.json.JSONArray()
-            for (w in seg.words) {
-                val wj = org.json.JSONObject().apply {
-                    put("text", w.text)
-                    put("char_start", w.char_start)
-                    put("char_end", w.char_end)
-                    put("start_sec", w.start_sec)
-                    put("end_sec", w.end_sec)
-                    put("pinyin", w.pinyin)
-                    put("translation", w.translation)
-                    // Per-char pinyin and senses.
-                    if (w.char_pinyin.isNotEmpty()) {
-                        put("char_pinyin", org.json.JSONArray(w.char_pinyin))
-                    }
-                    if (w.senses.isNotEmpty()) {
-                        val sa = org.json.JSONArray()
-                        for (s in w.senses) {
-                            sa.put(org.json.JSONObject().apply {
-                                put("number", s.number)
-                                put("labels", org.json.JSONArray(s.labels))
-                                put("text", s.text)
-                                put("notes", s.notes)
-                            })
-                        }
-                        put("senses", sa)
-                    }
-                }
-                wordsArr.put(wj)
-            }
-            put("words", wordsArr)
-        }
-    }
+    // Cache serialization uses the single canonical serializer so the offline
+    // cache is a lossless round-trip of parseSegment — no field can be silently
+    // dropped (which previously lost char_pinyin, making offline differ from live).
+    private fun toCacheJson(seg: SubtitleSegment): org.json.JSONObject =
+        com.crimobile.subtitles.SubtitleParser.segmentToJson(seg)
 
     fun getAudioFile(sessionId: String, segmentId: Int): File? {
         val file = File(sessionAudioDir(sessionId), fileName(segmentId, "ts"))

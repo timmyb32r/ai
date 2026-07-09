@@ -392,7 +392,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         segment = segment ?: return,
                         pinyin = action.word.pinyin,
                         translation = action.word.translation,
-                        senses = action.word.senses
+                        senses = action.word.senses,
+                        cedictMeanings = action.word.cedict_meanings
                     )
                 )
                 savedWord.value = action.word

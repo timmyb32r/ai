@@ -59,6 +59,15 @@ object SubtitleParser {
                     charUncertain.add(uncertainArray.optBoolean(j, false))
                 }
             }
+            // Parse CC-CEDICT glosses (second dictionary).
+            val cedictArray = w.optJSONArray("cedict_meanings")
+            val cedictMeanings = mutableListOf<String>()
+            if (cedictArray != null) {
+                for (j in 0 until cedictArray.length()) {
+                    val m = cedictArray.optString(j, "")
+                    if (m.isNotBlank()) cedictMeanings.add(m)
+                }
+            }
             words.add(
                 WordEntry(
                     text = w.optString("text", ""),
@@ -70,7 +79,8 @@ object SubtitleParser {
                     char_pinyin = charPinyin,
                     char_pinyin_uncertain = charUncertain,
                     translation = w.optString("translation", ""),
-                    senses = senses
+                    senses = senses,
+                    cedict_meanings = cedictMeanings
                 )
             )
         }
@@ -85,5 +95,58 @@ object SubtitleParser {
             text_en = json.optString("text_en", ""),
             words = words
         )
+    }
+
+    /**
+     * Canonical serializer — the exact inverse of [parseSegment]. ALL subtitle
+     * persistence (offline cache, downloads) must use this so offline data can
+     * never drift from live data. Any field added to [parseSegment] must be
+     * added here too; the round-trip parity test enforces this.
+     */
+    fun segmentToJson(seg: SubtitleSegment): JSONObject {
+        val wordsArr = org.json.JSONArray()
+        for (w in seg.words) {
+            val wj = JSONObject().apply {
+                put("text", w.text)
+                put("char_start", w.char_start)
+                put("char_end", w.char_end)
+                put("start_sec", w.start_sec)
+                put("end_sec", w.end_sec)
+                put("pinyin", w.pinyin)
+                put("translation", w.translation)
+                if (w.char_pinyin.isNotEmpty()) {
+                    put("char_pinyin", org.json.JSONArray(w.char_pinyin))
+                }
+                if (w.char_pinyin_uncertain.isNotEmpty()) {
+                    put("char_pinyin_uncertain", org.json.JSONArray(w.char_pinyin_uncertain))
+                }
+                if (w.senses.isNotEmpty()) {
+                    val sa = org.json.JSONArray()
+                    for (s in w.senses) {
+                        sa.put(JSONObject().apply {
+                            put("number", s.number)
+                            put("labels", org.json.JSONArray(s.labels))
+                            put("text", s.text)
+                            put("notes", s.notes)
+                        })
+                    }
+                    put("senses", sa)
+                }
+                if (w.cedict_meanings.isNotEmpty()) {
+                    put("cedict_meanings", org.json.JSONArray(w.cedict_meanings))
+                }
+            }
+            wordsArr.put(wj)
+        }
+        return JSONObject().apply {
+            put("segment_id", seg.segment_id)
+            put("timeline_start_sec", seg.timeline_start_sec)
+            put("timeline_end_sec", seg.timeline_end_sec)
+            put("ts_file", seg.ts_file)
+            put("text_zh", seg.text_zh)
+            put("text_pinyin", seg.text_pinyin)
+            put("text_en", seg.text_en)
+            put("words", wordsArr)
+        }
     }
 }

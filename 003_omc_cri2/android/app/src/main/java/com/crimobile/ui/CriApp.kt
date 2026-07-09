@@ -1346,64 +1346,107 @@ private fun WordPopupDialog(
                     )
                 }
 
-                // Structured senses (BKRS) or flat translation (CC-CEDICT)
-                if (popup.senses.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    popup.senses.forEach { sense ->
-                        Spacer(Modifier.height(8.dp))
-                        Row {
-                            if (sense.number > 0) {
-                                Text(
-                                    "${sense.number}. ",
-                                    color = Amber,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Column {
-                                if (sense.labels.isNotEmpty()) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        sense.labels.forEach { label ->
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = TextSecondary.copy(alpha = 0.15f)
-                                            ) {
-                                                Text(
-                                                    label,
-                                                    color = TextSecondary,
-                                                    fontSize = 12.sp,
-                                                    modifier = Modifier.padding(
-                                                        horizontal = 4.dp,
-                                                        vertical = 1.dp
+                // Dictionaries: BKRS (primary) and CC-CEDICT (secondary).
+                // Two tabs when both are present; otherwise show whichever exists.
+                val hasBkrs = popup.senses.isNotEmpty() || popup.translation.isNotBlank()
+                val hasCedict = popup.cedictMeanings.isNotEmpty()
+
+                @Composable
+                fun BkrsContent() {
+                    if (popup.senses.isNotEmpty()) {
+                        popup.senses.forEach { sense ->
+                            Spacer(Modifier.height(8.dp))
+                            Row {
+                                if (sense.number > 0) {
+                                    Text(
+                                        "${sense.number}. ",
+                                        color = Amber,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Column {
+                                    if (sense.labels.isNotEmpty()) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            sense.labels.forEach { label ->
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = TextSecondary.copy(alpha = 0.15f)
+                                                ) {
+                                                    Text(
+                                                        label,
+                                                        color = TextSecondary,
+                                                        fontSize = 12.sp,
+                                                        modifier = Modifier.padding(
+                                                            horizontal = 4.dp,
+                                                            vertical = 1.dp
+                                                        )
                                                     )
-                                                )
+                                                }
                                             }
                                         }
+                                        Spacer(Modifier.height(2.dp))
                                     }
-                                    Spacer(Modifier.height(2.dp))
+                                    Text(sense.text, color = TextPrimary, fontSize = dictFont)
+                                    if (sense.notes.isNotBlank()) {
+                                        Text(
+                                            sense.notes,
+                                            color = TextSecondary,
+                                            fontSize = 13.sp,
+                                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                        )
+                                    }
                                 }
-                                Text(sense.text, color = TextPrimary, fontSize = dictFont)
-                                if (sense.notes.isNotBlank()) {
+                            }
+                        }
+                    } else if (popup.translation.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(popup.translation, color = TextPrimary, fontSize = dictFont)
+                    }
+                }
+
+                @Composable
+                fun CedictContent() {
+                    popup.cedictMeanings.forEachIndexed { i, meaning ->
+                        Spacer(Modifier.height(6.dp))
+                        Row {
+                            Text(
+                                "${i + 1}. ",
+                                color = Amber,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(meaning, color = TextPrimary, fontSize = dictFont)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                when {
+                    hasBkrs && hasCedict -> {
+                        var selectedTab by remember(popup.word.text) { mutableStateOf(0) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("БКРС", "CEDICT").forEachIndexed { idx, title ->
+                                val selected = selectedTab == idx
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (selected) Amber.copy(alpha = 0.2f) else TextSecondary.copy(alpha = 0.1f),
+                                    modifier = Modifier.clickable { selectedTab = idx }
+                                ) {
                                     Text(
-                                        sense.notes,
-                                        color = TextSecondary,
-                                        fontSize = 13.sp,
-                                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                        title,
+                                        color = if (selected) Amber else TextSecondary,
+                                        fontSize = 14.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                                     )
                                 }
                             }
                         }
+                        if (selectedTab == 0) BkrsContent() else CedictContent()
                     }
-                } else {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Translation",
-                        color = TextSecondary,
-                        fontSize = dictFont,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(popup.translation, color = TextPrimary, fontSize = dictFont)
+                    hasBkrs -> BkrsContent()
+                    hasCedict -> CedictContent()
                 }
 
                 Spacer(Modifier.height(8.dp))
