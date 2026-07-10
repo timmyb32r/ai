@@ -11,6 +11,22 @@ data class SubtitleSegment(
     val words: List<WordEntry> = emptyList()
 )
 
+/**
+ * Lightweight segment metadata — always kept in RAM.
+ * Contains only the fields needed for timeline navigation,
+ * UI rendering (text+pinyin), and audio playback.
+ *
+ * ~200-500 bytes per segment vs 5-20 KB for full [SubtitleSegment].
+ */
+data class SegmentMeta(
+    val segment_id: Int,
+    val timeline_start_sec: Double,
+    val timeline_end_sec: Double,
+    val ts_file: String,
+    val text_zh: String,
+    val text_pinyin: String
+)
+
 
 data class WordSense(
     val number: Int = 0,

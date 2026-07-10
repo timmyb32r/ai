@@ -1,8 +1,8 @@
 package com.crimobile.ui
 
 import androidx.compose.foundation.lazy.LazyListState
+import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
-import com.crimobile.model.WordEntry
 
 /**
  * Вычисляет вертикальную скорость скролла для удержания активного слова
@@ -60,8 +60,8 @@ class KaraokeSpeedController {
      */
     fun getActiveWordVerticalPosition(
         listState: LazyListState,
-        segments: List<SubtitleSegment>,
-        activeWord: WordEntry,
+        segmentsMeta: List<SegmentMeta>,
+        activeSegmentId: Int?,
         viewportHeightPx: Float
     ): Float? {
         val layoutInfo = listState.layoutInfo
@@ -69,9 +69,9 @@ class KaraokeSpeedController {
         if (visibleItems.isEmpty()) return null
 
         // Найти индекс сегмента с активным словом
-        val activeIndex = segments.indexOfFirst { seg ->
-            seg.words.any { w -> w === activeWord }
-        }
+        val activeIndex = if (activeSegmentId != null) {
+            segmentsMeta.indexOfFirst { it.segment_id == activeSegmentId }
+        } else -1
         if (activeIndex < 0) return null
 
         // Найти видимый item для этого сегмента
@@ -104,20 +104,20 @@ class KaraokeSpeedController {
      *
      * @return скорость в строках/сек или 0 если данных недостаточно
      */
-    fun calculateBaseSpeed(segments: List<SubtitleSegment>, listState: LazyListState): Float {
+    fun calculateBaseSpeed(segmentsMeta: List<SegmentMeta>, listState: LazyListState): Float {
         val visibleItems = listState.layoutInfo.visibleItemsInfo
-        if (visibleItems.isEmpty() || segments.isEmpty()) return 0f
+        if (visibleItems.isEmpty() || segmentsMeta.isEmpty()) return 0f
 
         val firstVisibleIndex = visibleItems.first().index
         val lastVisibleIndex = visibleItems.last().index
 
-        if (firstVisibleIndex >= segments.size || lastVisibleIndex >= segments.size) return 0f
+        if (firstVisibleIndex >= segmentsMeta.size || lastVisibleIndex >= segmentsMeta.size) return 0f
 
-        val firstSeg = segments[firstVisibleIndex]
-        val lastSeg = segments[lastVisibleIndex]
+        val firstSeg = segmentsMeta[firstVisibleIndex]
+        val lastSeg = segmentsMeta[lastVisibleIndex]
 
-        val minTime = firstSeg.words.firstOrNull()?.start_sec ?: firstSeg.timeline_start_sec
-        val maxTime = lastSeg.words.lastOrNull()?.end_sec ?: lastSeg.timeline_end_sec
+        val minTime = firstSeg.timeline_start_sec
+        val maxTime = lastSeg.timeline_end_sec
 
         val deltaSec = (maxTime - minTime).toFloat()
         // Считаем уникальные индексы сегментов (исключая spacer'ы)

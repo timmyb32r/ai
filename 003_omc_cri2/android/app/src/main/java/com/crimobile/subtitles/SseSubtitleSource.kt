@@ -2,6 +2,7 @@ package com.crimobile.subtitles
 
 import android.util.Log
 import com.crimobile.model.ConnectionStatus
+import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +37,9 @@ class SseSubtitleSource : SubtitleSource {
 
     private val _connected = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     override val connected: StateFlow<ConnectionStatus> = _connected.asStateFlow()
+
+    private val _segmentsMeta = MutableStateFlow<List<SegmentMeta>>(emptyList())
+    override val segmentsMeta: StateFlow<List<SegmentMeta>> = _segmentsMeta.asStateFlow()
 
     private val segmentMap = linkedMapOf<Int, SubtitleSegment>() // insertion-ordered
     private val lock = Any()

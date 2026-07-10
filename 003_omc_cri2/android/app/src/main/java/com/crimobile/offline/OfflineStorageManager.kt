@@ -2,6 +2,7 @@ package com.crimobile.offline
 
 import android.content.Context
 import android.util.Log
+import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
 import org.json.JSONArray
 import org.json.JSONObject
@@ -93,76 +94,71 @@ class OfflineStorageManager(private val context: Context) {
         }
     }
 
-    fun loadSegmentsForSession(sessionId: String): List<SubtitleSegment> {
-        val metaDir = sessionMetaDir(sessionId)
-        if (!metaDir.exists()) return emptyList()
-
-        // Immutable cache: read a single JSON array file if valid.
-        val cacheFile = File(metaDir, "_segments_cache.json")
-        val segmentFiles = metaDir.listFiles { f -> f.name.endsWith(".json") && f.name != "_segments_cache.json" }
-            ?: return emptyList()
-        if (segmentFiles.isEmpty()) return emptyList()
-
-        // Use cache if it exists AND is newer than the segment directory
-        // (i.e. no new segments were added after cache was written).
-        val cached = if (cacheFile.exists()) readCache(cacheFile) else null
-        if (cached != null && cached.size == segmentFiles.size && cacheFile.lastModified() >= metaDir.lastModified()) {
-            return cached
+    fun loadFullSegment(sessionId: String, segmentId: Int): SubtitleSegment? {
+        synchronized(lock) {
+            val file = File(sessionMetaDir(sessionId), fileName(segmentId, "json"))
+            if (!file.exists()) return null
+            return try {
+                val obj = org.json.JSONObject(file.readText())
+                com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
+            } catch (e: Exception) {
+                Log.w(TAG, "loadFullSegment: ${e.message}")
+                null
+            }
         }
-        // Stale or missing cache — delete and rebuild.
-        cacheFile.delete()
+    }
 
-        // Build from individual files (parallel I/O), then cache for next time.
-        val segments = segmentFiles.toList().parallelStream()
-            .map { f ->
-                try {
-                    val obj = org.json.JSONObject(f.readText())
-                    com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
-                } catch (e: Exception) {
-                    Log.w(TAG, "parse segment ${f.name}: ${e.message}")
-                    null
+    fun loadSegmentsForSession(sessionId: String): List<SegmentMeta> {
+        synchronized(lock) {
+            val metaDir = sessionMetaDir(sessionId)
+            if (!metaDir.exists()) return emptyList()
+
+            // First try the lightweight SegmentIndex.
+            val fromIndex = SegmentIndex.read(metaDir)
+            if (fromIndex.isNotEmpty()) return fromIndex
+
+            // Build from individual JSON files, write SegmentIndex for next time.
+            val segmentFiles = metaDir.listFiles { f ->
+                f.name.endsWith(".json") &&
+                    f.name != "_segments_cache.json" &&
+                    f.name != SegmentIndex.INDEX_FILE_NAME
+            } ?: return emptyList()
+            if (segmentFiles.isEmpty()) return emptyList()
+
+            val fullSegments = segmentFiles.toList().parallelStream()
+                .map { f ->
+                    try {
+                        val obj = org.json.JSONObject(f.readText())
+                        com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "parse segment ${f.name}: ${e.message}")
+                        null
+                    }
                 }
-            }
-            .filter { it != null }
-            .sorted(Comparator.comparingInt { s -> s!!.segment_id })
-            .toList()
-            .filterNotNull()
+                .filter { it != null }
+                .sorted(Comparator.comparingInt { s -> s!!.segment_id })
+                .toList()
+                .filterNotNull()
 
-        writeCache(cacheFile, segments)
-        return segments
-    }
-
-    private fun readCache(file: File): List<SubtitleSegment> {
-        return try {
-            val arr = org.json.JSONArray(file.readText())
-            (0 until arr.length()).mapNotNull { i ->
-                com.crimobile.subtitles.SubtitleParser.parseSegment(arr.getJSONObject(i))
+            if (fullSegments.isNotEmpty()) {
+                SegmentIndex.write(metaDir, fullSegments)
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "cache read failed: ${e.message}")
-            emptyList()
+
+            // Clean up legacy _segments_cache.json if present
+            File(metaDir, "_segments_cache.json").delete()
+
+            return fullSegments.map { seg ->
+                SegmentMeta(
+                    segment_id = seg.segment_id,
+                    timeline_start_sec = seg.timeline_start_sec,
+                    timeline_end_sec = seg.timeline_end_sec,
+                    ts_file = seg.ts_file,
+                    text_zh = seg.text_zh,
+                    text_pinyin = seg.text_pinyin
+                )
+            }
         }
     }
-
-    private fun writeCache(file: File, segments: List<SubtitleSegment>) {
-        try {
-            val arr = org.json.JSONArray()
-            // Re-serialize each segment as its source JSON (compact, no re-parsing needed).
-            // We don't have the original JSON, so build from SubtitleSegment fields.
-            for (seg in segments) {
-                arr.put(toCacheJson(seg))
-            }
-            file.writeText(arr.toString())
-        } catch (e: Exception) {
-            Log.w(TAG, "cache write failed: ${e.message}")
-        }
-    }
-
-    // Cache serialization uses the single canonical serializer so the offline
-    // cache is a lossless round-trip of parseSegment — no field can be silently
-    // dropped (which previously lost char_pinyin, making offline differ from live).
-    private fun toCacheJson(seg: SubtitleSegment): org.json.JSONObject =
-        com.crimobile.subtitles.SubtitleParser.segmentToJson(seg)
 
     fun getAudioFile(sessionId: String, segmentId: Int): File? {
         val file = File(sessionAudioDir(sessionId), fileName(segmentId, "ts"))
@@ -199,8 +195,8 @@ class OfflineStorageManager(private val context: Context) {
             var minStart = Double.MAX_VALUE
             var maxEnd = Double.MIN_VALUE
             for (s in sessions) {
-                // Load segments for each session to find the actual timeline bounds
-                val segs = loadSegmentsForSession(sessionId(s.startSec, s.durationSec))
+                val sid = sessionId(s.startSec, s.durationSec)
+                val segs = SegmentIndex.read(sessionMetaDir(sid))
                 if (segs.isNotEmpty()) {
                     minStart = minOf(minStart, segs.first().timeline_start_sec)
                     maxEnd = maxOf(maxEnd, segs.last().timeline_end_sec)

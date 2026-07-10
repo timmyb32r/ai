@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
             val state by viewModel.state.collectAsState()
             CriApp(
                 state = state,
+                segmentCache = viewModel.segmentCache,
                 onAction = viewModel::dispatch
             )
         }

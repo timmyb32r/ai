@@ -3,6 +3,7 @@ package com.crimobile.offline
 import android.content.Context
 import android.util.Log
 import com.crimobile.model.SubtitleSegment
+import com.crimobile.offline.SegmentIndex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -138,7 +139,8 @@ class DownloadEngine(
             ))
 
             // Invalidate cache so next load picks up fresh data.
-            storageManager.invalidateCache(sessionId)
+            SegmentIndex.write(storageManager.sessionMetaDir(sessionId), allSegments)
+            storageManager.invalidateCache(sessionId) // still delete old cache
 
             // Update session index with final segment count
             val sessions = storageManager.loadAllSessions().toMutableList()

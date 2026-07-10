@@ -72,6 +72,7 @@ import com.crimobile.R
 import com.crimobile.ServerConfig
 import com.crimobile.model.*
 import com.crimobile.offline.DownloadProgress
+import com.crimobile.offline.SegmentCache
 import com.crimobile.offline.SyncConfig
 import com.crimobile.viewmodel.CriAction
 import com.crimobile.viewmodel.CriViewState
@@ -103,7 +104,7 @@ private sealed class ScrollResult {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
+fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriAction) -> Unit) {
     // Channel-based recenter: sends Unit when user taps Recenter.
     // CONFLATED means multiple taps merge into one — no queue buildup.
     val recenterChannel = remember { Channel<Unit>(Channel.CONFLATED) }
@@ -264,8 +265,8 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
             }
         ) { padding ->
             Box(modifier = Modifier.padding(padding)) {
-                // ── Offline mode: no segments → show sync setup ──
-                if (state.playbackMode == PlaybackMode.OFFLINE_SAVED && state.segments.isEmpty()
+                // ── Offline mode: no segmentsMeta → show sync setup ──
+                if (state.playbackMode == PlaybackMode.OFFLINE_SAVED && state.segmentsMeta.isEmpty()
                     && state.error == null && state.playbackState != PlaybackState.LOADING) {
                     OfflineSetupScreen(
                         syncConfig = state.syncConfig,
@@ -301,7 +302,9 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                                 )
                             }
                             SubtitleList(
-                                segments = state.segments,
+                                segmentsMeta = state.segmentsMeta,
+                                segmentCache = segmentCache,
+                                activeSegmentId = state.activeSegmentId,
                                 activeWord = state.activeWord,
                                 lastActiveWord = state.lastActiveWord,
                                 playbackState = state.playbackState,
@@ -312,7 +315,9 @@ fun CriApp(state: CriViewState, onAction: (CriAction) -> Unit) {
                                 showAudioBoundaries = state.showAudioBoundaries,
                                 pinyinFontSizeSp = state.pinyinFontSizeSp,
                                 recenterChannel = recenterChannel,
-                                onWordTapped = { onAction(CriAction.WordTapped(it)) }
+                                onWordTapped = { word, segmentId ->
+                                    onAction(CriAction.WordTapped(word, segmentId))
+                                }
                             )
                         }
                     }
@@ -831,7 +836,9 @@ private fun ErrorScreen(msg: String) {
 
 @Composable
 private fun SubtitleList(
-    segments: List<SubtitleSegment>,
+    segmentsMeta: List<SegmentMeta>,
+    segmentCache: SegmentCache?,
+    activeSegmentId: Int?,
     activeWord: WordEntry?,
     lastActiveWord: WordEntry?,
     playbackState: PlaybackState,
@@ -842,16 +849,15 @@ private fun SubtitleList(
     showAudioBoundaries: Boolean = false,
     pinyinFontSizeSp: Int = 9,
     recenterChannel: Channel<Unit>,
-    onWordTapped: (WordEntry) -> Unit
+    onWordTapped: (WordEntry, Int) -> Unit
 ) {
     val listState = rememberLazyListState()
     val speedController = remember { KaraokeSpeedController() }
     val density = LocalDensity.current
 
     // Snapshot-aware: rememberUpdatedState даёт State-обёртки
-    val currentWord by rememberUpdatedState(activeWord)
-    val currentLastWord by rememberUpdatedState(lastActiveWord)
-    val currentSegments by rememberUpdatedState(segments)
+    val currentSegmentsMeta by rememberUpdatedState(segmentsMeta)
+    val currentActiveSegmentId by rememberUpdatedState(activeSegmentId)
     val currentPlaybackState by rememberUpdatedState(playbackState)
     val currentIsPronouncing by rememberUpdatedState(isPronouncing)
 
@@ -911,9 +917,8 @@ private fun SubtitleList(
             // ── Read current state into plain immutable locals ──
             // Plain snapshots of the current values, outside any snapshot
             // observation — NOT iterated as SnapshotStateList.
-            val word = currentWord
-            val lastWord = currentLastWord
-            val segs = currentSegments
+            val segs = currentSegmentsMeta
+            val currentActiveSegId = currentActiveSegmentId
             val playing = currentPlaybackState == PlaybackState.PLAYING
             val pronouncing = currentIsPronouncing
             val mode = scrollMode.value
@@ -963,13 +968,10 @@ private fun SubtitleList(
                 val visibleItems = listState.layoutInfo.visibleItemsInfo
                 if (visibleItems.isEmpty()) return@withoutReadObservation null
 
-                // Effective word: fall back to lastActiveWord during silence gaps
-                val effectiveWord = word ?: lastWord
-
                 // Heartbeat every 5s
                 if (tickNanos - lastLogNanos > 5_000_000_000L) {
                     Log.d("CRIRadio:scroll",
-                        "alive segs=${segs.size} word=${effectiveWord?.text} " +
+                        "alive segs=${segs.size} activeSeg=$currentActiveSegId " +
                         "mode=$currentMode loop=$loopIterations")
                 }
 
@@ -979,23 +981,21 @@ private fun SubtitleList(
                     return@withoutReadObservation ScrollResult.NoOp
                 }
 
-                // ── No active word → coast at initSpeed ──
-                if (effectiveWord == null) {
-                    dbgReason = "no-word"; dbgActiveIdx = -1; dbgPosition = null
+                // ── No active segment → coast at initSpeed ──
+                if (currentActiveSegId == null) {
+                    dbgReason = "no-active-seg"; dbgActiveIdx = -1; dbgPosition = null
                     if (initSpeedPxPerSec > 0f) {
-                        dbgReason = "no-word-coast"; dbgRawPx = initSpeedPxPerSec * dt
+                        dbgReason = "no-active-seg-coast"; dbgRawPx = initSpeedPxPerSec * dt
                         return@withoutReadObservation ScrollResult.ScrollBy(initSpeedPxPerSec * dt)
                     }
                     return@withoutReadObservation ScrollResult.NoOp
                 }
 
-                // ── Find active word index ──
-                val activeIdx = segs.indexOfFirst { it.words.any { w -> w === effectiveWord } }
+                // ── Find active segment index ──
+                val activeIdx = segs.indexOfFirst { it.segment_id == currentActiveSegId }
                 dbgActiveIdx = activeIdx
                 if (activeIdx < 0) {
-                    // Active word not present in the rendered list (e.g. segment churn /
-                    // eviction during a large HTTP backlog fetch) → cannot scroll to it.
-                    dbgReason = "activeIdx<0 word=${effectiveWord.text}"
+                    dbgReason = "activeIdx<0 aid=$currentActiveSegId"
                     return@withoutReadObservation ScrollResult.NoOp
                 }
 
@@ -1010,8 +1010,8 @@ private fun SubtitleList(
                     if (firstVisibleIdx in segs.indices && lastVisibleIdx in segs.indices) {
                         val firstSeg = segs[firstVisibleIdx]
                         val lastSeg = segs[lastVisibleIdx]
-                        val firstTime = firstSeg.words.firstOrNull()?.start_sec ?: firstSeg.timeline_start_sec
-                        val lastTime = lastSeg.words.lastOrNull()?.end_sec ?: lastSeg.timeline_end_sec
+                        val firstTime = firstSeg.timeline_start_sec
+                        val lastTime = lastSeg.timeline_end_sec
                         val deltaSec = (lastTime - firstTime).toFloat()
                         val totalPx = visibleItems.sumOf { it.size }.toFloat()
                         if (deltaSec > 0f && totalPx > 0f) {
@@ -1025,7 +1025,7 @@ private fun SubtitleList(
 
                 // ── Normal scroll: position → multiplier → speed → px ──
                 val position = speedController.getActiveWordVerticalPosition(
-                    listState, segs, effectiveWord, viewportHeightPx
+                    listState, segs, currentActiveSegId, viewportHeightPx
                 )
                 dbgPosition = position
 
@@ -1103,9 +1103,24 @@ private fun SubtitleList(
             state = listState, modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            itemsIndexed(segments, key = { _, s -> s.segment_id }) { index, segment ->
-                val isTsBoundary = index > 0 && segments[index - 1].ts_file != segment.ts_file
-                SegmentCard(segment, activeWord, showPinyin, fontSizeSp, showWordBoundaries, isTsBoundary, showAudioBoundaries, pinyinFontSizeSp, lastActiveWord, onWordTapped)
+            itemsIndexed(segmentsMeta, key = { _, m -> m.segment_id }) { index, meta ->
+                val isTsBoundary = index > 0 && segmentsMeta[index - 1].ts_file != meta.ts_file
+                val seg = segmentCache?.getOrLoad(meta.segment_id)
+                if (seg != null) {
+                    SegmentCard(seg, activeWord, showPinyin, fontSizeSp, showWordBoundaries, isTsBoundary, showAudioBoundaries, pinyinFontSizeSp, lastActiveWord) { word ->
+                        onWordTapped(word, meta.segment_id)
+                    }
+                } else {
+                    LaunchedEffect(meta.segment_id) {
+                        segmentCache?.getOrLoad(meta.segment_id)
+                    }
+                    Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                        Text(meta.text_zh, color = TextPrimary, fontSize = fontSizeSp.sp)
+                        if (showPinyin) {
+                            Text(meta.text_pinyin, color = TextPinyin, fontSize = pinyinFontSizeSp.sp)
+                        }
+                    }
+                }
                 Spacer(Modifier.height(6.dp))
             }
         }
@@ -2396,7 +2411,7 @@ private fun findToneVowel(s: String): Int {
 @Composable
 private fun OfflineNavDialog(
     sessions: List<com.crimobile.viewmodel.OfflineSessionInfo>,
-    segments: List<SubtitleSegment>,
+    segments: List<SegmentMeta>,
     selectedSessionId: String?,
     currentSegmentId: Int?,
     currentTimelineSec: Double?,

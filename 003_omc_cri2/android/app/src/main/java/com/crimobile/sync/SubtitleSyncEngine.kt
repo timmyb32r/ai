@@ -1,5 +1,6 @@
 package com.crimobile.sync
 
+import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
 import com.crimobile.model.WordEntry
 
@@ -7,28 +8,32 @@ import com.crimobile.model.WordEntry
  * Maps playback timeline position (Unix epoch milliseconds) to the active
  * subtitle segment and word. Uses binary search for O(log n) lookup.
  *
+ * Works with lightweight [SegmentMeta] for timeline navigation; word-level
+ * resolution requires a fully-loaded [SubtitleSegment] passed directly to
+ * [findActiveWord].
+ *
  * Timeline correlation: both audio (via windowStartTimeMs from HLS
  * EXT-X-PROGRAM-DATE-TIME) and metadata (via server-side Unix epoch
  * timestamps) share the SAME system clock in the Docker container —
  * a single source of truth.
  */
 class SubtitleSyncEngine(
-    private val segments: List<SubtitleSegment>
+    private val segmentsMeta: List<SegmentMeta>
 ) {
-    fun findActiveSegment(timelineMs: Long): SubtitleSegment? {
-        if (segments.isEmpty()) return null
+    fun findActiveSegment(timelineMs: Long): SegmentMeta? {
+        if (segmentsMeta.isEmpty()) return null
 
         var lo = 0
-        var hi = segments.size - 1
+        var hi = segmentsMeta.size - 1
         while (lo <= hi) {
             val mid = (lo + hi) / 2
-            val seg = segments[mid]
-            val segStartMs = (seg.timeline_start_sec * 1000).toLong()
-            val segEndMs = (seg.timeline_end_sec * 1000).toLong()
+            val meta = segmentsMeta[mid]
+            val segStartMs = (meta.timeline_start_sec * 1000).toLong()
+            val segEndMs = (meta.timeline_end_sec * 1000).toLong()
             when {
                 timelineMs < segStartMs -> hi = mid - 1
                 timelineMs >= segEndMs -> lo = mid + 1
-                else -> return seg
+                else -> return meta
             }
         }
         // No exact match: player outside subtitle range
@@ -68,12 +73,5 @@ class SubtitleSyncEngine(
 
     fun getWordTimelineMs(word: WordEntry): Long {
         return (word.start_sec * 1000).toLong()
-    }
-
-    fun findSegmentForWord(word: WordEntry, allSegments: List<SubtitleSegment>): SubtitleSegment? {
-        for (seg in allSegments) {
-            if (seg.words.any { it === word }) return seg
-        }
-        return null
     }
 }

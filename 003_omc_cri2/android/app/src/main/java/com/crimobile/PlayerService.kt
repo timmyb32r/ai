@@ -10,8 +10,6 @@ import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -63,18 +61,6 @@ class PlayerService : MediaSessionService() {
             .build()
             .apply {
                 setWakeMode(C.WAKE_MODE_NETWORK) // keep CPU + Wi-Fi awake
-                // Preload metadata so the media widget shows "CRI Radio" immediately.
-                setMediaItem(
-                    MediaItem.Builder()
-                        .setMediaId("cri_radio")
-                        .setMediaMetadata(
-                            MediaMetadata.Builder()
-                                .setTitle("CRI Radio")
-                                .setArtist("Live Broadcast")
-                                .build()
-                        )
-                        .build()
-                )
             }
 
         // 2. Radio player wraps the same ExoPlayer.

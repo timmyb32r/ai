@@ -1,6 +1,7 @@
 package com.crimobile.offline
 
 import com.crimobile.model.ConnectionStatus
+import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
 import com.crimobile.subtitles.SubtitleSource
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +24,13 @@ class OfflineSubtitleSource(
     private val _connected = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     override val connected: StateFlow<ConnectionStatus> = _connected.asStateFlow()
 
+    private val _segmentsMeta = MutableStateFlow<List<SegmentMeta>>(emptyList())
+    override val segmentsMeta: StateFlow<List<SegmentMeta>> = _segmentsMeta.asStateFlow()
+
+    /** Lazily-created LRU cache of full segment data. Created in [load]. */
+    var segmentCache: SegmentCache? = null
+        private set
+
     /** ID of the session currently loaded (or last loaded). */
     var lastLoadedSessionId: String? = null
         private set
@@ -33,13 +41,23 @@ class OfflineSubtitleSource(
         val sessionId = latestSession?.let {
             storageManager.sessionId(it.startSec, it.durationSec)
         }
-        val all = if (sessionId != null) {
+        val meta = if (sessionId != null) {
             storageManager.loadSegmentsForSession(sessionId)
         } else emptyList()
         lastLoadedSessionId = sessionId
-        _segments.value = all
-        _connected.value = if (all.isNotEmpty()) ConnectionStatus.CONNECTED
+        _segmentsMeta.value = meta
+        segmentCache = if (sessionId != null) SegmentCache(storageManager, sessionId) else null
+        _segments.value = emptyList()
+        _connected.value = if (meta.isNotEmpty()) ConnectionStatus.CONNECTED
         else ConnectionStatus.DISCONNECTED
+    }
+
+    /** Load a single full segment on demand (e.g. when user taps a timeline position). */
+    fun loadFullSegmentAsync(segmentId: Int): SubtitleSegment? = segmentCache?.getOrLoad(segmentId)
+
+    /** Pre-warm the cache for segments that are about to become visible. */
+    fun preloadVisible(visibleIds: Set<Int>) {
+        segmentCache?.preloadVisible(visibleIds)
     }
 
     override fun connect(serverUrl: String) {
@@ -48,5 +66,7 @@ class OfflineSubtitleSource(
 
     override fun disconnect() {
         // no-op: no server connection to tear down
+        segmentCache?.clear()
+        segmentCache = null
     }
 }

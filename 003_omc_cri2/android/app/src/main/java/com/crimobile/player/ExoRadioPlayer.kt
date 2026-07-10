@@ -3,6 +3,7 @@ package com.crimobile.player
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
@@ -131,9 +132,16 @@ class ExoRadioPlayer(
         _lastErrorMessage.value = null
         player.stop()  // force clean reset through IDLE → BUFFERING → READY
         _playbackState.value = PlaybackState.LOADING
-        player.setMediaItem(MediaItem.Builder().setUri(hlsUrl).setLiveConfiguration(
-            MediaItem.LiveConfiguration.Builder().setMaxPlaybackSpeed(1.02f).setMinPlaybackSpeed(0.98f).build()
-        ).build())
+        player.setMediaItem(MediaItem.Builder().setUri(hlsUrl)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle("CRI Radio")
+                    .setArtist("Live Broadcast")
+                    .build()
+            )
+            .setLiveConfiguration(
+                MediaItem.LiveConfiguration.Builder().setMaxPlaybackSpeed(1.02f).setMinPlaybackSpeed(0.98f).build()
+            ).build())
         player.prepare()
         player.play()
     }

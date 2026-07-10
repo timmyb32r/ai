@@ -12,6 +12,7 @@ import com.crimobile.offline.DownloadProgress
 import com.crimobile.offline.OfflineRadioPlayer
 import com.crimobile.offline.OfflineStorageManager
 import com.crimobile.offline.OfflineSubtitleSource
+import com.crimobile.offline.SegmentCache
 import com.crimobile.offline.SyncConfig
 import com.crimobile.offline.SyncScheduler
 import com.crimobile.player.RadioPlayer
@@ -35,6 +36,8 @@ import kotlinx.coroutines.launch
 data class CriViewState(
     val playbackState: PlaybackState = PlaybackState.IDLE,
     val segments: List<SubtitleSegment> = emptyList(),
+    val segmentsMeta: List<SegmentMeta> = emptyList(),
+    val activeSegmentId: Int? = null,
     val activeWord: WordEntry? = null,
     val activeSegment: SubtitleSegment? = null,
     val showPinyin: Boolean = false,
@@ -60,7 +63,7 @@ data class CriViewState(
     val offlineLocalRangeSec: Pair<Double, Double>? = null,  // (oldest, newest) of downloaded segments in epoch seconds
     val showOfflineNavDialog: Boolean = false,
     val offlineSessions: List<OfflineSessionInfo> = emptyList(),
-    val offlineSessionSegments: List<SubtitleSegment> = emptyList(),
+    val offlineSessionSegments: List<SegmentMeta> = emptyList(),
     val selectedOfflineSessionId: String? = null
 )
 
@@ -76,7 +79,7 @@ sealed class CriAction {
     data class Play(val serverUrl: String) : CriAction()
     object Pause : CriAction()
     object Resume : CriAction()
-    data class WordTapped(val word: WordEntry) : CriAction()
+    data class WordTapped(val word: WordEntry, val segmentId: Int) : CriAction()
     object DismissPopup : CriAction()
     object PronounceWord : CriAction()
     object SaveWord : CriAction()
@@ -144,6 +147,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private val offlineStorageManager by lazy { OfflineStorageManager(getApplication()) }
     private val offlineSubtitleSource by lazy { OfflineSubtitleSource(offlineStorageManager) }
     private var offlinePlayer: OfflineRadioPlayer? = null
+    var segmentCache: SegmentCache? = null
+        private set
     private var downloadJob: kotlinx.coroutines.Job? = null
     private var offlineStateJob: kotlinx.coroutines.Job? = null
 
@@ -201,97 +206,171 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
             // Main sync loop — subtitle ↔ audio alignment at ~10 Hz
             while (isActive) {
-                // Read segments from state (works for both live and offline modes)
-                val segments = _state.value.segments
-                if (segments.isNotEmpty()) {
-                    val engine = SubtitleSyncEngine(segments)
-                    // Use correct player based on mode
-                    val activePlayer = if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
-                        offlinePlayer
-                    } else {
-                        if (::player.isInitialized) player else null
+                val isOffline = _state.value.playbackMode == PlaybackMode.OFFLINE_SAVED
+
+                if (isOffline) {
+                    // ── Offline mode: lightweight SegmentMeta + lazy SegmentCache ──
+                    val segmentsMeta = _state.value.segmentsMeta
+                    if (segmentsMeta.isNotEmpty()) {
+                        val engine = SubtitleSyncEngine(segmentsMeta)
+                        val activePlayer = offlinePlayer
+                        if (activePlayer == null) { delay(100); continue }
+                        val playerMs = activePlayer.currentTimelineMs.value
+                        val playerSec = playerMs / 1000.0
+
+                        val activeSegmentMeta = engine.findActiveSegment(playerMs)
+                        val fullSeg = activeSegmentMeta?.let { segmentCache?.getOrLoad(it.segment_id) }
+                        val activeWord = fullSeg?.let { engine.findActiveWord(it, playerMs) }
+
+                        val latestSegment = segmentsMeta.lastOrNull()
+                        val delay = if (latestSegment != null && playerMs > 0 && latestSegment.timeline_end_sec > 0) {
+                            (playerSec - latestSegment.timeline_end_sec).coerceAtLeast(0.0)
+                        } else 0.0
+
+                        _state.value = _state.value.copy(
+                            activeSegment = fullSeg,
+                            activeSegmentId = activeSegmentMeta?.segment_id,
+                            activeWord = activeWord,
+                            subtitleDelaySec = delay,
+                            lastActiveWord = if (activeWord != null) activeWord else _state.value.lastActiveWord,
+                            offlinePositionMs = {
+                                val firstSec = segmentsMeta.firstOrNull()?.timeline_start_sec ?: 0.0
+                                if (firstSec > 0 && playerMs > 0) {
+                                    (playerMs - (firstSec * 1000).toLong()).coerceAtLeast(0)
+                                } else playerMs
+                            }(),
+                            offlineDurationMs = if (_state.value.offlineDurationMs == 0L) {
+                                val first = segmentsMeta.firstOrNull()?.timeline_start_sec ?: 0.0
+                                val last = segmentsMeta.lastOrNull()?.timeline_end_sec ?: 0.0
+                                if (first > 0 && last > first) ((last - first) * 1000).toLong() else 0L
+                            } else _state.value.offlineDurationMs
+                        )
+
+                        if (activeSegmentMeta != null && activeSegmentMeta.segment_id != lastActiveSegId) {
+                            lastActiveSegId = activeSegmentMeta.segment_id
+                            segmentCache?.pin(activeSegmentMeta.segment_id)
+                            Log.i(VM, "▶seg id=${activeSegmentMeta.segment_id} " +
+                                "segTL=[${activeSegmentMeta.timeline_start_sec}-${activeSegmentMeta.timeline_end_sec}] " +
+                                "playerSec=${"%.1f".format(playerSec)} text=${fullSeg?.text_zh?.take(50) ?: activeSegmentMeta.text_zh.take(50)}")
+                        }
+
+                        if (activeWord != null && activeWord !== lastActiveWord) {
+                            lastActiveWord = activeWord
+                            val relStart = activeWord.start_sec - (activeSegmentMeta.timeline_start_sec)
+                            val relEnd = activeWord.end_sec - (activeSegmentMeta.timeline_start_sec)
+                            Log.i(VM, "▷word text=${activeWord.text} " +
+                                "wTL=[${activeWord.start_sec}-${activeWord.end_sec}] " +
+                                "relTL=[%.3f-%.3f] ".format(relStart, relEnd) +
+                                "playerSec=%.3f playerMs=$playerMs".format(playerSec))
+                        }
+
+                        val now = System.currentTimeMillis()
+                        if (activeSegmentMeta != null && now - lastSyncLog > 2000) {
+                            lastSyncLog = now
+                            Log.d(VM, "sync playerSec=%.1f segId=${activeSegmentMeta.segment_id} ".format(playerSec) +
+                                "segTL=[${activeSegmentMeta.timeline_start_sec}-${activeSegmentMeta.timeline_end_sec}] " +
+                                "word=${activeWord?.text} wTL=[${activeWord?.start_sec}-${activeWord?.end_sec}] " +
+                                "delay=${delay.toInt()}s")
+                        }
+
+                        if (activeSegmentMeta == null && now - lastSyncLog > 2000) {
+                            lastSyncLog = now
+                            val first = segmentsMeta.firstOrNull()
+                            val last = segmentsMeta.lastOrNull()
+                            Log.w(VM, "sync MISS: no active segment. playerSec=%.1f".format(playerSec) +
+                                " playerMs=$playerMs segs=${segmentsMeta.size} " +
+                                "loadedRange=[${first?.timeline_start_sec}-${last?.timeline_end_sec}] " +
+                                "(player ${if (last != null && playerSec > last.timeline_end_sec) "AHEAD of" else if (first != null && playerSec < first.timeline_start_sec) "BEHIND" else "inside?"} window)")
+                        }
                     }
-                    if (activePlayer == null) { delay(100); continue }
-                    val playerMs = activePlayer.currentTimelineMs.value
-                    val playerSec = playerMs / 1000.0
+                } else {
+                    // ── Live mode: full SubtitleSegment list ──
+                    val segments = _state.value.segments
+                    if (segments.isNotEmpty()) {
+                        val engine = SubtitleSyncEngine(segments.map { seg ->
+                            SegmentMeta(
+                                segment_id = seg.segment_id,
+                                timeline_start_sec = seg.timeline_start_sec,
+                                timeline_end_sec = seg.timeline_end_sec,
+                                ts_file = seg.ts_file,
+                                text_zh = seg.text_zh,
+                                text_pinyin = seg.text_pinyin
+                            )
+                        })
+                        val activePlayer = if (::player.isInitialized) player else null
+                        if (activePlayer == null) { delay(100); continue }
+                        val playerMs = activePlayer.currentTimelineMs.value
+                        val playerSec = playerMs / 1000.0
 
-                    val activeSegment = engine.findActiveSegment(playerMs)
-                    val activeWord = activeSegment?.let { engine.findActiveWord(it, playerMs) }
+                        val activeSegmentMeta = engine.findActiveSegment(playerMs)
+                        val activeSegment = activeSegmentMeta?.let { meta ->
+                            segments.find { it.segment_id == meta.segment_id }
+                        }
+                        val activeWord = activeSegment?.let { engine.findActiveWord(it, playerMs) }
 
-                    val latestSegment = segments.lastOrNull()
-                    val delay = if (latestSegment != null && playerMs > 0 && latestSegment.timeline_end_sec > 0) {
-                        (playerSec - latestSegment.timeline_end_sec).coerceAtLeast(0.0)
-                    } else 0.0
+                        val latestSegment = segments.lastOrNull()
+                        val delay = if (latestSegment != null && playerMs > 0 && latestSegment.timeline_end_sec > 0) {
+                            (playerSec - latestSegment.timeline_end_sec).coerceAtLeast(0.0)
+                        } else 0.0
 
-                    _state.value = _state.value.copy(
-                        activeSegment = activeSegment,
-                        activeWord = activeWord,
-                        subtitleDelaySec = delay,
-                        lastActiveWord = if (activeWord != null) activeWord else _state.value.lastActiveWord,
-                        offlinePositionMs = if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
-                            val firstSec = segments.firstOrNull()?.timeline_start_sec ?: 0.0
-                            if (firstSec > 0 && playerMs > 0) {
-                                (playerMs - (firstSec * 1000).toLong()).coerceAtLeast(0)
-                            } else playerMs
-                        } else _state.value.offlinePositionMs,
-                        offlineDurationMs = if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED && _state.value.offlineDurationMs == 0L) {
-                            val first = segments.firstOrNull()?.timeline_start_sec ?: 0.0
-                            val last = segments.lastOrNull()?.timeline_end_sec ?: 0.0
-                            if (first > 0 && last > first) ((last - first) * 1000).toLong() else 0L
-                        } else _state.value.offlineDurationMs
-                    )
+                        _state.value = _state.value.copy(
+                            activeSegment = activeSegment,
+                            activeSegmentId = activeSegmentMeta?.segment_id,
+                            activeWord = activeWord,
+                            subtitleDelaySec = delay,
+                            lastActiveWord = if (activeWord != null) activeWord else _state.value.lastActiveWord,
+                            offlinePositionMs = _state.value.offlinePositionMs,
+                            offlineDurationMs = _state.value.offlineDurationMs
+                        )
 
-                    if (activeSegment != null && activeSegment.segment_id != lastActiveSegId) {
-                        lastActiveSegId = activeSegment.segment_id
-                        Log.i(VM, "▶seg id=${activeSegment.segment_id} " +
-                            "segTL=[${activeSegment.timeline_start_sec}-${activeSegment.timeline_end_sec}] " +
-                            "playerSec=${"%.1f".format(playerSec)} text=${activeSegment.text_zh.take(50)}")
-                    }
+                        if (activeSegment != null && activeSegment.segment_id != lastActiveSegId) {
+                            lastActiveSegId = activeSegment.segment_id
+                            Log.i(VM, "▶seg id=${activeSegment.segment_id} " +
+                                "segTL=[${activeSegment.timeline_start_sec}-${activeSegment.timeline_end_sec}] " +
+                                "playerSec=${"%.1f".format(playerSec)} text=${activeSegment.text_zh.take(50)}")
+                        }
 
-                    if (activeWord != null && activeWord !== lastActiveWord) {
-                        lastActiveWord = activeWord
-                        val relStart = activeWord.start_sec - (activeSegment?.timeline_start_sec ?: 0.0)
-                        val relEnd = activeWord.end_sec - (activeSegment?.timeline_start_sec ?: 0.0)
-                        Log.i(VM, "▷word text=${activeWord.text} " +
-                            "wTL=[${activeWord.start_sec}-${activeWord.end_sec}] " +
-                            "relTL=[%.3f-%.3f] ".format(relStart, relEnd) +
-                            "playerSec=%.3f playerMs=$playerMs".format(playerSec))
-                    }
+                        if (activeWord != null && activeWord !== lastActiveWord) {
+                            lastActiveWord = activeWord
+                            val relStart = activeWord.start_sec - (activeSegment.timeline_start_sec)
+                            val relEnd = activeWord.end_sec - (activeSegment.timeline_start_sec)
+                            Log.i(VM, "▷word text=${activeWord.text} " +
+                                "wTL=[${activeWord.start_sec}-${activeWord.end_sec}] " +
+                                "relTL=[%.3f-%.3f] ".format(relStart, relEnd) +
+                                "playerSec=%.3f playerMs=$playerMs".format(playerSec))
+                        }
 
-                    val now = System.currentTimeMillis()
-                    if (activeSegment != null && now - lastSyncLog > 2000) {
-                        lastSyncLog = now
-                        Log.d(VM, "sync playerSec=%.1f segId=${activeSegment.segment_id} ".format(playerSec) +
-                            "segTL=[${activeSegment.timeline_start_sec}-${activeSegment.timeline_end_sec}] " +
-                            "word=${activeWord?.text} wTL=[${activeWord?.start_sec}-${activeWord?.end_sec}] " +
-                            "delay=${delay.toInt()}s")
-                    }
+                        val now = System.currentTimeMillis()
+                        if (activeSegment != null && now - lastSyncLog > 2000) {
+                            lastSyncLog = now
+                            Log.d(VM, "sync playerSec=%.1f segId=${activeSegment.segment_id} ".format(playerSec) +
+                                "segTL=[${activeSegment.timeline_start_sec}-${activeSegment.timeline_end_sec}] " +
+                                "word=${activeWord?.text} wTL=[${activeWord?.start_sec}-${activeWord?.end_sec}] " +
+                                "delay=${delay.toInt()}s")
+                        }
 
-                    // Diagnostic: no active segment despite loaded metadata → the player
-                    // position is outside the loaded segment window (seek/window misalign).
-                    if (activeSegment == null && now - lastSyncLog > 2000) {
-                        lastSyncLog = now
-                        val first = segments.firstOrNull()
-                        val last = segments.lastOrNull()
-                        Log.w(VM, "sync MISS: no active segment. playerSec=%.1f".format(playerSec) +
-                            " playerMs=$playerMs segs=${segments.size} " +
-                            "loadedRange=[${first?.timeline_start_sec}-${last?.timeline_end_sec}] " +
-                            "(player ${if (last != null && playerSec > last.timeline_end_sec) "AHEAD of" else if (first != null && playerSec < first.timeline_start_sec) "BEHIND" else "inside?"} window)")
-                    }
+                        if (activeSegment == null && now - lastSyncLog > 2000) {
+                            lastSyncLog = now
+                            val first = segments.firstOrNull()
+                            val last = segments.lastOrNull()
+                            Log.w(VM, "sync MISS: no active segment. playerSec=%.1f".format(playerSec) +
+                                " playerMs=$playerMs segs=${segments.size} " +
+                                "loadedRange=[${first?.timeline_start_sec}-${last?.timeline_end_sec}] " +
+                                "(player ${if (last != null && playerSec > last.timeline_end_sec) "AHEAD of" else if (first != null && playerSec < first.timeline_start_sec) "BEHIND" else "inside?"} window)")
+                        }
 
-                    // ── One-shot delay seek: rewind player behind live edge ──
-                    // Only for LIVE_STREAMING mode — offline content has no live edge.
-                    if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING &&
-                        !initialDelaySeekDone && playerMs > 0 && segments.size >= MIN_BUFFER_FOR_DELAY_SEEK) {
-                        val newest = segments.last().timeline_start_sec
-                        val oldest = segments.first().timeline_start_sec
-                        val availableSec = newest - oldest
-                        if (availableSec > 5.0) {
-                            val targetDelay = minOf(DELAY_TARGET_SEC.toDouble(), availableSec * 0.8)
-                            val seekTargetMs = ((newest - targetDelay) * 1000).toLong()
-                            player.seekTo(seekTargetMs)
-                            initialDelaySeekDone = true
-                            Log.i(VM, "⏪ DELAY seek → ${targetDelay.toInt()}s behind live (buffer=${availableSec.toInt()}s, seekTarget=${"%.1f".format(newest - targetDelay)}s)")
+                        // ── One-shot delay seek: rewind player behind live edge ──
+                        if (!initialDelaySeekDone && playerMs > 0 && segments.size >= MIN_BUFFER_FOR_DELAY_SEEK) {
+                            val newest = segments.last().timeline_start_sec
+                            val oldest = segments.first().timeline_start_sec
+                            val availableSec = newest - oldest
+                            if (availableSec > 5.0) {
+                                val targetDelay = minOf(DELAY_TARGET_SEC.toDouble(), availableSec * 0.8)
+                                val seekTargetMs = ((newest - targetDelay) * 1000).toLong()
+                                player.seekTo(seekTargetMs)
+                                initialDelaySeekDone = true
+                                Log.i(VM, "⏪ DELAY seek → ${targetDelay.toInt()}s behind live (buffer=${availableSec.toInt()}s, seekTarget=${"%.1f".format(newest - targetDelay)}s)")
+                            }
                         }
                     }
                 }
@@ -375,11 +454,9 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 val ap = activePlayerOrNull() ?: return
                 Log.i(VM, "word_tapped text=${action.word.text} pinyin=${action.word.pinyin}")
                 ap.pause()
-                // Use the segments from state (set by whichever source is active)
-                val segments = _state.value.segments
-                val engine = SubtitleSyncEngine(segments)
-                val segment = engine.findSegmentForWord(action.word, segments)
-                val timelineMs = engine.getWordTimelineMs(action.word)
+                val segment = segmentCache?.getOrLoad(action.segmentId)
+                    ?: _state.value.segments.find { it.segment_id == action.segmentId }
+                val timelineMs = (action.word.start_sec * 1000).toLong()
 
                 val currentActive = _state.value.activeWord
                 if (currentActive != action.word) {
@@ -404,13 +481,13 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             CriAction.PronounceWord -> {
                 Log.i(VM, "pronounce_word")
                 val word = savedWord.value ?: return
-                val allWords = _state.value.segments.flatMap { it.words }
-                val wordIdx = allWords.indexOfFirst { w -> w === word }
+                val words = _state.value.activeSegment?.words ?: return
+                val wordIdx = words.indexOfFirst { w -> w === word }
                 if (wordIdx < 0) {
                     pronunciationPlayer.playWord(word)
                 } else {
-                    val prevTimeTo = if (wordIdx > 0) allWords[wordIdx - 1].end_sec else null
-                    val nextTimeFrom = if (wordIdx < allWords.size - 1) allWords[wordIdx + 1].start_sec else null
+                    val prevTimeTo = if (wordIdx > 0) words[wordIdx - 1].end_sec else null
+                    val nextTimeFrom = if (wordIdx < words.size - 1) words[wordIdx + 1].start_sec else null
                     pronunciationPlayer.playWord(word, prevTimeTo, nextTimeFrom)
                 }
                 _state.value = _state.value.copy(isPronouncing = true)
@@ -523,6 +600,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                 getApplication()
                             )
                             offlinePlayer?.pause()
+                            segmentCache?.clear()
+                            segmentCache = SegmentCache(offlineStorageManager, action.sessionId)
                             val op = offlinePlayer!!
                             offlineStateJob = viewModelScope.launch {
                                 op.playbackState.collect { ps ->
@@ -531,7 +610,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 }
                             }
-                            _state.value = _state.value.copy(segments = segs)
+                            _state.value = _state.value.copy(
+                                segmentsMeta = segs,
+                                segments = emptyList()
+                            )
                         }
                     }
                 }
@@ -597,12 +679,16 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 // briefly compute delay = livePlayerSec − lastOfflineSegment.end
                 // (the age of the archive, e.g. ~2951s) and flash a bogus lag until
                 // the live source repopulates. Empty segments ⇒ delay = 0.
+                segmentCache?.clear()
+                segmentCache = null
                 lastActiveWord = null
                 _state.value = _state.value.copy(
                     playbackMode = mode,
                     playbackState = if (::player.isInitialized) player.playbackState.value else PlaybackState.IDLE,
                     segments = emptyList(),
+                    segmentsMeta = emptyList(),
                     activeSegment = null,
+                    activeSegmentId = null,
                     activeWord = null,
                     lastActiveWord = null,
                     subtitleDelaySec = 0.0,
@@ -623,12 +709,16 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 // main thread and froze the UI for ~seconds. It now runs off-thread
                 // below. playbackState=LOADING keeps the setup screen from flashing and
                 // shows LoadingScreen while segments are read.
+                segmentCache?.clear()
+                segmentCache = null
                 lastActiveWord = null
                 _state.value = _state.value.copy(
                     playbackMode = mode,
                     playbackState = PlaybackState.LOADING,
                     segments = emptyList(),
+                    segmentsMeta = emptyList(),
                     activeSegment = null,
+                    activeSegmentId = null,
                     activeWord = null,
                     lastActiveWord = null,
                     subtitleDelaySec = 0.0,
@@ -639,26 +729,35 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 offlineStateJob?.cancel()
                 offlineStateJob = viewModelScope.launch {
                     // Heavy disk read off the main thread.
-                    val storedSegments = withContext(Dispatchers.IO) {
+                    withContext(Dispatchers.IO) {
                         offlineSubtitleSource.load()
-                        offlineSubtitleSource.segments.value
                     }
+                    val meta = offlineSubtitleSource.segmentsMeta.value
+                    segmentCache = offlineSubtitleSource.segmentCache
+
                     // User may have switched back to live while loading.
                     if (_state.value.playbackMode != PlaybackMode.OFFLINE_SAVED) return@launch
 
                     // ExoPlayer must be constructed on the main thread (we are here).
-                    if (storedSegments.isNotEmpty()) {
+                    if (meta.isNotEmpty()) {
                         offlinePlayer?.release()
                         offlinePlayer = OfflineRadioPlayer(
-                            storedSegments,
+                            meta,
                             offlineStorageManager,
                             offlineSubtitleSource.lastLoadedSessionId ?: "0_0",
                             getApplication()
                         )
                         offlinePlayer?.pause()
                     }
+                    val durationMs = if (meta.isNotEmpty()) {
+                        val first = meta.first().timeline_start_sec
+                        val last = meta.last().timeline_end_sec
+                        if (last > first) ((last - first) * 1000).toLong() else 0L
+                    } else 0L
                     _state.value = _state.value.copy(
-                        segments = storedSegments,
+                        segmentsMeta = meta,
+                        segments = emptyList(),
+                        offlineDurationMs = durationMs,
                         playbackState = offlinePlayer?.playbackState?.value ?: PlaybackState.IDLE
                     )
 
@@ -738,7 +837,30 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 // If in offline mode, reload segments
                 if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
                     offlineSubtitleSource.load()
-                    _state.value = _state.value.copy(segments = offlineSubtitleSource.segments.value)
+                    val meta = offlineSubtitleSource.segmentsMeta.value
+                    segmentCache = offlineSubtitleSource.segmentCache
+                    _state.value = _state.value.copy(segmentsMeta = meta, segments = emptyList())
+                    if (meta.isNotEmpty()) {
+                        val durationMs = if (meta.isNotEmpty()) {
+                            val first = meta.first().timeline_start_sec
+                            val last = meta.last().timeline_end_sec
+                            if (last > first) ((last - first) * 1000).toLong() else 0L
+                        } else 0L
+                        offlinePlayer?.release()
+                        offlinePlayer = OfflineRadioPlayer(
+                            meta,
+                            offlineStorageManager,
+                            offlineSubtitleSource.lastLoadedSessionId ?: "0_0",
+                            getApplication()
+                        )
+                        offlinePlayer?.pause()
+                        _state.value = _state.value.copy(
+                            segmentsMeta = meta,
+                            segments = emptyList(),
+                            offlineDurationMs = durationMs,
+                            playbackState = offlinePlayer?.playbackState?.value ?: PlaybackState.IDLE
+                        )
+                    }
                 }
             }
         }
@@ -756,6 +878,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         subtitleSource.disconnect()
         downloadJob?.cancel()
         offlinePlayer?.release()
+        segmentCache?.clear()
+        segmentCache = null
         // Live player is owned by PlayerService — do NOT release it here.
         // The service survives Activity destruction and keeps audio alive.
     }

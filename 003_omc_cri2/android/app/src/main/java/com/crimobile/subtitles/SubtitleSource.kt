@@ -1,6 +1,7 @@
 package com.crimobile.subtitles
 
 import com.crimobile.model.ConnectionStatus
+import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
 import kotlinx.coroutines.flow.StateFlow
 
@@ -11,6 +12,9 @@ import kotlinx.coroutines.flow.StateFlow
 interface SubtitleSource {
     /** All received segments, sorted by timeline_start_sec. */
     val segments: StateFlow<List<SubtitleSegment>>
+
+    /** Lightweight segment metadata for timeline navigation, always kept in RAM. */
+    val segmentsMeta: StateFlow<List<SegmentMeta>>
 
     /** Connection status. */
     val connected: StateFlow<ConnectionStatus>

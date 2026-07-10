@@ -11,7 +11,7 @@ import androidx.media3.exoplayer.source.ConcatenatingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.datasource.FileDataSource
 import com.crimobile.model.PlaybackState
-import com.crimobile.model.SubtitleSegment
+import com.crimobile.model.SegmentMeta
 import com.crimobile.player.RadioPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,7 +36,7 @@ import kotlinx.coroutines.launch
  * own timeline.
  */
 class OfflineRadioPlayer(
-    segments: List<SubtitleSegment>,
+    segments: List<SegmentMeta>,
     private val storageManager: OfflineStorageManager,
     private val sessionId: String,
     context: Context
@@ -48,13 +48,13 @@ class OfflineRadioPlayer(
     // ── Segment offset mapping ──────────────────────────────────────────
     // Maintain two parallel arrays indexed by the order segments are added
     // to the concatenated source.
-    private val orderedSegments: List<SubtitleSegment>
+    private val orderedSegments: List<SegmentMeta>
     private val segmentOffsetsMs: LongArray   // prefix sum: offsetMs[i] = total duration before segment i
     private var builtCount = 0
 
     init {
         // Build ordered list: only segments whose audio file exists
-        val available = mutableListOf<SubtitleSegment>()
+        val available = mutableListOf<SegmentMeta>()
         val offsets = mutableListOf(0L)
 
         for (seg in segments) {
@@ -66,7 +66,7 @@ class OfflineRadioPlayer(
             }
         }
 
-        orderedSegments = available
+        orderedSegments = available.sortedBy { it.segment_id }
         segmentOffsetsMs = offsets.toLongArray()
 
         Log.i(TAG, "init ${orderedSegments.size} segments (${segments.size} total, " +

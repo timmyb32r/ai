@@ -1,5 +1,6 @@
 package com.crimobile
 
+import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
 import com.crimobile.model.WordEntry
 import com.crimobile.sync.SubtitleSyncEngine
@@ -35,6 +36,16 @@ class SubtitleSyncEngineTest {
         )
     )
 
+    // Lightweight SegmentMeta derived from sampleSegment for engine construction
+    private val sampleMeta = SegmentMeta(
+        segment_id = sampleSegment.segment_id,
+        timeline_start_sec = sampleSegment.timeline_start_sec,
+        timeline_end_sec = sampleSegment.timeline_end_sec,
+        ts_file = sampleSegment.ts_file,
+        text_zh = sampleSegment.text_zh,
+        text_pinyin = sampleSegment.text_pinyin
+    )
+
     // Shifts a copy of the sample segment forward by id*3s — BOTH the segment
     // bounds AND its word timestamps, so the data stays internally consistent
     // (each segment's words carry that segment's absolute timeline).
@@ -54,7 +65,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveSegment — player inside segment`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         // Player at ~1.5 seconds into the segment (absolute ms)
         val playerMs = ((sampleSegment.timeline_start_sec + 1.5) * 1000).toLong()
         val result = engine.findActiveSegment(playerMs)
@@ -64,7 +75,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveSegment — player exactly at segment start`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         val playerMs = (sampleSegment.timeline_start_sec * 1000).toLong()
         val result = engine.findActiveSegment(playerMs)
         assertNotNull("segment should be found at exact start boundary", result)
@@ -73,7 +84,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveSegment — player before all segments returns null`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         val playerMs = ((sampleSegment.timeline_start_sec - 10.0) * 1000).toLong()
         val result = engine.findActiveSegment(playerMs)
         assertNull("player before all segments should return null", result)
@@ -81,7 +92,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveSegment — player after all segments returns null`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         val playerMs = ((sampleSegment.timeline_end_sec + 10.0) * 1000).toLong()
         val result = engine.findActiveSegment(playerMs)
         assertNull("player after all segments should return null", result)
@@ -90,7 +101,8 @@ class SubtitleSyncEngineTest {
     @Test
     fun `findActiveSegment — multiple segments, binary search correctness`() {
         val segments = (0..9).map { shifted(it) }
-        val engine = SubtitleSyncEngine(segments)
+        val segmentsMeta = segments.map { SegmentMeta(it.segment_id, it.timeline_start_sec, it.timeline_end_sec, it.ts_file, it.text_zh, it.text_pinyin) }
+        val engine = SubtitleSyncEngine(segmentsMeta)
 
         // Player at segment 5, 1 second in
         val playerMs = ((segments[5].timeline_start_sec + 1.0) * 1000).toLong()
@@ -103,7 +115,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveWord — first word of segment`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         // Player at 0.2s into the segment
         val playerMs = ((sampleSegment.timeline_start_sec + 0.2) * 1000).toLong()
         val word = engine.findActiveWord(sampleSegment, playerMs)
@@ -113,7 +125,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveWord — middle word of segment`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         // "地區" spans rel [1.5s, 1.928s]. Probe at 1.6s → inside 地區.
         val playerMs = ((sampleSegment.timeline_start_sec + 1.6) * 1000).toLong()
         val word = engine.findActiveWord(sampleSegment, playerMs)
@@ -123,7 +135,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveWord — last word of segment`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         // Player at 2.9s — should be "暴雨" (last word, starts at 2.57s)
         val playerMs = ((sampleSegment.timeline_start_sec + 2.9) * 1000).toLong()
         val word = engine.findActiveWord(sampleSegment, playerMs)
@@ -133,7 +145,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveWord — between words returns previous word`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         // "等" ends at rel 0.857s, "地" starts at 0.857s
         // Player at 1.0s — should be "地"
         val playerMs = ((sampleSegment.timeline_start_sec + 1.0) * 1000).toLong()
@@ -144,7 +156,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveWord — before first word returns null`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         val playerMs = ((sampleSegment.timeline_start_sec - 0.5) * 1000).toLong()
         val word = engine.findActiveWord(sampleSegment, playerMs)
         assertNull("before first word should return null", word)
@@ -152,7 +164,7 @@ class SubtitleSyncEngineTest {
 
     @Test
     fun `findActiveWord — after last word returns last word`() {
-        val engine = SubtitleSyncEngine(listOf(sampleSegment))
+        val engine = SubtitleSyncEngine(listOf(sampleMeta))
         val playerMs = ((sampleSegment.timeline_end_sec + 0.5) * 1000).toLong()
         val word = engine.findActiveWord(sampleSegment, playerMs)
         assertNotNull("after segment should return last word", word)
@@ -204,7 +216,8 @@ class SubtitleSyncEngineTest {
     @Test
     fun `complete sync chain — playerMs maps to correct segment and word`() {
         val segments = (0..4).map { shifted(it) }
-        val engine = SubtitleSyncEngine(segments)
+        val segmentsMeta = segments.map { SegmentMeta(it.segment_id, it.timeline_start_sec, it.timeline_end_sec, it.ts_file, it.text_zh, it.text_pinyin) }
+        val engine = SubtitleSyncEngine(segmentsMeta)
 
         // Player at segment 2, position ≈ 1.0s in → "地" spans rel [0.857, 1.071].
         val playerMs = ((segments[2].timeline_start_sec + 1.0) * 1000).toLong()
@@ -212,7 +225,7 @@ class SubtitleSyncEngineTest {
         assertNotNull("segment must be found", seg)
         assertEquals(2, seg!!.segment_id)
 
-        val word = engine.findActiveWord(seg, playerMs)
+        val word = engine.findActiveWord(segments[2], playerMs)
         assertNotNull("word must be found", word)
         assertEquals("地", word!!.text)
 
