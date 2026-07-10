@@ -4,6 +4,7 @@ import android.util.Log
 import com.crimobile.model.ConnectionStatus
 import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
+import com.crimobile.model.toMeta
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -164,7 +165,9 @@ class HttpSubtitleSource(
         // 6. Single emit per poll batch.
         if (fetched > 0) {
             synchronized(lock) {
-                _segments.value = segmentMap.values.sortedBy { it.timeline_start_sec }
+                val segments = segmentMap.values.sortedBy { it.timeline_start_sec }
+                _segments.value = segments
+                _segmentsMeta.value = segments.map { it.toMeta() }
             }
             Log.i(HTTP_TAG, "fetched $fetched new segments, total=${segmentMap.size}")
         }
@@ -209,6 +212,7 @@ class HttpSubtitleSource(
             segmentMap.clear()
             seenIds.clear()
             _segments.value = emptyList()
+            _segmentsMeta.value = emptyList()
         }
     }
 

@@ -27,6 +27,16 @@ data class SegmentMeta(
     val text_pinyin: String
 )
 
+/** Lightweight conversion: drops word-level data (senses, pinyin arrays, etc.). */
+fun SubtitleSegment.toMeta() = SegmentMeta(
+    segment_id = segment_id,
+    timeline_start_sec = timeline_start_sec,
+    timeline_end_sec = timeline_end_sec,
+    ts_file = ts_file,
+    text_zh = text_zh,
+    text_pinyin = text_pinyin
+)
+
 
 data class WordSense(
     val number: Int = 0,

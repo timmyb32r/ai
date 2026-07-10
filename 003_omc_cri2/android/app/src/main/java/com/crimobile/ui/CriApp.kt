@@ -303,6 +303,7 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                             }
                             SubtitleList(
                                 segmentsMeta = state.segmentsMeta,
+                                fullSegments = if (state.playbackMode == PlaybackMode.LIVE_STREAMING) state.segments else emptyList(),
                                 segmentCache = segmentCache,
                                 activeSegmentId = state.activeSegmentId,
                                 activeWord = state.activeWord,
@@ -837,6 +838,7 @@ private fun ErrorScreen(msg: String) {
 @Composable
 private fun SubtitleList(
     segmentsMeta: List<SegmentMeta>,
+    fullSegments: List<SubtitleSegment>,
     segmentCache: SegmentCache?,
     activeSegmentId: Int?,
     activeWord: WordEntry?,
@@ -854,6 +856,11 @@ private fun SubtitleList(
     val listState = rememberLazyListState()
     val speedController = remember { KaraokeSpeedController() }
     val density = LocalDensity.current
+
+    // O(1) lookup for live mode — full segments already in memory.
+    val fullSegmentsById = remember(fullSegments) {
+        fullSegments.associateBy { it.segment_id }
+    }
 
     // Snapshot-aware: rememberUpdatedState даёт State-обёртки
     val currentSegmentsMeta by rememberUpdatedState(segmentsMeta)
@@ -1105,7 +1112,9 @@ private fun SubtitleList(
         ) {
             itemsIndexed(segmentsMeta, key = { _, m -> m.segment_id }) { index, meta ->
                 val isTsBoundary = index > 0 && segmentsMeta[index - 1].ts_file != meta.ts_file
+                // Try cache first (offline), then live fullSegments, then placeholder.
                 val seg = segmentCache?.getOrLoad(meta.segment_id)
+                    ?: fullSegmentsById[meta.segment_id]
                 if (seg != null) {
                     SegmentCard(seg, activeWord, showPinyin, fontSizeSp, showWordBoundaries, isTsBoundary, showAudioBoundaries, pinyinFontSizeSp, lastActiveWord) { word ->
                         onWordTapped(word, meta.segment_id)

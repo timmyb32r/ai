@@ -172,6 +172,14 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        // Mirror: populate segmentsMeta for the UI (SubtitleList uses it in all modes).
+        viewModelScope.launch {
+            _subtitleSource.flatMapLatest { it.segmentsMeta }.collect { meta ->
+                if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING) {
+                    _state.value = _state.value.copy(segmentsMeta = meta)
+                }
+            }
+        }
 
         // ── Wait for the player (owned by PlayerService) then start player-dependent flows ──
         viewModelScope.launch {
