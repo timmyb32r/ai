@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -95,6 +96,48 @@ class HttpSubtitleSource(
                 }
                 delay(pollIntervalMs)
             }
+        }
+    }
+
+    /**
+     * Cold-start fast path: fetch the last [n] segments in a single HTTP request
+     * via GET /api/segments/batch?last=N.  Populates segmentMap and emits
+     * immediately — no playlist fetch, no per-segment requests.
+     *
+     * Called from CriViewModel.Play handler BEFORE player.play(url) so that
+     * text appears on screen before audio starts.
+     */
+    suspend fun fetchInitial(serverUrl: String, n: Int = 3): Boolean {
+        val batchUrl = "$serverUrl/api/segments/batch?last=$n"
+        val jsonBody = withContext(Dispatchers.IO) {
+            fetchUrl(batchUrl)
+        } ?: return false
+
+        return try {
+            val root = org.json.JSONObject(jsonBody)
+            val arr = root.getJSONArray("segments")
+            val segments = mutableListOf<SubtitleSegment>()
+            for (i in 0 until arr.length()) {
+                val segment = SubtitleParser.parseSegment(arr.getJSONObject(i))
+                synchronized(lock) {
+                    segmentMap[segment.segment_id] = segment
+                    seenIds.add(segment.segment_id)
+                }
+                segments.add(segment)
+            }
+            if (segments.isNotEmpty()) {
+                _connected.value = ConnectionStatus.CONNECTED
+                synchronized(lock) {
+                    val sorted = segmentMap.values.sortedBy { it.timeline_start_sec }
+                    _segments.value = sorted
+                    _segmentsMeta.value = sorted.map { it.toMeta() }
+                }
+                Log.i(HTTP_TAG, "fetchInitial: ${segments.size} segments via bulk, total=${segmentMap.size}")
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(HTTP_TAG, "fetchInitial failed: ${e.message}")
+            false
         }
     }
 

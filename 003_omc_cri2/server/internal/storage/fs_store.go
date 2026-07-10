@@ -125,6 +125,38 @@ func (s *fsStore) ReadRange(startSec, endSec float64) ([]models.TranscriptSegmen
 	return segments, nil
 }
 
+// ReadLatest reads the N most recent segments by segment_id.
+// Used by the cold-start bulk endpoint to return everything the
+// client needs in a single HTTP request.
+func (s *fsStore) ReadLatest(n int) ([]models.TranscriptSegment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	idx, err := s.readIndexLocked()
+	if err != nil {
+		return nil, err
+	}
+	if len(idx.Segments) == 0 {
+		return nil, nil
+	}
+
+	// Take the last N entries (highest segment_id).
+	start := len(idx.Segments) - n
+	if start < 0 {
+		start = 0
+	}
+
+	result := make([]models.TranscriptSegment, 0, len(idx.Segments)-start)
+	for _, ref := range idx.Segments[start:] {
+		seg, err := s.Read(ref.ID)
+		if err != nil {
+			continue
+		}
+		result = append(result, *seg)
+	}
+	return result, nil
+}
+
 func (s *fsStore) ReadIndex() (*models.SegmentIndex, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

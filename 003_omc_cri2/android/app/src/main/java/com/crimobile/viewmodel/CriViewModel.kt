@@ -142,6 +142,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var lastActiveSegId = -1
     private var lastActiveWord: WordEntry? = null
     private var initialDelaySeekDone = false  // one-shot seek behind live edge after connect
+    private var coldStartT0: Long = 0  // timing: System.nanoTime() when Play was tapped
 
     // ── Offline mode ───────────────────────────────────────────────────
     private val offlineStorageManager by lazy { OfflineStorageManager(getApplication()) }
@@ -199,6 +200,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 player.playbackState.collect { ps ->
                     if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING) {
                         _state.value = _state.value.copy(playbackState = ps)
+                        if (ps == PlaybackState.PLAYING && coldStartT0 > 0) {
+                            Log.i(TIMING, "event=player_ready elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                            coldStartT0 = 0 // one-shot
+                        }
                     }
                 }
             }
@@ -423,9 +428,32 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         } else {
                             Log.i(VM, "play new stream")
                             currentServerUrl = action.serverUrl
-                            subtitleSource.connect(action.serverUrl)
-                            player.play(url)
                             initialDelaySeekDone = false
+                            coldStartT0 = System.nanoTime()
+                            Log.i(TIMING, "event=play_tapped elapsed_ms=0")
+
+                            if (subtitleSource is com.crimobile.subtitles.HttpSubtitleSource) {
+                                // Cold-start: fetch initial data → show text → THEN play audio.
+                                viewModelScope.launch {
+                                    val t1 = System.nanoTime()
+                                    Log.i(TIMING, "event=fetch_initial_start elapsed_ms=${(t1 - coldStartT0) / 1_000_000}")
+                                    val ok = (subtitleSource as com.crimobile.subtitles.HttpSubtitleSource)
+                                        .fetchInitial(action.serverUrl, 3)
+                                    val t3 = System.nanoTime()
+                                    Log.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(t3 - coldStartT0) / 1_000_000}")
+                                    // Data is in state — UI renders text NOW.
+                                    // Start audio AFTER text is visible.
+                                    player.play(url)
+                                    val t5 = System.nanoTime()
+                                    Log.i(TIMING, "event=player_play_called elapsed_ms=${(t5 - coldStartT0) / 1_000_000}")
+                                    // Continue background polling for additional segments.
+                                    subtitleSource.connect(action.serverUrl)
+                                }
+                            } else {
+                                // SSE source: push-based, fast — connect and play immediately.
+                                subtitleSource.connect(action.serverUrl)
+                                player.play(url)
+                            }
                         }
                     }
                     PlaybackMode.OFFLINE_SAVED -> {
@@ -876,6 +904,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val VM = "CRIRadio:vm"
+        private const val TIMING = "CRIRadio:timing"
         private const val DELAY_TARGET_SEC = 45     // target buffer behind live edge
         private const val MIN_BUFFER_FOR_DELAY_SEEK = 5  // segments needed before initial seek
     }

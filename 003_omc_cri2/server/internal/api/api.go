@@ -43,6 +43,9 @@ func (s *Server) NewRouter() http.Handler {
 	// Segment range — batch metadata query for offline sync
 	mux.HandleFunc("/api/segments/range", s.handleSegmentRange)
 
+	// Batch latest segments — cold-start bulk endpoint (1 request vs N)
+	mux.HandleFunc("/api/segments/batch", s.handleBatchSegments)
+
 	// Status — server health and stats
 	mux.HandleFunc("/api/status", s.handleStatus)
 
@@ -252,4 +255,30 @@ func segmentIDFromPath(filename string) int {
 		}
 	}
 	return id
+}
+
+// handleBatchSegments returns the last N full segments as a JSON array.
+// Query: ?last=N (default 3).  Used by the Android client cold-start path
+// to replace up to 100 individual /api/metadata/{id} requests with one.
+func (s *Server) handleBatchSegments(w http.ResponseWriter, r *http.Request) {
+	n := 3
+	if ns := r.URL.Query().Get("last"); ns != "" {
+		if parsed, err := strconv.Atoi(ns); err == nil && parsed > 0 && parsed <= 100 {
+			n = parsed
+		}
+	}
+
+	segments, err := s.Store.ReadLatest(n)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if segments == nil {
+		segments = []models.TranscriptSegment{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"segments": segments,
+	})
 }

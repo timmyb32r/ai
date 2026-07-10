@@ -281,7 +281,8 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                     state.error != null -> ErrorScreen(state.error)
                     state.playbackState == PlaybackState.IDLE && state.segments.isEmpty() ->
                         WelcomeScreen()
-                    state.segments.isEmpty() && state.playbackState == PlaybackState.LOADING ->
+                    state.segments.isEmpty() && state.segmentsMeta.isEmpty()
+                        && state.playbackState == PlaybackState.LOADING ->
                         LoadingScreen()
                     else -> {
                         Column {

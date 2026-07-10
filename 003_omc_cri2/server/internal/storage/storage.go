@@ -22,6 +22,9 @@ type MetadataStore interface {
 	// ReadRange reads all segments whose timeline overlaps [startSec, endSec].
 	ReadRange(startSec, endSec float64) ([]models.TranscriptSegment, error)
 
+	// ReadLatest reads the N most recent segments (by segment_id).
+	ReadLatest(n int) ([]models.TranscriptSegment, error)
+
 	// ReadIndex reads the current index.json.
 	ReadIndex() (*models.SegmentIndex, error)
 
