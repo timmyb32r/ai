@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,134 @@ func (d *contextDict) LookupPinyin(s string) string {
 func (d *contextDict) CharReadings(ch string) []string { return d.charReadings[ch] }
 func (d *contextDict) Stats() dictionary.Stats         { return dictionary.Stats{} }
 func (d *contextDict) Close() error                    { return nil }
+
+// TestProcessASR_NonRawCharPinyin_BuiltCorrectly verifies that the non-raw
+// (non-sherpa) path builds exactly one char_pinyin entry per character and
+// one part per character. A previous bug (duplicated appends, missing default
+// case) produced wrong-length char_pinyin arrays that caused the client to
+// fall through to its word-level-pinyin-on-first-char escape hatch.
+func TestProcessASR_NonRawCharPinyin_BuiltCorrectly(t *testing.T) {
+	store, _ := storage.New(t.TempDir())
+	defer store.Close()
+
+	// A dictionary where every word lookup FAILS — forcing the per-character
+	// path — but per-character readings are available with some ambiguity.
+	dict := &nonRawTestDict{
+		charReadings: map[string][]string{
+			"试": {"shi4"},
+			"点": {"dian3"},
+			"测": {"ce4"},
+			"评": {"ping2"},
+			// 长 has two readings (cháng/zhǎng) — tests the default: case.
+			"长": {"chang2", "zhang3"},
+			// 行 has two readings — tests resolveByContext.
+			"行": {"xing2", "hang2"},
+			"进": {"jin4"},
+		},
+		// Sub-word entries for resolveByContext: "进行" → "jin4 xing2".
+		entries: map[string]*dictionary.Entry{
+			"进行": {Pinyin: "jin4 xing2", CharPinyins: []string{"jin4", "xing2"}},
+		},
+	}
+
+	// A tokenizer that produces words the dictionary won't find.
+	tok := &fixedTokenizer{
+		tokens: []tokenizer.Token{
+			{Text: "试点", CharStart: 0, CharEnd: 2},
+			{Text: "测评", CharStart: 2, CharEnd: 4},
+			{Text: "长", CharStart: 4, CharEnd: 5},
+			{Text: "进行", CharStart: 5, CharEnd: 7},
+		},
+	}
+
+	// Mock ASR that returns text WITHOUT raw timestamps.
+	mockASR := asr.NewMockTranscriber()
+	mockASR.TranscribeFn = func(pcm []float32, segmentID int) (*models.TranscriptSegment, error) {
+		return &models.TranscriptSegment{
+			SegmentID:        segmentID,
+			TimelineStartSec: float64(segmentID * 3),
+			TimelineEndSec:   float64(segmentID*3 + 3),
+			TextZh:           "试点测评长进行",
+			// No RawTimestamps → triggers non-raw path.
+		}, nil
+	}
+
+	pcmCh := make(chan models.PCMChunk, 1)
+
+	p := &Pipeline{
+		Ingestor:    &mockIngestor{ch: pcmCh},
+		Transcriber: mockASR,
+		Tokenizer:   tok,
+		Dictionary:  dict,
+		Store:       store,
+		Logger:      logging.NewProductionLogger("warn"),
+		OutputDir:   t.TempDir(),
+		HLSTime:     3,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pcmCh <- models.PCMChunk{
+		SegmentID:   0,
+		Samples:     make([]float32, 48000),
+		DurationSec: 3.0,
+	}
+	close(pcmCh)
+
+	_ = p.Run(ctx)
+	time.Sleep(500 * time.Millisecond)
+
+	seg, err := store.Read(0)
+	if err != nil {
+		t.Fatalf("Read(0) failed: %v", err)
+	}
+
+	if len(seg.Words) != 4 {
+		t.Fatalf("expected 4 words, got %d", len(seg.Words))
+	}
+
+	for wi, w := range seg.Words {
+		chars := []rune(w.Text)
+		n := len(chars)
+
+		// Rule 1: char_pinyin must have exactly len(chars) entries — never
+		//         more (duplicate appends) or fewer (missing default case).
+		if len(w.CharPinyin) != n {
+			t.Errorf("word %d %q: char_pinyin length %d != char count %d: %v",
+				wi, w.Text, len(w.CharPinyin), n, w.CharPinyin)
+		}
+
+		// Rule 2: char_pinyin entries must be single syllables — never
+		//         multi-syllable debris (e.g. "shìdiǎn" for a single char).
+		for ci, cp := range w.CharPinyin {
+			if strings.Contains(cp, " ") || len([]rune(cp)) > 8 {
+				t.Errorf("word %d %q char %d: multi-syllable debris in char_pinyin: %q",
+					wi, w.Text, ci, cp)
+			}
+		}
+	}
+
+	// Spot-check: 试点 has unambiguous readings (1 reading each).
+	w0 := seg.Words[0]
+	if len(w0.CharPinyin) == 2 {
+		if w0.CharPinyin[0] != "shi4" {
+			t.Errorf("试点 char 0: got %q, want shi4", w0.CharPinyin[0])
+		}
+		if w0.CharPinyin[1] != "dian3" {
+			t.Errorf("试点 char 1: got %q, want dian3", w0.CharPinyin[1])
+		}
+	}
+
+	// Spot-check: 长 has two readings → should fall to default case.
+	w2 := seg.Words[2] // "长"
+	if len(w2.CharPinyin) == 1 {
+		cp := w2.CharPinyin[0]
+		if cp != "chang2" && cp != "zhang3" && cp != "?" {
+			t.Errorf("长: unexpected char_pinyin %q", cp)
+		}
+	}
+}
 
 func TestResolveByContext_DisambiguatesMiddleChar(t *testing.T) {
 	// Scenario: word "人方式" is NOT in dictionary, but "人方" (rénfāng)
@@ -317,3 +446,33 @@ func TestPipelineHLSEncoderCleanup(t *testing.T) {
 		t.Error("hlsStdin is not nil after Run() exit — stopHLSEncoder() did not close stdin (old-code pipe leak)")
 	}
 }
+
+// nonRawTestDict is a mock Dictionary for testing the per-character pinyin
+// code path. Every multi-character word lookup fails, forcing the
+// character-by-character fallback through CharReadings.
+type nonRawTestDict struct {
+	charReadings map[string][]string
+	entries      map[string]*dictionary.Entry
+}
+
+func (d *nonRawTestDict) Lookup(s string) (*dictionary.Entry, error) {
+	if e, ok := d.entries[s]; ok {
+		return e, nil
+	}
+	return nil, fmt.Errorf("not found")
+}
+func (d *nonRawTestDict) LookupPinyin(s string) string {
+	if e, ok := d.entries[s]; ok {
+		return e.Pinyin
+	}
+	return ""
+}
+func (d *nonRawTestDict) CharReadings(ch string) []string { return d.charReadings[ch] }
+func (d *nonRawTestDict) Stats() dictionary.Stats         { return dictionary.Stats{} }
+func (d *nonRawTestDict) Close() error                    { return nil }
+
+// fixedTokenizer returns a fixed list of tokens regardless of input text.
+type fixedTokenizer struct{ tokens []tokenizer.Token }
+
+func (t *fixedTokenizer) Segment(text string) []tokenizer.Token { return t.tokens }
+func (t *fixedTokenizer) Close() error                          { return nil }

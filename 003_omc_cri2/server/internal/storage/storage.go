@@ -28,6 +28,11 @@ type MetadataStore interface {
 	// ReadIndex reads the current index.json.
 	ReadIndex() (*models.SegmentIndex, error)
 
+	// ForceFlush flushes any pending writes to index.json immediately.
+	// Normally the index is flushed every N writes; call this in tests
+	// when you need ReadLatest to see recently-written segments.
+	ForceFlush()
+
 	// Cleanup removes metadata files older than ttl.
 	Cleanup(ttl time.Duration) (deleted int, err error)
 

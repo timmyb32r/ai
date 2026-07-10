@@ -7,6 +7,110 @@ import org.junit.Test
 
 class CharCellTest {
 
+    // ── Regression: char_pinyin absent / wrong-size ──────────────────
+    // When per-character pinyin is missing or malformed, buildCharCells
+    // must show EMPTY pinyin for every character — NEVER leak the
+    // whole-word pinyin onto the first character.
+
+    @Test
+    fun `missing char_pinyin — empty syllables for all chars, no word pinyin on first char`() {
+        // Two-char word with word-level pinyin but NO char_pinyin.
+        // The old fallback (ci==0 → word.pinyin) would put "shìdiǎn" on 试.
+        val words = listOf(
+            WordEntry(
+                text = "试点", char_start = 0, char_end = 2,
+                start_sec = 0.0, end_sec = 1.0,
+                pinyin = "shìdiǎn", char_pinyin = emptyList(),
+                translation = "pilot"
+            )
+        )
+        val cells = buildCharCells(words, showPinyin = true)
+        assertEquals("two cells for two chars", 2, cells.size)
+        assertEquals("试", cells[0].text)
+        assertEquals("点", cells[1].text)
+        // CRITICAL: both syllables must be empty — NOT "shìdiǎn" on first char.
+        assertEquals("first char syllable empty", "", cells[0].syllable)
+        assertEquals("second char syllable empty", "", cells[1].syllable)
+    }
+
+    @Test
+    fun `char_pinyin wrong size — empty syllables for all chars`() {
+        // char_pinyin has 3 entries for a 2-char word (simulates the buggy
+        // server path that produced duplicate appends). Must NOT fall back
+        // to word pinyin on first char.
+        val words = listOf(
+            WordEntry(
+                text = "试点", char_start = 0, char_end = 2,
+                start_sec = 0.0, end_sec = 1.0,
+                pinyin = "shìdiǎn",
+                char_pinyin = listOf("shì", "shì", "diǎn"), // 3 for 2 chars!
+                translation = "pilot"
+            )
+        )
+        val cells = buildCharCells(words, showPinyin = true)
+        assertEquals(2, cells.size)
+        assertEquals("", cells[0].syllable)
+        assertEquals("", cells[1].syllable)
+    }
+
+    @Test
+    fun `char_pinyin correct — syllables aligned per character`() {
+        // Happy path: char_pinyin has exactly one entry per character.
+        val words = listOf(
+            WordEntry(
+                text = "试点", char_start = 0, char_end = 2,
+                start_sec = 0.0, end_sec = 1.0,
+                pinyin = "shìdiǎn",
+                char_pinyin = listOf("shì", "diǎn"),
+                translation = "pilot"
+            )
+        )
+        val cells = buildCharCells(words, showPinyin = true)
+        assertEquals(2, cells.size)
+        assertEquals("试", cells[0].text)
+        assertEquals("点", cells[1].text)
+        assertTrue("first char has pinyin", cells[0].syllable.isNotEmpty())
+        assertTrue("second char has pinyin", cells[1].syllable.isNotEmpty())
+        // Pinyin should match the char readings, not be the whole word.
+        assertEquals("shì", cells[0].syllable)
+        assertEquals("diǎn", cells[1].syllable)
+    }
+
+    @Test
+    fun `single char word without char_pinyin — space-split fallback works correctly`() {
+        // For single-char words, word.pinyin IS the char pinyin.
+        // The space-split fallback (syllables.size == chars.size) should work.
+        val words = listOf(
+            WordEntry(
+                text = "的", char_start = 0, char_end = 1,
+                start_sec = 0.0, end_sec = 0.5,
+                pinyin = "de", char_pinyin = emptyList(),
+                translation = "of"
+            )
+        )
+        val cells = buildCharCells(words, showPinyin = true)
+        assertEquals(1, cells.size)
+        assertEquals("的", cells[0].text)
+        assertEquals("de", cells[0].syllable) // single char → word pinyin is char pinyin
+    }
+
+    @Test
+    fun `multi char word without char_pinyin — space-split works when syllables match chars`() {
+        // Word pinyin "shì diǎn" has 2 space-separated tokens for 2 chars.
+        val words = listOf(
+            WordEntry(
+                text = "试点", char_start = 0, char_end = 2,
+                start_sec = 0.0, end_sec = 1.0,
+                pinyin = "shì diǎn", char_pinyin = emptyList(),
+                translation = "pilot"
+            )
+        )
+        val cells = buildCharCells(words, showPinyin = true)
+        assertEquals(2, cells.size)
+        assertEquals("shì", cells[0].syllable)
+        assertEquals("diǎn", cells[1].syllable)
+    }
+
     @Test
     fun `punctuation is separate zero-width cell`() {
         val words = listOf(

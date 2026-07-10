@@ -324,6 +324,18 @@ func (s *fsStore) updateIndex(ref models.SegmentRef) error {
 	return s.writeIndexLocked(idx)
 }
 
+// ForceFlush writes pending index state to disk immediately.
+func (s *fsStore) ForceFlush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.idxWritesSince == 0 {
+		return // nothing to flush
+	}
+	s.idxWritesSince = 0
+	s.rebuildIndex()
+}
+
 // writeIndexLocked marshals and writes the index to disk.
 // Must be called with s.mu held.
 func (s *fsStore) writeIndexLocked(idx *models.SegmentIndex) error {

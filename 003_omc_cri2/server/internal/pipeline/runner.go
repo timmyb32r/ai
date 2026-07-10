@@ -349,20 +349,20 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 						charPinyin = append(charPinyin, "")
 					case 1:
 						charPinyin = append(charPinyin, readings[0])
-						// Context failed — fall back to old per-character lookup.
-						if cp := p.Dictionary.LookupPinyin(string(ch)); cp != "" && !strings.ContainsAny(cp, ",;") {
-							charPinyin = append(charPinyin, cp)
-							parts = append(parts, cp)
-						} else {
-							charPinyin = append(charPinyin, "?")
-							parts = append(parts, "?")
-						}
+						parts = append(parts, readings[0])
+					default:
 						if resolved := resolveByContext(i, chars, p.Dictionary); resolved != "" {
 							charPinyin = append(charPinyin, resolved)
 							parts = append(parts, resolved)
 						} else {
-							charPinyin = append(charPinyin, "?")
-							parts = append(parts, "?")
+							// Context failed — fall back to per-character lookup.
+							if cp := p.Dictionary.LookupPinyin(string(ch)); cp != "" && !strings.ContainsAny(cp, ",;") {
+								charPinyin = append(charPinyin, cp)
+								parts = append(parts, cp)
+							} else {
+								charPinyin = append(charPinyin, "?")
+								parts = append(parts, "?")
+							}
 						}
 					}
 				}

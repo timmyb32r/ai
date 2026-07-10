@@ -277,17 +277,18 @@ func (s *Server) handleBatchSegments(w http.ResponseWriter, r *http.Request) {
 		segments = []models.TranscriptSegment{}
 	}
 
-	// Lite mode: strip only dictionary data (senses, cedict, char_pinyin, translation).
-	// Keep word timing (start_sec, end_sec, text, pinyin) so the client can still
-	// highlight the active word before the background poll delivers full dictionary data.
+	// Lite mode: strip heavy dictionary-only data (senses, cedict, translation).
+	// Keep word timing (start_sec, end_sec), text, pinyin, AND char_pinyin so the
+	// client can render per-character pinyin immediately. char_pinyin is cheap —
+	// it is already computed during ASR and stored; stripping it saves negligible
+	// bandwidth but breaks per-character pinyin display because the client never
+	// re-fetches lite-loaded segments with full data.
 	if lite {
 		for i := range segments {
 			for j := range segments[i].Words {
 				w := &segments[i].Words[j]
 				w.Senses = nil
 				w.CedictMeanings = nil
-				w.CharPinyin = nil
-				w.CharPinyinUncertain = nil
 				w.Trans = ""
 			}
 		}

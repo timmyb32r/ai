@@ -2418,8 +2418,9 @@ fun buildCharCells(words: List<WordEntry>, showPinyin: Boolean): List<CharCell> 
                     add(CharCell(ch.toString(), word, ""))
                     ci++
                 } else {
-                    val syll = if (pinyinAligned) charSyllables.getOrElse(ci) { "" }
-                        else if (ci == 0) pinyinToDiacritic(word.pinyin.lowercase()) else ""
+                    // Only show pinyin when we have per-character alignment — never
+                    // leak the whole-word pinyin onto a single character.
+                    val syll = if (pinyinAligned) charSyllables.getOrElse(ci) { "" } else ""
                     val unc = uncertainAt(ci)
                     if (ci + 1 < chars.size && isCJKPunctuation(chars[ci + 1])) {
                         // Char + following punct
