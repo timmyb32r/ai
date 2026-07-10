@@ -8,6 +8,9 @@ import com.crimobile.model.toMeta
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -99,7 +102,7 @@ class HttpSubtitleSource(
      * One poll cycle: fetch playlist → extract unseen .ts IDs → fetch metadata for each.
      * Returns true if the playlist fetch succeeded (even if no new segments).
      */
-    private fun pollOnce(serverUrl: String): Boolean {
+    private suspend fun pollOnce(serverUrl: String): Boolean {
         // 1. Fetch playlist.m3u8
         val playlistUrl = "$serverUrl/hls/playlist.m3u8"
         val playlistBody = fetchUrl(playlistUrl) ?: return false
@@ -132,43 +135,79 @@ class HttpSubtitleSource(
 
         Log.d(HTTP_TAG, "playlist has ${tsIds.size} .ts entries, fetching ${newIds.size} new (tail-bounded to $WINDOW_SIZE)")
 
-        // 5. Fetch metadata for each new ID. Accumulate into the map, but emit the
-        //    StateFlow only ONCE per poll (below) — not per segment — so a batch of
-        //    N new segments triggers a single recomposition instead of N.
+        // 5. Fetch metadata concurrently, newest segments first.
+        //
+        //    Cold-start strategy (first poll — seenIds was cleared):
+        //      Fetch only FIRST_CHUNK_SIZE segments (live edge) for instant
+        //      display, emit immediately, then backfill the rest in larger
+        //      concurrent batches without shifting visible text.
+        //
+        //    Newest-first means older segments are prepended to the sorted
+        //    list — since the viewport tracks the live edge (end of list),
+        //    items inserted at the beginning don't shift the visible area.
+        val idsToFetch = newIds.sortedByDescending { it } // newest first
         var fetched = 0
-        for (id in newIds) {
-            val metadataUrl = "$serverUrl/api/metadata/${segmentIdToFilename(id)}"
-            val jsonBody = fetchUrl(metadataUrl) ?: continue
+        var isFirstEmit = true
 
-            try {
-                val json = JSONObject(jsonBody)
-                val segment = SubtitleParser.parseSegment(json)
-                synchronized(lock) {
-                    segmentMap[segment.segment_id] = segment
-                    seenIds.add(segment.segment_id)
-                    // Cap at 200 entries — remove oldest (first inserted)
-                    while (segmentMap.size > 200) {
-                        val iterator = segmentMap.iterator()
-                        if (iterator.hasNext()) {
-                            val (oldestId, _) = iterator.next()
-                            iterator.remove()
-                            seenIds.remove(oldestId)
-                        }
+        // Chunk sizes: tiny first batch for instant display, then larger.
+        var remaining = idsToFetch
+        while (remaining.isNotEmpty()) {
+            val batchSize = if (isFirstEmit) FIRST_CHUNK_SIZE else CONCURRENT_FETCHES
+            val chunk = remaining.take(batchSize)
+            remaining = remaining.drop(batchSize)
+
+            // Fetch this batch concurrently.
+            val results = coroutineScope {
+                chunk.map { id ->
+                    async {
+                        val metadataUrl = "$serverUrl/api/metadata/${segmentIdToFilename(id)}"
+                        val jsonBody = fetchUrl(metadataUrl)
+                        if (jsonBody != null) {
+                            try {
+                                val json = JSONObject(jsonBody)
+                                val segment = SubtitleParser.parseSegment(json)
+                                synchronized(lock) {
+                                    segmentMap[segment.segment_id] = segment
+                                    seenIds.add(segment.segment_id)
+                                    while (segmentMap.size > 200) {
+                                        val iterator = segmentMap.iterator()
+                                        if (iterator.hasNext()) {
+                                            val (oldestId, _) = iterator.next()
+                                            iterator.remove()
+                                            seenIds.remove(oldestId)
+                                        }
+                                    }
+                                }
+                                segment
+                            } catch (e: Exception) {
+                                Log.w(HTTP_TAG, "parse error for id=$id: ${e.message}")
+                                null
+                            }
+                        } else null
                     }
+                }.awaitAll()
+            }
+
+            val batchFetched = results.count { it != null }
+            fetched += batchFetched
+
+            // Emit immediately after the first batch — UI gets live-edge text
+            // in one concurrent HTTP round-trip (~30ms).  Subsequent batches
+            // also emit so the segment list grows without the user noticing.
+            if (batchFetched > 0) {
+                synchronized(lock) {
+                    val segments = segmentMap.values.sortedBy { it.timeline_start_sec }
+                    _segments.value = segments
+                    _segmentsMeta.value = segments.map { it.toMeta() }
                 }
-                fetched++
-            } catch (e: Exception) {
-                Log.w(HTTP_TAG, "parse error for id=$id: ${e.message}")
+                if (isFirstEmit) {
+                    isFirstEmit = false
+                    Log.i(HTTP_TAG, "first batch: $batchFetched segments (live edge) in ~${batchSize}RTT — UI visible now")
+                }
             }
         }
 
-        // 6. Single emit per poll batch.
         if (fetched > 0) {
-            synchronized(lock) {
-                val segments = segmentMap.values.sortedBy { it.timeline_start_sec }
-                _segments.value = segments
-                _segmentsMeta.value = segments.map { it.toMeta() }
-            }
             Log.i(HTTP_TAG, "fetched $fetched new segments, total=${segmentMap.size}")
         }
         return true
@@ -223,6 +262,12 @@ class HttpSubtitleSource(
          * ~100 segments × ~3 s ≈ 5 min — comfortably covers the delay-seek band.
          */
         private const val WINDOW_SIZE = 100
+
+        /** Segments to fetch in the very first batch — just enough to fill one screen. */
+        private const val FIRST_CHUNK_SIZE = 3
+
+        /** Max concurrent metadata fetches per batch (used after the first batch). */
+        private const val CONCURRENT_FETCHES = 10
 
         /** Zero-padded 9-digit filename, e.g. segment ID 123 → "000000123.json". */
         fun segmentIdToFilename(id: Int): String {
