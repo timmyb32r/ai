@@ -107,8 +107,9 @@ class HttpSubtitleSource(
      * Called from CriViewModel.Play handler BEFORE player.play(url) so that
      * text appears on screen before audio starts.
      */
-    suspend fun fetchInitial(serverUrl: String, n: Int = 3): Boolean {
-        val batchUrl = "$serverUrl/api/segments/batch?last=$n"
+    suspend fun fetchInitial(serverUrl: String, n: Int = 3, lite: Boolean = true): Boolean {
+        val liteParam = if (lite) "&lite=true" else ""
+        val batchUrl = "$serverUrl/api/segments/batch?last=$n$liteParam"
         val jsonBody = withContext(Dispatchers.IO) {
             fetchUrl(batchUrl)
         } ?: return false
@@ -121,7 +122,9 @@ class HttpSubtitleSource(
                 val segment = SubtitleParser.parseSegment(arr.getJSONObject(i))
                 synchronized(lock) {
                     segmentMap[segment.segment_id] = segment
-                    seenIds.add(segment.segment_id)
+                    // Lite segments: don't mark as seen so background poll
+                    // re-fetches them with full dictionary data.
+                    if (!lite) seenIds.add(segment.segment_id)
                 }
                 segments.add(segment)
             }
@@ -132,7 +135,7 @@ class HttpSubtitleSource(
                     _segments.value = sorted
                     _segmentsMeta.value = sorted.map { it.toMeta() }
                 }
-                Log.i(HTTP_TAG, "fetchInitial: ${segments.size} segments via bulk, total=${segmentMap.size}")
+                Log.i(HTTP_TAG, "fetchInitial: ${segments.size} segments via bulk (lite=$lite), total=${segmentMap.size}")
             }
             true
         } catch (e: Exception) {
@@ -236,7 +239,11 @@ class HttpSubtitleSource(
 
             // Emit immediately after the first batch — UI gets live-edge text
             // in one concurrent HTTP round-trip (~30ms).  Subsequent batches
-            // also emit so the segment list grows without the user noticing.
+            // are spaced by BACKFILL_DELAY_MS to avoid GC storms (parsing 100
+            // SubtitleSegment objects simultaneously → 24MB GC → UI jank + audio glitch).
+            if (!isFirstEmit) {
+                kotlinx.coroutines.delay(BACKFILL_DELAY_MS)
+            }
             if (batchFetched > 0) {
                 synchronized(lock) {
                     val segments = segmentMap.values.sortedBy { it.timeline_start_sec }
@@ -311,6 +318,9 @@ class HttpSubtitleSource(
 
         /** Max concurrent metadata fetches per batch (used after the first batch). */
         private const val CONCURRENT_FETCHES = 10
+
+        /** Delay between backfill batch emissions — prevents GC storms. */
+        private const val BACKFILL_DELAY_MS = 80L
 
         /** Zero-padded 9-digit filename, e.g. segment ID 123 → "000000123.json". */
         fun segmentIdToFilename(id: Int): String {

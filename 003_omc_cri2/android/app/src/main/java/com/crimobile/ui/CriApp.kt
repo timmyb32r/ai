@@ -40,6 +40,7 @@ import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -858,6 +859,10 @@ private fun SubtitleList(
     val speedController = remember { KaraokeSpeedController() }
     val density = LocalDensity.current
 
+    // Grace period after cold start: suppress offscreen-jumps for 4s
+    // while backfill poll adds older segments and delay-seek settles.
+    var coldStartGraceUntil by remember { mutableLongStateOf(0L) }
+
     // O(1) lookup for live mode — full segments already in memory.
     val fullSegmentsById = remember(fullSegments) {
         fullSegments.associateBy { it.segment_id }
@@ -894,6 +899,14 @@ private fun SubtitleList(
     }
 
     // ── Main scroll loop (single owner) ───────────────────────────────────
+    // Extend cold-start grace period whenever the segment list grows
+    // (backfill poll adds older segments during the first few seconds).
+    LaunchedEffect(segmentsMeta.size) {
+        if (segmentsMeta.size > 3) {
+            coldStartGraceUntil = System.currentTimeMillis() + 4000
+        }
+    }
+
     LaunchedEffect(Unit) {
         var initSpeedPxPerSec = 0f
         var lastTickNanos = 0L
@@ -1039,10 +1052,19 @@ private fun SubtitleList(
 
                 return@withoutReadObservation when {
                     position == 0f || position == 1f -> {
-                        // Word off-screen — jump
-                        dbgReason = if (position == 0f) "offscreen-top→jump" else "offscreen-bottom→jump"
-                        dbgMultiplier = 0f; dbgRawPx = 0f
-                        ScrollResult.ScrollTo(activeIdx.coerceAtMost(segs.size - 1))
+                        val now = System.currentTimeMillis()
+                        if (now < coldStartGraceUntil) {
+                            // Grace period: smooth-scroll to active word (not jump).
+                            // Use ScrollTo — Compose LazyListState.animateScrollToItem()
+                            // is smooth, unlike programmatic scrollToItem() which jumps.
+                            dbgReason = "offscreen→grace-animate"
+                            dbgMultiplier = 0f; dbgRawPx = 0f
+                            ScrollResult.ScrollTo(activeIdx.coerceAtMost(segs.size - 1))
+                        } else {
+                            dbgReason = if (position == 0f) "offscreen-top→jump" else "offscreen-bottom→jump"
+                            dbgMultiplier = 0f; dbgRawPx = 0f
+                            ScrollResult.ScrollTo(activeIdx.coerceAtMost(segs.size - 1))
+                        }
                     }
                     position != null -> {
                         val multiplier = speedController.getMultiplier(position)
@@ -1116,18 +1138,42 @@ private fun SubtitleList(
                 // Try cache first (offline), then live fullSegments, then placeholder.
                 val seg = segmentCache?.getOrLoad(meta.segment_id)
                     ?: fullSegmentsById[meta.segment_id]
-                if (seg != null) {
+                if (seg != null && seg.words.isNotEmpty()) {
+                    // Full segment with dictionary data → full SegmentCard.
                     SegmentCard(seg, activeWord, showPinyin, fontSizeSp, showWordBoundaries, isTsBoundary, showAudioBoundaries, pinyinFontSizeSp, lastActiveWord) { word ->
                         onWordTapped(word, meta.segment_id)
                     }
                 } else {
-                    LaunchedEffect(meta.segment_id) {
-                        segmentCache?.getOrLoad(meta.segment_id)
+                    // Lite segment or cache miss — render FlowRow placeholder
+                    // visually identical to SegmentCard so the lite→full
+                    // upgrade is invisible to the user.
+                    if (seg == null) {
+                        LaunchedEffect(meta.segment_id) {
+                            segmentCache?.getOrLoad(meta.segment_id)
+                        }
                     }
-                    Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
-                        Text(meta.text_zh, color = TextPrimary, fontSize = fontSizeSp.sp)
-                        if (showPinyin) {
-                            Text(meta.text_pinyin, color = TextPinyin, fontSize = pinyinFontSizeSp.sp)
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = CardBg),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            @OptIn(ExperimentalLayoutApi::class)
+                            FlowRow(modifier = Modifier.fillMaxWidth()) {
+                                val pinyinParts = meta.text_pinyin.split(" ")
+                                var pidx = 0
+                                meta.text_zh.forEach { char ->
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.padding(horizontal = 1.5.dp)) {
+                                        if (showPinyin) {
+                                            val cp = if (pidx < pinyinParts.size) pinyinParts[pidx] else ""
+                                            Text(cp, color = TextPinyin, fontSize = pinyinFontSizeSp.sp)
+                                            pidx++
+                                        }
+                                        Text(char.toString(), color = TextPrimary, fontSize = fontSizeSp.sp)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1135,8 +1181,22 @@ private fun SubtitleList(
             }
         }
 
-        // Draggable amber scroll thumb.
-        ScrollThumb(listState, modifier = Modifier.align(Alignment.TopEnd).padding(end = 4.dp))
+        // Draggable amber scroll thumb — hidden for the first 5s of cold start,
+        // then fades in over 1s so it doesn't jump during backfill/seek settling.
+        val scrollThumbAlpha by animateFloatAsState(
+            targetValue = if (System.currentTimeMillis() > coldStartGraceUntil) 1f else 0f,
+            animationSpec = tween(1000),
+            label = "scrollThumbFade"
+        )
+        if (scrollThumbAlpha > 0.01f) {
+            Box(modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(end = 4.dp)
+                .graphicsLayer { alpha = scrollThumbAlpha }
+            ) {
+                ScrollThumb(listState, modifier = Modifier)
+            }
+        }
     }
 }
 

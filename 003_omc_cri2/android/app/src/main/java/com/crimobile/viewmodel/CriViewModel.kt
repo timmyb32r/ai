@@ -373,7 +373,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         }
 
                         // ── One-shot delay seek: rewind player behind live edge ──
-                        if (!initialDelaySeekDone && playerMs > 0 && segments.size >= MIN_BUFFER_FOR_DELAY_SEEK) {
+                        // Skip when we have enough data (cold-start bulk fetch)
+                        // to avoid disrupting playback + scroll for 600+ ms.
+                        if (!initialDelaySeekDone && playerMs > 0 && segments.size >= MIN_BUFFER_FOR_DELAY_SEEK
+                            && segments.size < 20) {  // <20 = trickle-poll, needs seek; >=20 = bulk-fetched, skip
                             val newest = segments.last().timeline_start_sec
                             val oldest = segments.first().timeline_start_sec
                             val availableSec = newest - oldest
@@ -433,20 +436,21 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             Log.i(TIMING, "event=play_tapped elapsed_ms=0")
 
                             if (subtitleSource is com.crimobile.subtitles.HttpSubtitleSource) {
-                                // Cold-start: fetch initial data → show text → THEN play audio.
+                                // Cold-start: show loading IMMEDIATELY, fetch data, then play.
+                                _state.value = _state.value.copy(playbackState = PlaybackState.LOADING)
                                 viewModelScope.launch {
                                     val t1 = System.nanoTime()
                                     Log.i(TIMING, "event=fetch_initial_start elapsed_ms=${(t1 - coldStartT0) / 1_000_000}")
+                                    // Fetch 100 lite segments (chars+pinyin+timing, no dictionary).
+                                    // Renders final-quality FlowRow instantly. Per-word dictionary
+                                    // data arrives via background poll and upgrades seamlessly.
                                     val ok = (subtitleSource as com.crimobile.subtitles.HttpSubtitleSource)
-                                        .fetchInitial(action.serverUrl, 3)
+                                        .fetchInitial(action.serverUrl, 100, lite = true)
                                     val t3 = System.nanoTime()
                                     Log.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(t3 - coldStartT0) / 1_000_000}")
-                                    // Data is in state — UI renders text NOW.
-                                    // Start audio AFTER text is visible.
                                     player.play(url)
                                     val t5 = System.nanoTime()
                                     Log.i(TIMING, "event=player_play_called elapsed_ms=${(t5 - coldStartT0) / 1_000_000}")
-                                    // Continue background polling for additional segments.
                                     subtitleSource.connect(action.serverUrl)
                                 }
                             } else {
