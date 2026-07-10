@@ -140,7 +140,18 @@ class ExoRadioPlayer(
                     .build()
             )
             .setLiveConfiguration(
-                MediaItem.LiveConfiguration.Builder().setMaxPlaybackSpeed(1.02f).setMinPlaybackSpeed(0.98f).build()
+                // targetOffset makes ExoPlayer START at (live edge − offset) and hold
+                // it there via the min/max speed band. Subtitles are in lockstep with
+                // audio, so any position inside the window has matching metadata; a
+                // ~20s offset leaves a comfortable band of upcoming subtitle text below
+                // the active word for the karaoke scroll. The offset is relative to the
+                // live edge, so it stays inside the seekable window on young servers too
+                // (ExoPlayer clamps to the window start when the archive is shorter).
+                MediaItem.LiveConfiguration.Builder()
+                    .setTargetOffsetMs(LIVE_OFFSET_MS)
+                    .setMaxPlaybackSpeed(1.02f)
+                    .setMinPlaybackSpeed(0.98f)
+                    .build()
             ).build())
         player.prepare()
         player.play()
@@ -198,5 +209,7 @@ class ExoRadioPlayer(
     companion object {
         private const val MAX_RETRIES = 3
         private const val RETRY_BASE_DELAY_MS = 1000L  // 1s, 2s, 4s
+        /** Start playback this far behind the live edge (subtitles are in lockstep). */
+        private const val LIVE_OFFSET_MS = 20_000L
     }
 }

@@ -277,11 +277,19 @@ func (s *Server) handleBatchSegments(w http.ResponseWriter, r *http.Request) {
 		segments = []models.TranscriptSegment{}
 	}
 
-	// Lite mode: strip dictionary data — keep only characters, pinyin, and timing.
-	// Cuts JSON size by ~70% and eliminates per-word JSON parsing on the client.
+	// Lite mode: strip only dictionary data (senses, cedict, char_pinyin, translation).
+	// Keep word timing (start_sec, end_sec, text, pinyin) so the client can still
+	// highlight the active word before the background poll delivers full dictionary data.
 	if lite {
 		for i := range segments {
-			segments[i].Words = nil
+			for j := range segments[i].Words {
+				w := &segments[i].Words[j]
+				w.Senses = nil
+				w.CedictMeanings = nil
+				w.CharPinyin = nil
+				w.CharPinyinUncertain = nil
+				w.Trans = ""
+			}
 		}
 	}
 

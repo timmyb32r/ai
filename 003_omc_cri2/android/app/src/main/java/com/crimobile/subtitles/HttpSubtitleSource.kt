@@ -65,7 +65,10 @@ class HttpSubtitleSource(
     override fun connect(serverUrl: String) {
         Log.i(HTTP_TAG, "connecting to $serverUrl (poll=${pollIntervalMs}ms)")
         _connected.value = ConnectionStatus.CONNECTING
-        seenIds.clear()
+        // NOTE: do NOT clear seenIds here — fetchInitial() has already seeded it
+        // with the newest segments. Clearing would make the first poll treat the
+        // whole tail as "new" and re-fetch ~100 segments, flooding the cold-start
+        // window with recompositions and list churn (the old "jumping" bug).
 
         pollJob?.cancel()
         pollJob = scope.launch {
@@ -122,9 +125,9 @@ class HttpSubtitleSource(
                 val segment = SubtitleParser.parseSegment(arr.getJSONObject(i))
                 synchronized(lock) {
                     segmentMap[segment.segment_id] = segment
-                    // Lite segments: don't mark as seen so background poll
-                    // re-fetches them with full dictionary data.
-                    if (!lite) seenIds.add(segment.segment_id)
+                    // Lite segments now keep word timing — background poll
+                    // only fetches NEW segments (beyond the 30 we already have).
+                    seenIds.add(segment.segment_id)
                 }
                 segments.add(segment)
             }
@@ -172,14 +175,20 @@ class HttpSubtitleSource(
             tsIds
         }
 
-        // 4. Within the tail, find IDs we haven't fetched yet
+        // 4. Fill-forward: fetch every playlist id we don't already have, down to
+        //    (but not older than) our oldest known segment. This fills the path
+        //    ahead of playback contiguously and patches any transient hole, while
+        //    never prepending segments older than what fetchInitial loaded (which
+        //    would churn the list and shift the active index). On a fresh connect
+        //    (seenIds empty ⇒ oldest = MIN) this reduces to "take the whole tail".
         val newIds = synchronized(lock) {
-            tail.filter { it !in seenIds }
+            val oldestSeen = seenIds.minOrNull() ?: Int.MIN_VALUE
+            tail.filter { it >= oldestSeen && it !in seenIds }
         }
 
         if (newIds.isEmpty()) return true
 
-        Log.d(HTTP_TAG, "playlist has ${tsIds.size} .ts entries, fetching ${newIds.size} new (tail-bounded to $WINDOW_SIZE)")
+        Log.d(HTTP_TAG, "playlist has ${tsIds.size} .ts entries, fetching ${newIds.size} new (fill-forward, tail-bounded to $WINDOW_SIZE)")
 
         // 5. Fetch metadata concurrently, newest segments first.
         //

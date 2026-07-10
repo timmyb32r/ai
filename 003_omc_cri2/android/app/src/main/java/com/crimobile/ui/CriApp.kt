@@ -88,6 +88,11 @@ private val TextPrimary = Color.White
 private val TextSecondary = Color(0xFF888888)
 private val TextPinyin = Color(0xFFAAAAAA)
 
+// Vertical reading line for the active word (fraction from top). Matches the
+// equilibrium point of KaraokeSpeedController so init placement and steady-state
+// scrolling agree — the word settles exactly where it starts.
+private const val TARGET_POSITION = 0.40f
+
 // Scroll mode FSM — lives inside the scroll loop; drag-mode is set by a separate
 // LaunchedEffect that only *collects* interactions (never calls scroll*).
 // AUTO:  smooth auto-scroll active (default)
@@ -859,10 +864,6 @@ private fun SubtitleList(
     val speedController = remember { KaraokeSpeedController() }
     val density = LocalDensity.current
 
-    // Grace period after cold start: suppress offscreen-jumps for 4s
-    // while backfill poll adds older segments and delay-seek settles.
-    var coldStartGraceUntil by remember { mutableLongStateOf(0L) }
-
     // O(1) lookup for live mode — full segments already in memory.
     val fullSegmentsById = remember(fullSegments) {
         fullSegments.associateBy { it.segment_id }
@@ -899,14 +900,6 @@ private fun SubtitleList(
     }
 
     // ── Main scroll loop (single owner) ───────────────────────────────────
-    // Extend cold-start grace period whenever the segment list grows
-    // (backfill poll adds older segments during the first few seconds).
-    LaunchedEffect(segmentsMeta.size) {
-        if (segmentsMeta.size > 3) {
-            coldStartGraceUntil = System.currentTimeMillis() + 4000
-        }
-    }
-
     LaunchedEffect(Unit) {
         var initSpeedPxPerSec = 0f
         var lastTickNanos = 0L
@@ -914,7 +907,12 @@ private fun SubtitleList(
         var accumulatedPx = 0f
         var lastLogNanos = 0L
         var loopIterations = 0L
-        var wasPaused = false
+        // One-time cold-start centering. NOT keyed off lastTickNanos: during the
+        // initial buffering the loop runs in PAUSED and would consume a
+        // lastTickNanos==0 trigger before playback ever reaches AUTO, so the
+        // 40% placement would silently never happen. A dedicated flag survives
+        // buffering and fires on the first AUTO tick that has an active word.
+        var initialized = false
 
         // ── Diagnostics captured each tick, surfaced in the 2s heartbeat ──
         var dbgPosition: Float? = null      // active word vertical position [0,1] or null
@@ -930,8 +928,7 @@ private fun SubtitleList(
             // ── Recenter: non-blocking channel poll (Invariant #2) ──
             if (recenterChannel.tryReceive().getOrNull() != null) {
                 scrollMode.value = ScrollMode.AUTO
-                // Force re-centering on next pass
-                lastTickNanos = 0L  // triggers re-init below
+                initialized = false  // re-run the 40% centering on next AUTO tick
                 Log.i("CRIRadio:scroll", "RECENTER → AUTO")
             }
 
@@ -948,14 +945,14 @@ private fun SubtitleList(
             val shouldPause = !playing || pronouncing
             if (shouldPause && mode == ScrollMode.AUTO) {
                 scrollMode.value = ScrollMode.PAUSED
-                wasPaused = true
-                lastTickNanos = 0L
                 Log.d("CRIRadio:scroll", "FSM → PAUSED")
             }
             if (!shouldPause && mode == ScrollMode.PAUSED) {
                 scrollMode.value = ScrollMode.AUTO
-                lastTickNanos = 0L  // force re-center on resume
-                Log.i("CRIRadio:scroll", "FSM PAUSED → AUTO (resume + recenter)")
+                // Resume smooth scroll WITHOUT re-centering. Buffering blips during
+                // cold start must not yank the list. Recenter is explicit (button)
+                // or automatic only when the word actually leaves the screen.
+                Log.i("CRIRadio:scroll", "FSM PAUSED → AUTO (resume, no recenter)")
             }
             val currentMode = scrollMode.value
 
@@ -1020,9 +1017,14 @@ private fun SubtitleList(
                     return@withoutReadObservation ScrollResult.NoOp
                 }
 
-                // ── Re-init: center word ~25% from top (jump allowed) ──
-                if (lastTickNanos == 0L || wasPaused) {
-                    val offsetItems = (viewportHeightPx * 0.25f / (visibleItems.first().size.toFloat())).toInt()
+                // ── Init / recenter: place active word at the ~40% reading line ──
+                // Runs ONCE at cold start (first AUTO tick with an active word) and
+                // on explicit Recenter (which clears `initialized`). NOT on
+                // pause/resume — resuming continues the smooth scroll from where
+                // it was.
+                if (!initialized) {
+                    val lineH = visibleItems.first().size.toFloat()
+                    val offsetItems = if (lineH > 0f) (viewportHeightPx * TARGET_POSITION / lineH).toInt() else 0
                     val targetIdx = (activeIdx - offsetItems).coerceAtLeast(0)
 
                     // Compute init speed
@@ -1039,6 +1041,7 @@ private fun SubtitleList(
                             initSpeedPxPerSec = totalPx / deltaSec
                         }
                     }
+                    initialized = true
                     Log.i("CRIRadio:scroll",
                         "INIT segs=${segs.size} activeIdx=$activeIdx targetIdx=$targetIdx initSpeed=%.1f".format(initSpeedPxPerSec))
                     return@withoutReadObservation ScrollResult.ScrollTo(targetIdx)
@@ -1052,19 +1055,15 @@ private fun SubtitleList(
 
                 return@withoutReadObservation when {
                     position == 0f || position == 1f -> {
-                        val now = System.currentTimeMillis()
-                        if (now < coldStartGraceUntil) {
-                            // Grace period: smooth-scroll to active word (not jump).
-                            // Use ScrollTo — Compose LazyListState.animateScrollToItem()
-                            // is smooth, unlike programmatic scrollToItem() which jumps.
-                            dbgReason = "offscreen→grace-animate"
-                            dbgMultiplier = 0f; dbgRawPx = 0f
-                            ScrollResult.ScrollTo(activeIdx.coerceAtMost(segs.size - 1))
-                        } else {
-                            dbgReason = if (position == 0f) "offscreen-top→jump" else "offscreen-bottom→jump"
-                            dbgMultiplier = 0f; dbgRawPx = 0f
-                            ScrollResult.ScrollTo(activeIdx.coerceAtMost(segs.size - 1))
-                        }
+                        // Active word left the screen (manual scroll, seek, or a
+                        // long silence gap) → re-place it at the 40% reading line,
+                        // the same target as init so it lands where it belongs.
+                        val lineH = visibleItems.first().size.toFloat()
+                        val offItems = if (lineH > 0f) (viewportHeightPx * TARGET_POSITION / lineH).toInt() else 0
+                        val targetIdx = (activeIdx - offItems).coerceIn(0, segs.size - 1)
+                        dbgReason = if (position == 0f) "offscreen-top→recenter" else "offscreen-bottom→recenter"
+                        dbgMultiplier = 0f; dbgRawPx = 0f
+                        ScrollResult.ScrollTo(targetIdx)
                     }
                     position != null -> {
                         val multiplier = speedController.getMultiplier(position)
@@ -1121,7 +1120,6 @@ private fun SubtitleList(
             }
 
             lastTickNanos = tickNanos
-            wasPaused = shouldPause
         }
     }
 
@@ -1181,21 +1179,13 @@ private fun SubtitleList(
             }
         }
 
-        // Draggable amber scroll thumb — hidden for the first 5s of cold start,
-        // then fades in over 1s so it doesn't jump during backfill/seek settling.
-        val scrollThumbAlpha by animateFloatAsState(
-            targetValue = if (System.currentTimeMillis() > coldStartGraceUntil) 1f else 0f,
-            animationSpec = tween(1000),
-            label = "scrollThumbFade"
-        )
-        if (scrollThumbAlpha > 0.01f) {
-            Box(modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(end = 4.dp)
-                .graphicsLayer { alpha = scrollThumbAlpha }
-            ) {
-                ScrollThumb(listState, modifier = Modifier)
-            }
+        // Draggable amber scroll thumb. The cold start is now deterministic
+        // (no backfill/seek settling), so the thumb is shown from the start.
+        Box(modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(end = 4.dp)
+        ) {
+            ScrollThumb(listState, modifier = Modifier)
         }
     }
 }

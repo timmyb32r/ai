@@ -141,7 +141,6 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var lastSyncLog = 0L
     private var lastActiveSegId = -1
     private var lastActiveWord: WordEntry? = null
-    private var initialDelaySeekDone = false  // one-shot seek behind live edge after connect
     private var coldStartT0: Long = 0  // timing: System.nanoTime() when Play was tapped
 
     // ── Offline mode ───────────────────────────────────────────────────
@@ -224,7 +223,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 if (isOffline) {
                     // ── Offline mode: lightweight SegmentMeta + lazy SegmentCache ──
                     val segmentsMeta = _state.value.segmentsMeta
-                    if (segmentsMeta.isNotEmpty()) {
+                    if (segmentsMeta.isNotEmpty()
+                        && _state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
                         val engine = SubtitleSyncEngine(segmentsMeta)
                         val activePlayer = offlinePlayer
                         if (activePlayer == null) { delay(100); continue }
@@ -313,6 +313,9 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         val activePlayer = if (::player.isInitialized) player else null
                         if (activePlayer == null) { delay(100); continue }
                         val playerMs = activePlayer.currentTimelineMs.value
+                        // Player not READY yet (no timeline) → keep the cold-start
+                        // pre-positioned active word instead of wiping it to null.
+                        if (playerMs <= 0L) { delay(100); continue }
                         val playerSec = playerMs / 1000.0
 
                         val activeSegmentMeta = engine.findActiveSegment(playerMs)
@@ -372,22 +375,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                 "(player ${if (last != null && playerSec > last.timeline_end_sec) "AHEAD of" else if (first != null && playerSec < first.timeline_start_sec) "BEHIND" else "inside?"} window)")
                         }
 
-                        // ── One-shot delay seek: rewind player behind live edge ──
-                        // Skip when we have enough data (cold-start bulk fetch)
-                        // to avoid disrupting playback + scroll for 600+ ms.
-                        if (!initialDelaySeekDone && playerMs > 0 && segments.size >= MIN_BUFFER_FOR_DELAY_SEEK
-                            && segments.size < 20) {  // <20 = trickle-poll, needs seek; >=20 = bulk-fetched, skip
-                            val newest = segments.last().timeline_start_sec
-                            val oldest = segments.first().timeline_start_sec
-                            val availableSec = newest - oldest
-                            if (availableSec > 5.0) {
-                                val targetDelay = minOf(DELAY_TARGET_SEC.toDouble(), availableSec * 0.8)
-                                val seekTargetMs = ((newest - targetDelay) * 1000).toLong()
-                                player.seekTo(seekTargetMs)
-                                initialDelaySeekDone = true
-                                Log.i(VM, "⏪ DELAY seek → ${targetDelay.toInt()}s behind live (buffer=${availableSec.toInt()}s, seekTarget=${"%.1f".format(newest - targetDelay)}s)")
-                            }
-                        }
+                        // Audio starts at (live edge − target offset) and stays there;
+                        // subtitles are in lockstep, so no runtime delay-seek is needed.
                     }
                 }
                 delay(100)
@@ -431,27 +420,27 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         } else {
                             Log.i(VM, "play new stream")
                             currentServerUrl = action.serverUrl
-                            initialDelaySeekDone = false
                             coldStartT0 = System.nanoTime()
                             Log.i(TIMING, "event=play_tapped elapsed_ms=0")
 
                             if (subtitleSource is com.crimobile.subtitles.HttpSubtitleSource) {
-                                // Cold-start: show loading IMMEDIATELY, fetch data, then play.
+                                // ── Cold start ──
+                                // 1) one batch request → text on screen immediately
+                                // 2) player.play() starts at (live edge − target offset);
+                                //    audio & subtitles are in lockstep, so the played
+                                //    position always has matching metadata
+                                // 3) UI derives the active word from the REAL player
+                                //    position (see sync loop) — no pre-positioning, no jump
+                                // 4) fill-forward poll starts immediately (no delay, no flood)
                                 _state.value = _state.value.copy(playbackState = PlaybackState.LOADING)
                                 viewModelScope.launch {
-                                    val t1 = System.nanoTime()
-                                    Log.i(TIMING, "event=fetch_initial_start elapsed_ms=${(t1 - coldStartT0) / 1_000_000}")
-                                    // Fetch 100 lite segments (chars+pinyin+timing, no dictionary).
-                                    // Renders final-quality FlowRow instantly. Per-word dictionary
-                                    // data arrives via background poll and upgrades seamlessly.
-                                    val ok = (subtitleSource as com.crimobile.subtitles.HttpSubtitleSource)
-                                        .fetchInitial(action.serverUrl, 100, lite = true)
-                                    val t3 = System.nanoTime()
-                                    Log.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(t3 - coldStartT0) / 1_000_000}")
+                                    val http = subtitleSource as com.crimobile.subtitles.HttpSubtitleSource
+                                    Log.i(TIMING, "event=fetch_initial_start elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                    val ok = http.fetchInitial(action.serverUrl, INITIAL_BATCH, lite = true)
+                                    Log.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
                                     player.play(url)
-                                    val t5 = System.nanoTime()
-                                    Log.i(TIMING, "event=player_play_called elapsed_ms=${(t5 - coldStartT0) / 1_000_000}")
-                                    subtitleSource.connect(action.serverUrl)
+                                    Log.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                    http.connect(action.serverUrl)
                                 }
                             } else {
                                 // SSE source: push-based, fast — connect and play immediately.
@@ -713,7 +702,6 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     subtitleSource.connect(currentServerUrl)
                     player.play(hlsUrl)
                     player.pause()
-                    initialDelaySeekDone = false
                 }
                 // Clear stale offline subtitle state. Otherwise the sync loop would
                 // briefly compute delay = livePlayerSec − lastOfflineSegment.end
@@ -909,8 +897,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val VM = "CRIRadio:vm"
         private const val TIMING = "CRIRadio:timing"
-        private const val DELAY_TARGET_SEC = 45     // target buffer behind live edge
-        private const val MIN_BUFFER_FOR_DELAY_SEEK = 5  // segments needed before initial seek
+        /** Segments fetched in the cold-start batch (word timing + pinyin, no dict). */
+        private const val INITIAL_BATCH = 40
     }
 
     override fun onCleared() {

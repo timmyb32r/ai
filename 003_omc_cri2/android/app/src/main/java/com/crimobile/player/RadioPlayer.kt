@@ -18,7 +18,7 @@ interface RadioPlayer {
     /** True when playback has fallen behind the live DVR window. */
     val behindLiveWindow: StateFlow<Boolean>
 
-    /** Start playing the HLS stream at the given URL. */
+    /** Start playing the HLS stream at the given URL (live edge − target offset). */
     fun play(hlsUrl: String)
 
     /** Pause playback, preserving position for resume. */
