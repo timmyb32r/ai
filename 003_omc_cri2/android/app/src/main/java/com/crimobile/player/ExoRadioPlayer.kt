@@ -1,6 +1,5 @@
 package com.crimobile.player
 
-import android.content.Context
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -8,7 +7,6 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.crimobile.model.PlaybackState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,11 +20,9 @@ import kotlinx.coroutines.launch
 
 private const val TAG = "CRIRadio:player"
 
-class ExoRadioPlayer(context: Context) : RadioPlayer {
-
-    private val player: ExoPlayer = ExoPlayer.Builder(context)
-        .setMediaSourceFactory(DefaultMediaSourceFactory(context).setLiveTargetOffsetMs(3000))
-        .build()
+class ExoRadioPlayer(
+    private val player: ExoPlayer  // injected — PlayerService owns the ExoPlayer for MediaSession
+) : RadioPlayer {
 
     private val scope = CoroutineScope(Dispatchers.Main)
 

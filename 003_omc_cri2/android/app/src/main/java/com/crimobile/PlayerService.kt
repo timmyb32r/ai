@@ -7,13 +7,14 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.support.v4.media.MediaMetadataCompat
-import android.support.v4.media.session.MediaSessionCompat
-import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.crimobile.model.PlaybackState
@@ -26,20 +27,24 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 /**
- * Foreground service that owns the ExoRadioPlayer.
- * Audio continues when the screen turns off because the service
- * is in the foreground (on-going notification), which prevents
- * the system from killing the process.
+ * Foreground service that owns the ExoPlayer and the Media3 session.
  *
- * The media widget appears in the notification shade via
- * [NotificationCompat.MediaStyle] + [MediaSessionCompat].
+ * The **single** ExoPlayer is shared by both [ExoRadioPlayer] (audio)
+ * and [MediaSession] (metadata / token for the notification widget).
+ * This unification is what makes the media widget appear — the platform
+ * receives the **same** session token via [onGetSession] and the
+ * notification's [NotificationCompat.MediaStyle].
+ *
+ * Audio continues when the screen turns off because:
+ * 1. The service is in the foreground (on-going notification → process stays alive).
+ * 2. [C.WAKE_MODE_NETWORK] keeps the CPU + Wi-Fi awake during playback.
  */
 @UnstableApi
 class PlayerService : MediaSessionService() {
 
+    private lateinit var exoPlayer: ExoPlayer
     private lateinit var player: ExoRadioPlayer
     private lateinit var mediaSession: MediaSession
-    private lateinit var mediaSessionCompat: MediaSessionCompat
     private var stateCollectJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main)
 
@@ -48,48 +53,37 @@ class PlayerService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        Log.i(TAG, "onCreate — creating player and MediaSession")
+        Log.i(TAG, "onCreate — creating ExoPlayer and MediaSession")
 
-        // 1. Create the radio player (owns the real ExoPlayer)
-        player = ExoRadioPlayer(applicationContext)
+        // 1. Single ExoPlayer — used for both audio playback and MediaSession.
+        exoPlayer = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(this).setLiveTargetOffsetMs(3000)
+            )
+            .build()
+            .apply {
+                setWakeMode(C.WAKE_MODE_NETWORK) // keep CPU + Wi-Fi awake
+                // Preload metadata so the media widget shows "CRI Radio" immediately.
+                setMediaItem(
+                    MediaItem.Builder()
+                        .setMediaId("cri_radio")
+                        .setMediaMetadata(
+                            MediaMetadata.Builder()
+                                .setTitle("CRI Radio")
+                                .setArtist("Live Broadcast")
+                                .build()
+                        )
+                        .build()
+                )
+            }
+
+        // 2. Radio player wraps the same ExoPlayer.
+        player = ExoRadioPlayer(exoPlayer)
         RadioPlayerHolder.setPlayer(player)
 
-        // 2. Media3 MediaSession — required by the framework for onGetSession.
-        val sessionPlayer = ExoPlayer.Builder(this).build()
-        sessionPlayer.playWhenReady = false
-
-        mediaSession = MediaSession.Builder(this, sessionPlayer).build()
-
-        // 3. MediaSessionCompat — provides the token for NotificationCompat.setMediaSession()
-        //    so the system recognises this as a media notification and shows the widget.
-        mediaSessionCompat = MediaSessionCompat(this, "CRIRadio").apply {
-            setFlags(
-                MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
-                    or MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
-            )
-            setCallback(object : MediaSessionCompat.Callback() {
-                override fun onPlay() = player.resume()
-                override fun onPause() = player.pause()
-            })
-            setMetadata(
-                MediaMetadataCompat.Builder()
-                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "CRI Radio")
-                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "Live Broadcast")
-                    .build()
-            )
-            // Set initial playback state so the media widget shows immediately
-            setPlaybackState(
-                PlaybackStateCompat.Builder()
-                    .setState(PlaybackStateCompat.STATE_STOPPED, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
-                    .setActions(
-                        PlaybackStateCompat.ACTION_PLAY
-                            or PlaybackStateCompat.ACTION_PAUSE
-                            or PlaybackStateCompat.ACTION_STOP
-                    )
-                    .build()
-            )
-            isActive = true
-        }
+        // 3. Media3 session — the single session used by both the platform
+        //    (onGetSession) and the notification widget (getSessionCompatToken).
+        mediaSession = MediaSession.Builder(this, exoPlayer).build()
 
         // 4. Notification channel (Android 8+)
         createNotificationChannel()
@@ -108,7 +102,6 @@ class PlayerService : MediaSessionService() {
                 val isPlaying = state == PlaybackState.PLAYING
                 if (isPlaying != lastIsPlaying) {
                     lastIsPlaying = isPlaying
-                    updateMediaSessionState(isPlaying)
                     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                     nm.notify(NOTIFICATION_ID, buildNotification(isPlaying))
                 }
@@ -125,8 +118,14 @@ class PlayerService : MediaSessionService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_PLAY -> player.resume()
-            ACTION_PAUSE -> player.pause()
+            ACTION_PLAY -> {
+                Log.i(TAG, "onStartCommand ACTION_PLAY")
+                player.resume()
+            }
+            ACTION_PAUSE -> {
+                Log.i(TAG, "onStartCommand ACTION_PAUSE")
+                player.pause()
+            }
         }
         return START_NOT_STICKY
     }
@@ -136,19 +135,18 @@ class PlayerService : MediaSessionService() {
         stateCollectJob?.cancel()
         player.release()
         RadioPlayerHolder.clearPlayer()
-        mediaSessionCompat.release()
         mediaSession.release()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
-    // ── Notification ──────────────────────────────────────────────
+    // ── Notification ──────────────────────────────────────────────────
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
             "CRI Radio",
-            NotificationManager.IMPORTANCE_LOW  // media playback — no sound, shows in shade
+            NotificationManager.IMPORTANCE_LOW  // media — no sound, shows in shade
         ).apply {
             description = "Ongoing playback notification"
             setShowBadge(false)
@@ -165,7 +163,6 @@ class PlayerService : MediaSessionService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Toggle play/pause via a service intent
         val toggleAction = if (isPlaying) ACTION_PAUSE else ACTION_PLAY
         val toggleIcon = if (isPlaying) android.R.drawable.ic_media_pause
         else android.R.drawable.ic_media_play
@@ -185,30 +182,14 @@ class PlayerService : MediaSessionService() {
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(contentIntent)
             .setOngoing(true)
-            // ── Media widget: MediaStyle carries the session token ──
+            // ── Media widget: same session token that onGetSession() returns ──
             .setStyle(
                 androidx.media.app.NotificationCompat.MediaStyle()
-                    .setMediaSession(mediaSessionCompat.sessionToken)
+                    .setMediaSession(mediaSession.getSessionCompatToken())
                     .setShowActionsInCompactView(0)
             )
-            // ── Action button ──
             .addAction(toggleIcon, toggleLabel, togglePending)
             .build()
-    }
-
-    private fun updateMediaSessionState(isPlaying: Boolean) {
-        val state = if (isPlaying) PlaybackStateCompat.STATE_PLAYING
-        else PlaybackStateCompat.STATE_PAUSED
-        mediaSessionCompat.setPlaybackState(
-            PlaybackStateCompat.Builder()
-                .setState(state, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
-                .setActions(
-                    PlaybackStateCompat.ACTION_PLAY
-                        or PlaybackStateCompat.ACTION_PAUSE
-                        or PlaybackStateCompat.ACTION_STOP
-                )
-                .build()
-        )
     }
 
     companion object {
