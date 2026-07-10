@@ -28,6 +28,10 @@ type MetadataStore interface {
 	// Cleanup removes metadata files older than ttl.
 	Cleanup(ttl time.Duration) (deleted int, err error)
 
+	// StartCleanupLoop periodically calls Cleanup(ttl) at the given interval.
+	// Bounds on-disk metadata to ~ttl worth of segments.
+	StartCleanupLoop(ctx context.Context, ttl, interval time.Duration)
+
 	// Watch returns a channel that receives a SegmentRef for each new metadata file.
 	// Used by the SSE handler to push new segments to clients.
 	Watch(ctx context.Context) (<-chan models.SegmentRef, error)

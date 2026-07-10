@@ -99,6 +99,11 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	go logStderr(stderrPipe, p.Logger, "ffmpeg-hls")
 	p.Logger.Info("pipeline", "hls_encoder_started")
 
+	// Periodically clean up old metadata to bound disk usage.
+	// 6h TTL = 2× the DVR window (3h at hls_list_size=3600 × 3s/segment).
+	// 5min interval = cleanup runs ~2× per index flush cycle.
+	p.Store.StartCleanupLoop(ctx, 6*time.Hour, 5*time.Minute)
+
 	pcmCh, err := p.Ingestor.Start(ctx)
 	if err != nil {
 		return err

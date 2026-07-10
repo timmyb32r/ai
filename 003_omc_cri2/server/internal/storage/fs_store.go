@@ -25,6 +25,11 @@ type fsStore struct {
 
 	mu       sync.RWMutex
 	watchers []chan models.SegmentRef
+
+	// Throttle index.json writes: only flush every N segments to avoid
+	// rewriting a multi-MB file on every 3-second segment.
+	idxWriteInterval int
+	idxWritesSince   int
 }
 
 // New creates a new filesystem-backed MetadataStore.
@@ -39,6 +44,10 @@ func New(outputDir string) (MetadataStore, error) {
 		metaDir:   metaDir,
 		indexPath: filepath.Join(metaDir, indexFile),
 		watchers:  make([]chan models.SegmentRef, 0),
+		// Write index.json every 100 segments instead of every segment.
+		// At 3s/segment this is ~every 5 minutes, reducing disk writes
+		// by 99% while keeping the index fresh enough for API consumers.
+		idxWriteInterval: 100,
 	}, nil
 }
 
@@ -117,8 +126,15 @@ func (s *fsStore) ReadRange(startSec, endSec float64) ([]models.TranscriptSegmen
 }
 
 func (s *fsStore) ReadIndex() (*models.SegmentIndex, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// If we have unflushed writes, the on-disk index.json is stale.
+	// Rebuild it from individual segment files (always current).
+	if s.idxWritesSince > 0 {
+		s.rebuildIndex()
+		s.idxWritesSince = 0
+	}
 
 	data, err := os.ReadFile(s.indexPath)
 	if err != nil {
@@ -233,6 +249,10 @@ func (s *fsStore) Close() error {
 
 // updateIndex reads the current index, adds/updates the given ref, and writes it back.
 // Must be called with s.mu held (write lock).
+//
+// To avoid O(n²) disk I/O (rewriting a multi-MB file every 3 seconds),
+// the index is only flushed to disk every [idxWriteInterval] segments.
+// On crash, missing entries are recovered by rebuildIndex().
 func (s *fsStore) updateIndex(ref models.SegmentRef) error {
 	idx, err := s.readIndexLocked()
 	if err != nil && !os.IsNotExist(err) {
@@ -262,6 +282,19 @@ func (s *fsStore) updateIndex(ref models.SegmentRef) error {
 
 	idx.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
+	// Throttle: only write to disk every idxWriteInterval segments.
+	s.idxWritesSince++
+	if s.idxWritesSince < s.idxWriteInterval {
+		return nil
+	}
+	s.idxWritesSince = 0
+
+	return s.writeIndexLocked(idx)
+}
+
+// writeIndexLocked marshals and writes the index to disk.
+// Must be called with s.mu held.
+func (s *fsStore) writeIndexLocked(idx *models.SegmentIndex) error {
 	data, err := json.MarshalIndent(idx, "", "  ")
 	if err != nil {
 		return err
@@ -311,6 +344,35 @@ func (s *fsStore) rebuildIndex() {
 	}
 	data, _ := json.MarshalIndent(idx, "", "  ")
 	os.WriteFile(s.indexPath, data, 0o644)
+}
+
+// StartCleanupLoop periodically removes segment JSON files older than ttl
+// and rebuilds the index. This bounds disk usage to ~ttl worth of segments.
+//
+// Typical values: ttl = 6*time.Hour (twice the DVR window), interval = 5*time.Minute.
+func (s *fsStore) StartCleanupLoop(ctx context.Context, ttl, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				deleted, err := s.Cleanup(ttl)
+				if err != nil {
+					continue
+				}
+				if deleted > 0 {
+					s.mu.Lock()
+					// Flush any pending index updates before rebuild
+					s.idxWritesSince = 0
+					s.rebuildIndex()
+					s.mu.Unlock()
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 func (s *fsStore) readSegmentFile(path string) (*models.TranscriptSegment, error) {
