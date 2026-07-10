@@ -8,8 +8,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ConcatenatingMediaSource
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.datasource.FileDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.crimobile.model.PlaybackState
 import com.crimobile.model.SegmentMeta
 import com.crimobile.player.RadioPlayer
@@ -51,6 +50,7 @@ class OfflineRadioPlayer(
     private val orderedSegments: List<SegmentMeta>
     private val segmentOffsetsMs: LongArray   // prefix sum: offsetMs[i] = total duration before segment i
     private var builtCount = 0
+    private val isContinuous: Boolean         // true → single concatenated file, no multi-window API
 
     init {
         // Build ordered list: only segments whose audio file exists
@@ -72,21 +72,34 @@ class OfflineRadioPlayer(
         Log.i(TAG, "init ${orderedSegments.size} segments (${segments.size} total, " +
             "${segments.size - orderedSegments.size} missing audio)")
 
-        // Build ConcatenatingMediaSource
+        // Play a single concatenated file when available (gapless by
+        // construction — one decoder for the entire stream).  Fall back
+        // to per-segment ConcatenatingMediaSource for old sessions.
+        var useContinuous = false
         if (orderedSegments.isNotEmpty()) {
-            val concat = ConcatenatingMediaSource()
-            for (seg in orderedSegments) {
-                val file = storageManager.getAudioFile(sessionId, seg.segment_id)!!
-                val uri = Uri.fromFile(file)
-                val mediaSource = ProgressiveMediaSource.Factory(
-                    FileDataSource.Factory()
-                ).createMediaSource(MediaItem.fromUri(uri))
-                concat.addMediaSource(mediaSource)
-                builtCount++
+            val concatFile = storageManager.getConcatenatedAudioFile(sessionId)
+            if (concatFile != null) {
+                // Single continuous file → one decoder, zero gaps.
+                val factory = DefaultMediaSourceFactory(context)
+                player.setMediaSource(factory.createMediaSource(MediaItem.fromUri(Uri.fromFile(concatFile))))
+                useContinuous = true
+                Log.i(TAG, "using continuous.ts — single-source gapless playback")
+            } else {
+                // Legacy: per-segment files — still try gapless.
+                val concat = ConcatenatingMediaSource(/* isGapless = */ true)
+                val factory = DefaultMediaSourceFactory(context)
+                for (seg in orderedSegments) {
+                    val file = storageManager.getAudioFile(sessionId, seg.segment_id)!!
+                    val mediaSource = factory.createMediaSource(MediaItem.fromUri(Uri.fromFile(file)))
+                    concat.addMediaSource(mediaSource)
+                    builtCount++
+                }
+                player.setMediaSource(concat)
+                Log.i(TAG, "using ${orderedSegments.size} segments via ConcatenatingMediaSource (gapless)")
             }
-            player.setMediaSource(concat)
             player.prepare()
         }
+        isContinuous = useContinuous
     }
 
     // ── State flows ────────────────────────────────────────────────────
@@ -146,12 +159,12 @@ class OfflineRadioPlayer(
     // ── RadioPlayer implementation ─────────────────────────────────────
 
     override fun play(hlsUrl: String) {
-        if (builtCount == 0) {
+        if (orderedSegments.isEmpty()) {
             _lastErrorMessage.value = "No offline audio files found"
             _playbackState.value = PlaybackState.ERROR
             return
         }
-        Log.i(TAG, "play (offline) — ${builtCount} segments")
+        Log.i(TAG, "play (offline) — ${orderedSegments.size} segments${if (isContinuous) " (continuous)" else ""}")
         _lastErrorMessage.value = null
         _playbackState.value = PlaybackState.LOADING
         player.play()
@@ -172,23 +185,30 @@ class OfflineRadioPlayer(
         Log.d(TAG, "seekTo $timelineMs")
         val idx = findSegmentForTimelineMs(timelineMs)
         if (idx < 0) {
-            // Before all segments → seek to start of first window
-            player.seekTo(0, 0L)
+            player.seekTo(0L)
             return
         }
         val seg = orderedSegments[idx]
         val offsetInSeg = (timelineMs - (seg.timeline_start_sec * 1000).toLong())
             .coerceIn(0, ((seg.timeline_end_sec - seg.timeline_start_sec) * 1000).toLong())
-        // Decompose absolute position into (windowIndex, positionInWindow)
-        val posInWindow = offsetInSeg.coerceAtLeast(0)
-        player.seekTo(idx, posInWindow)
+        if (isContinuous) {
+            // Single window → absolute position = prefix sum + offset.
+            player.seekTo((segmentOffsetsMs[idx] + offsetInSeg).coerceAtLeast(0))
+        } else {
+            // Multi-window → decompose into (windowIndex, positionInWindow).
+            player.seekTo(idx, offsetInSeg.coerceAtLeast(0))
+        }
     }
 
     override fun seekToLiveEdge() {
         Log.i(TAG, "seekToLiveEdge → last segment")
         if (orderedSegments.isNotEmpty()) {
-            val lastIdx = orderedSegments.size - 1
-            player.seekTo(lastIdx, 0L)
+            if (isContinuous) {
+                player.seekTo(segmentOffsetsMs.last())
+            } else {
+                val lastIdx = orderedSegments.size - 1
+                player.seekTo(lastIdx, 0L)
+            }
         }
     }
 
@@ -201,16 +221,21 @@ class OfflineRadioPlayer(
     // ── Internal ───────────────────────────────────────────────────────
 
     private fun updateTimeline() {
-        if (builtCount == 0) return
+        if (orderedSegments.isEmpty()) return
         if (player.playbackState != Player.STATE_READY && player.playbackState != Player.STATE_BUFFERING) return
 
-        // ExoPlayer.currentPosition is per-window in a ConcatenatingMediaSource.
-        // Convert to absolute position: prefix sum for windows before current + position in current.
-        val windowIdx = player.currentMediaItemIndex
-        val totalPos = if (windowIdx in 0 until orderedSegments.size) {
-            segmentOffsetsMs[windowIdx] + player.currentPosition
+        val totalPos: Long
+        if (isContinuous) {
+            // Single file → single window → currentPosition is absolute.
+            totalPos = player.currentPosition
         } else {
-            player.currentPosition
+            // Multi-window ConcatenatingMediaSource: prefix sum + per-window position.
+            val windowIdx = player.currentMediaItemIndex
+            totalPos = if (windowIdx in 0 until orderedSegments.size) {
+                segmentOffsetsMs[windowIdx] + player.currentPosition
+            } else {
+                player.currentPosition
+            }
         }
         val idx = findSegmentForPosition(totalPos)
         if (idx < 0) {

@@ -327,6 +327,61 @@ class OfflineStorageManager(private val context: Context) {
         }
     }
 
+    /**
+     * Concatenates all .ts audio files for [sessionId] into a single
+     * continuous file.  MPEG-TS packets (188 bytes, 0x47 sync) can be
+     * naively concatenated — the demuxer handles PAT/PMT changes.
+     *
+     * Returns the concatenated file, or null if no audio files exist.
+     *
+     * Called after [DownloadEngine.downloadRange] completes so that
+     * [OfflineRadioPlayer] can play a single gapless stream instead of
+     * stitching per-segment files with [ConcatenatingMediaSource].
+     */
+    fun concatAudioFiles(sessionId: String): File? {
+        synchronized(lock) {
+            val audioDir = sessionAudioDir(sessionId)
+            if (!audioDir.exists()) return null
+
+            val tsFiles = audioDir.listFiles { f -> f.name.endsWith(".ts") }
+                ?.sortedBy { it.name } ?: return null
+            if (tsFiles.isEmpty()) return null
+
+            val outFile = File(audioDir, "continuous.ts")
+            val tmpFile = File(audioDir, ".continuous.ts.tmp")
+
+            try {
+                tmpFile.outputStream().use { out ->
+                    val buf = ByteArray(65536)
+                    for (f in tsFiles) {
+                        f.inputStream().use { inp ->
+                            var n: Int
+                            while (inp.read(buf).also { n = it } > 0) {
+                                out.write(buf, 0, n)
+                            }
+                        }
+                    }
+                }
+                if (!tmpFile.renameTo(outFile)) {
+                    tmpFile.copyTo(outFile, overwrite = true)
+                    tmpFile.delete()
+                }
+                Log.i(TAG, "concatenated ${tsFiles.size} .ts files → continuous.ts (${outFile.length()} bytes)")
+                return outFile
+            } catch (e: Exception) {
+                Log.w(TAG, "concatAudioFiles failed: ${e.message}")
+                tmpFile.delete()
+                return null
+            }
+        }
+    }
+
+    /** Returns the concatenated audio file for a session, or null. */
+    fun getConcatenatedAudioFile(sessionId: String): File? {
+        val file = File(sessionAudioDir(sessionId), "continuous.ts")
+        return if (file.exists() && file.length() > 0) file else null
+    }
+
     // ── Internal ───────────────────────────────────────────────────────
 
     private fun fileName(id: Int, ext: String) = "${zeroPad(id)}.$ext"

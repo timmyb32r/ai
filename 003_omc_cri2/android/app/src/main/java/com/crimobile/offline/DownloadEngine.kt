@@ -141,6 +141,7 @@ class DownloadEngine(
             // Invalidate cache so next load picks up fresh data.
             SegmentIndex.write(storageManager.sessionMetaDir(sessionId), allSegments)
             storageManager.invalidateCache(sessionId) // still delete old cache
+            storageManager.concatAudioFiles(sessionId) // → continuous.ts for gapless offline playback
 
             // Update session index with final segment count
             val sessions = storageManager.loadAllSessions().toMutableList()
