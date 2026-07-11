@@ -46,6 +46,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -1216,86 +1217,96 @@ private fun SegmentCard(
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
             // FlowRow: each character in its own Column, pinyin centered above.
-            // FlowRow wraps to next line — no overflow off-screen.
-            // CJK characters are naturally uniform-width — no weight() needed.
             val cells = buildCharCells(segment.words, showPinyin)
                 .filter { !isPunctuationOnly(it.text) }
+
+            // Group cells by word so the underline is drawn ONCE per word
+            // (continuous dash pattern, uniform segment lengths).
+            val wordCellGroups = mutableListOf<List<IndexedValue<CharCell>>>()
+            var groupStart = 0
+            for (i in cells.indices) {
+                if (i == 0 || cells[i].word !== cells[i - 1].word) {
+                    if (i > groupStart) wordCellGroups.add(cells.subList(groupStart, i).withIndex().toList())
+                    groupStart = i
+                }
+            }
+            if (groupStart < cells.size) wordCellGroups.add(cells.subList(groupStart, cells.size).withIndex().toList())
 
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                cells.forEachIndexed { cellIdx, charCell ->
-                    val effectiveWord = activeWord ?: lastActiveWord
-                    val isActive = charCell.word === effectiveWord
-                    val isCJKChar = charCell.text.any { it.code in 0x4E00..0x9FFF }
-                    val hasUnderline = showWordBoundaries && isCJKChar
-                    // Word boundary detection for underline gaps
-                    val isFirstInWord = cellIdx == 0 || cells[cellIdx - 1].word !== charCell.word
-                    val isLastInWord = cellIdx == cells.lastIndex || cells[cellIdx + 1].word !== charCell.word
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                wordCellGroups.forEachIndexed { wgIdx, charCells ->
+                    val firstCell = charCells.first().value
+                    val wordHasCJK = firstCell.text.any { it.code in 0x4E00..0x9FFF }
+                    val wordHasUnderline = showWordBoundaries && wordHasCJK
+                    val isFirstWord = wgIdx == 0
+                    // One Box per word — underline drawn ONCE across all chars.
+                    Box(
                         modifier = Modifier
-                            .padding(horizontal = 1.5.dp)
-                            .then(if (cellIdx == 0 && isTsBoundary && showAudioBoundaries) Modifier.drawBehind {
+                            .then(if (isFirstWord && isTsBoundary && showAudioBoundaries) Modifier.drawBehind {
                                 drawLine(Amber.copy(alpha = 0.55f), Offset(0f, 0f), Offset(0f, size.height), strokeWidth = 1.5.dp.toPx())
                             } else Modifier)
-                            .then(if (hasUnderline) Modifier.drawBehind {
+                            .then(if (wordHasUnderline) Modifier.drawBehind {
                                 val strokeWidth = 2.dp.toPx()
-                                val dashWidth = 4.dp.toPx()
-                                val gapWidth = 3.dp.toPx()
+                                val dashLen = 4.dp.toPx()
+                                val gapLen = 3.dp.toPx()
                                 val y = size.height - 2.dp.toPx()
-                                // Gap at word boundaries: inset 6dp at first/last char → 12dp visible break
-                                val x1 = if (isFirstInWord) 6.dp.toPx() else 0f
-                                val x2 = if (isLastInWord) size.width - 6.dp.toPx() else size.width
+                                val inset = 6.dp.toPx()
+                                val x1 = inset
+                                val x2 = size.width - inset
                                 if (x2 > x1) {
-                                    val path = Path().apply {
-                                        moveTo(x1, y)
-                                        lineTo(x2, y)
-                                    }
-                                    drawPath(
-                                        path, TextPrimary.copy(alpha = 0.25f),
-                                        style = Stroke(
-                                            width = strokeWidth,
-                                            pathEffect = PathEffect.dashPathEffect(
-                                                floatArrayOf(dashWidth, gapWidth), 0f
-                                            )
+                                    drawLine(
+                                        TextPrimary.copy(alpha = 0.25f),
+                                        Offset(x1, y), Offset(x2, y),
+                                        strokeWidth = strokeWidth,
+                                        cap = StrokeCap.Butt,
+                                        pathEffect = PathEffect.dashPathEffect(
+                                            floatArrayOf(dashLen, gapLen), 0f
                                         )
                                     )
                                 }
                             } else Modifier)
-                            .clickable {
-                                if (!isPunctuationOnly(charCell.word.text)) {
-                                    Log.i("CRIRadio:tap",
-                                        "→ tapped \"${charCell.word.text}\" pinyin=${charCell.word.pinyin}")
-                                    onWordTapped(charCell.word)
-                                } else {
-                                    Log.d("CRIRadio:tap",
-                                        "→ skipped punctuation \"${charCell.text}\"")
+                    ) {
+                        Row {
+                            charCells.forEach { (_, charCell) ->
+                                val effectiveWord = activeWord ?: lastActiveWord
+                                val isActive = charCell.word === effectiveWord
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier
+                                        .padding(horizontal = 1.5.dp)
+                                        .clickable {
+                                            if (!isPunctuationOnly(charCell.word.text)) {
+                                                Log.i("CRIRadio:tap",
+                                                    "→ tapped \"${charCell.word.text}\" pinyin=${charCell.word.pinyin}")
+                                                onWordTapped(charCell.word)
+                                            } else {
+                                                Log.d("CRIRadio:tap",
+                                                    "→ skipped punctuation \"${charCell.text}\"")
+                                            }
+                                        }
+                                ) {
+                                    if (showPinyin) {
+                                        val shownSyllable = if (charCell.uncertain && charCell.syllable.isNotEmpty())
+                                            charCell.syllable + "?" else charCell.syllable
+                                        Box(modifier = Modifier.heightIn(min = (pinyinFontSizeSp).dp), contentAlignment = Alignment.BottomCenter) {
+                                            Text(shownSyllable, fontSize = pinyinFontSizeSp.sp, color = TextPinyin,
+                                                maxLines = 1, softWrap = false,
+                                                modifier = Modifier.offset(y = 5.dp))
+                                        }
+                                    }
+                                    Text(
+                                        text = charCell.text,
+                                        color = if (isActive) Amber else TextPrimary,
+                                        fontSize = fontSizeSp.sp,
+                                        lineHeight = (fontSizeSp * 1.5).sp,
+                                        maxLines = 1, softWrap = false
+                                    )
                                 }
                             }
-                    ) {
-                        // Pinyin in a tight box matched to font size, bottom-aligned
-                        // so the reading groups tightly with its character.
-                        // Inter-row spacing via FlowRow verticalArrangement.
-                        if (showPinyin) {
-                            // Probabilistic (Unihan) readings get a trailing "?" to mark them as guesses.
-                            val shownSyllable = if (charCell.uncertain && charCell.syllable.isNotEmpty())
-                                charCell.syllable + "?" else charCell.syllable
-                            Box(modifier = Modifier.heightIn(min = (pinyinFontSizeSp).dp), contentAlignment = Alignment.BottomCenter) {
-                                Text(shownSyllable, fontSize = pinyinFontSizeSp.sp, color = TextPinyin,
-                                    maxLines = 1, softWrap = false,
-                                    modifier = Modifier.offset(y = 5.dp))
-                            }
                         }
-                        Text(
-                            text = charCell.text,
-                            color = if (isActive) Amber else TextPrimary,
-                            fontSize = fontSizeSp.sp,
-                            lineHeight = (fontSizeSp * 1.5).sp,
-                            maxLines = 1, softWrap = false
-                        )
                     }
                 }
             }
