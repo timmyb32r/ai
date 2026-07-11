@@ -7,8 +7,16 @@ import kotlinx.coroutines.*
 
 private const val TAG = "CRIRadio:pronounce"
 
+/**
+ * Plays the audio segment corresponding to a word by seeking the active radio
+ * player to the word's epoch timestamp.
+ *
+ * [playerProvider] is invoked on every [playWord] call to resolve the currently
+ * active player (live HLS or offline .ts). This ensures pronounce works
+ * correctly regardless of [PlaybackMode].
+ */
 class PronunciationPlayer(
-    private val player: RadioPlayer,
+    private val playerProvider: () -> RadioPlayer?,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main)
 ) {
     private var originalTimelineMs: Long = 0
@@ -16,6 +24,11 @@ class PronunciationPlayer(
 
     fun playWord(word: WordEntry, prevTimeTo: Double? = null, nextTimeFrom: Double? = null) {
         pronounceJob?.cancel()
+
+        val player = playerProvider() ?: run {
+            Log.w(TAG, "pronounce skipped — no active player")
+            return
+        }
 
         // Save current position
         originalTimelineMs = player.currentTimelineMs.value
@@ -44,6 +57,7 @@ class PronunciationPlayer(
     fun stop() {
         pronounceJob?.cancel()
         pronounceJob = null
+        val player = playerProvider() ?: return
         player.pause()
         if (originalTimelineMs > 0) {
             player.seekTo(originalTimelineMs)

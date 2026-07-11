@@ -114,7 +114,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private val _subtitleSource = MutableStateFlow<SubtitleSource>(createSubtitleSource())
     private val subtitleSource: SubtitleSource get() = _subtitleSource.value
     private val vocabularyStore = VocabularyStore(application)
-    private val pronunciationPlayer by lazy { PronunciationPlayer(player, viewModelScope) }
+    private val pronunciationPlayer by lazy { PronunciationPlayer({ activePlayerOrNull() }, viewModelScope) }
 
     /** Build a [SubtitleSource] based on the stored metadata_protocol preference. */
     private fun createSubtitleSource(): SubtitleSource {
