@@ -198,14 +198,14 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                                     }
                                 }
                             }
-                            if (state.playbackMode == PlaybackMode.OFFLINE_SAVED && state.segments.isNotEmpty()) {
+                            if (state.playbackMode == PlaybackMode.OFFLINE_SAVED && state.segmentsMeta.isNotEmpty()) {
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = Color(0xFF1976D2).copy(alpha = 0.15f),
                                     modifier = Modifier.padding(end = 4.dp)
                                 ) {
                                     Text(
-                                        "${state.segments.size} offline",
+                                        "${state.segmentsMeta.size} offline",
                                         color = Color(0xFF64B5F6),
                                         fontSize = 11.sp,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
@@ -295,7 +295,7 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                             // In offline mode with content: show sync bar above subtitle list
                             if (state.playbackMode == PlaybackMode.OFFLINE_SAVED) {
                                 OfflineContentBar(
-                                    segmentCount = state.segments.size,
+                                    segmentCount = state.segmentsMeta.size,
                                     syncConfig = state.syncConfig,
                                     archiveInfo = state.archiveInfo,
                                     downloadProgress = state.downloadProgress,
