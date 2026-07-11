@@ -1157,7 +1157,10 @@ private fun SubtitleList(
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             @OptIn(ExperimentalLayoutApi::class)
-                            FlowRow(modifier = Modifier.fillMaxWidth()) {
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
                                 val pinyinParts = meta.text_pinyin.split(" ")
                                 var pidx = 0
                                 meta.text_zh.forEach { char ->
@@ -1165,7 +1168,10 @@ private fun SubtitleList(
                                         modifier = Modifier.padding(horizontal = 1.5.dp)) {
                                         if (showPinyin) {
                                             val cp = if (pidx < pinyinParts.size) pinyinParts[pidx] else ""
-                                            Text(cp, color = TextPinyin, fontSize = pinyinFontSizeSp.sp)
+                                            Box(modifier = Modifier.heightIn(min = (pinyinFontSizeSp).dp), contentAlignment = Alignment.BottomCenter) {
+                                                Text(cp, color = TextPinyin, fontSize = pinyinFontSizeSp.sp,
+                                                    modifier = Modifier.offset(y = 5.dp))
+                                            }
                                             pidx++
                                         }
                                         Text(char.toString(), color = TextPrimary, fontSize = fontSizeSp.sp)
@@ -1216,7 +1222,10 @@ private fun SegmentCard(
                 .filter { !isPunctuationOnly(it.text) }
 
             @OptIn(ExperimentalLayoutApi::class)
-            FlowRow(modifier = Modifier.fillMaxWidth()) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 cells.forEachIndexed { cellIdx, charCell ->
                     val effectiveWord = activeWord ?: lastActiveWord
                     val isActive = charCell.word === effectiveWord
@@ -1267,14 +1276,17 @@ private fun SegmentCard(
                                 }
                             }
                     ) {
-                        // Pinyin slot — min height for alignment, but allows descenders
+                        // Pinyin in a tight box matched to font size, bottom-aligned
+                        // so the reading groups tightly with its character.
+                        // Inter-row spacing via FlowRow verticalArrangement.
                         if (showPinyin) {
-                            Box(modifier = Modifier.heightIn(min = 18.dp), contentAlignment = Alignment.Center) {
-                                // Probabilistic (Unihan) readings get a trailing "?" to mark them as guesses.
-                                val shownSyllable = if (charCell.uncertain && charCell.syllable.isNotEmpty())
-                                    charCell.syllable + "?" else charCell.syllable
+                            // Probabilistic (Unihan) readings get a trailing "?" to mark them as guesses.
+                            val shownSyllable = if (charCell.uncertain && charCell.syllable.isNotEmpty())
+                                charCell.syllable + "?" else charCell.syllable
+                            Box(modifier = Modifier.heightIn(min = (pinyinFontSizeSp).dp), contentAlignment = Alignment.BottomCenter) {
                                 Text(shownSyllable, fontSize = pinyinFontSizeSp.sp, color = TextPinyin,
-                                    maxLines = 1, softWrap = false)
+                                    maxLines = 1, softWrap = false,
+                                    modifier = Modifier.offset(y = 5.dp))
                             }
                         }
                         Text(
