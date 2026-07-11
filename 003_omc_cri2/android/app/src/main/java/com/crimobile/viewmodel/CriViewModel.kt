@@ -3,6 +3,7 @@ package com.crimobile.viewmodel
 import android.app.Application
 import android.content.Context
 import android.util.Log
+import com.crimobile.debug.DebugLogger
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.crimobile.ServerConfig
@@ -47,6 +48,7 @@ data class CriViewState(
     val pinyinFontSizeSp: Int = 9,  // pinyin font size in sp
     val dictFontSizeSp: Int = 14,  // dictionary bottom sheet font size in sp
     val debugEnabled: Boolean = false,  // true when .cri_debug file exists
+    val logToFileEnabled: Boolean = false,  // redirect logs to file
     val metadataProtocol: String = "HTTP",  // "HTTP" or "SSE"
     val wordPopup: WordPopupState? = null,
     val isPronouncing: Boolean = false,  // true while PronounceWord audio plays
@@ -100,6 +102,7 @@ sealed class CriAction {
     data class SelectOfflineSession(val sessionId: String) : CriAction()
     data class SelectOfflineSegment(val segmentId: Int) : CriAction()
     data class SetMetadataProtocol(val protocol: String) : CriAction() // "HTTP" or "SSE"
+    object ToggleLogToFile : CriAction()  // debug: redirect logs to file
 }
 
 class CriViewModel(application: Application) : AndroidViewModel(application) {
@@ -131,9 +134,14 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             pinyinFontSizeSp = prefs.getInt("pinyin_font_size_sp", 9),
             dictFontSizeSp = prefs.getInt("dict_font_size_sp", 14),
             debugEnabled = prefs.getBoolean("debug_enabled", false),
+            logToFileEnabled = prefs.getBoolean("log_to_file_enabled", false),
             metadataProtocol = prefs.getString("metadata_protocol", "HTTP") ?: "HTTP",
         )
     )
+
+    // Apply persisted debug-log setting on startup.
+    init { DebugLogger.enabled = prefs.getBoolean("log_to_file_enabled", false) }
+
     val state: StateFlow<CriViewState> = _state.asStateFlow()
 
     private val savedWord = MutableStateFlow<WordEntry?>(null)
@@ -141,6 +149,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var lastSyncLog = 0L
     private var lastActiveSegId = -1
     private var lastActiveWord: WordEntry? = null
+    private var pendingPlayUrl: String? = null  // deferred Play until player is ready
     private var coldStartT0: Long = 0  // timing: System.nanoTime() when Play was tapped
 
     // ── Offline mode ───────────────────────────────────────────────────
@@ -193,6 +202,15 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             }
             player = obtained
             Log.i(VM, "player obtained from RadioPlayerHolder")
+
+            // If user tapped Play before the player was ready, execute it now.
+            val pending = pendingPlayUrl
+            if (pending != null) {
+                pendingPlayUrl = null
+                DebugLogger.log(VM, "▶ Executing deferred Play | serverUrl=$pending")
+                Log.i(VM, "executing deferred Play for $pending")
+                dispatch(CriAction.Play(pending))
+            }
 
             // Forward playback state (player must be initialised first)
             launch {
@@ -407,43 +425,84 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     fun dispatch(action: CriAction) {
         when (action) {
             is CriAction.Play -> {
+                DebugLogger.log(VM, "▶ Play tapped | serverUrl=${action.serverUrl} | mode=${_state.value.playbackMode}")
                 _state.value = _state.value.copy(error = null)
                 when (_state.value.playbackMode) {
                     PlaybackMode.LIVE_STREAMING -> {
-                        if (!requirePlayer()) return
+                        if (!requirePlayer()) {
+                            // PlayerService hasn't bound yet — defer Play until it arrives.
+                            DebugLogger.log(VM, "⏳ Play deferred — player not ready, will auto-play when available")
+                            pendingPlayUrl = action.serverUrl
+                            _state.value = _state.value.copy(playbackState = PlaybackState.LOADING)
+                            return
+                        }
                         Log.i(VM, "play server=${action.serverUrl}")
                         val url = "${action.serverUrl}/hls/playlist.m3u8"
+                        DebugLogger.log(VM, "HLS URL = $url")
                         val wasPaused = _state.value.playbackState == PlaybackState.PAUSED
                         if (wasPaused && action.serverUrl == currentServerUrl) {
                             Log.i(VM, "play resuming from paused position")
+                            DebugLogger.log(VM, "▶ Play resume | serverUrl=${action.serverUrl}")
                             player.resume()
                         } else {
                             Log.i(VM, "play new stream")
                             currentServerUrl = action.serverUrl
                             coldStartT0 = System.nanoTime()
                             Log.i(TIMING, "event=play_tapped elapsed_ms=0")
+                            DebugLogger.log(VM, "▶ Play cold-start | serverUrl=${action.serverUrl} | protocol=${_state.value.metadataProtocol}")
 
                             if (subtitleSource is com.crimobile.subtitles.HttpSubtitleSource) {
-                                // ── Cold start ──
-                                // 1) one batch request → text on screen immediately
-                                // 2) player.play() starts at (live edge − target offset);
-                                //    audio & subtitles are in lockstep, so the played
-                                //    position always has matching metadata
-                                // 3) UI derives the active word from the REAL player
-                                //    position (see sync loop) — no pre-positioning, no jump
-                                // 4) fill-forward poll starts immediately (no delay, no flood)
                                 _state.value = _state.value.copy(playbackState = PlaybackState.LOADING)
                                 viewModelScope.launch {
                                     val http = subtitleSource as com.crimobile.subtitles.HttpSubtitleSource
                                     Log.i(TIMING, "event=fetch_initial_start elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
-                                    val ok = http.fetchInitial(action.serverUrl, INITIAL_BATCH, lite = true)
+                                    DebugLogger.log(VM, "→ fetchInitial(server=${action.serverUrl}, n=$INITIAL_BATCH, lite=true)")
+
+                                    // Retry up to 3 times for transient DNS/network failures.
+                                    var ok = false
+                                    for (attempt in 1..3) {
+                                        try {
+                                            ok = http.fetchInitial(action.serverUrl, INITIAL_BATCH, lite = true)
+                                            if (ok) break
+                                            DebugLogger.log(VM, "← fetchInitial attempt $attempt returned false")
+                                            if (attempt < 3) delay(2000)
+                                        } catch (e: Exception) {
+                                            DebugLogger.log(VM, "✗ fetchInitial attempt $attempt FAILED", e)
+                                            if (attempt == 3) {
+                                                _state.value = _state.value.copy(
+                                                    error = "Cannot reach server.\n${e.message}",
+                                                    playbackState = PlaybackState.IDLE
+                                                )
+                                                return@launch
+                                            }
+                                            delay(2000)
+                                        }
+                                    }
+
+                                    if (!ok) {
+                                        DebugLogger.log(VM, "✗ fetchInitial failed after 3 attempts")
+                                        _state.value = _state.value.copy(
+                                            error = "Cannot reach server.\nCheck your connection and try again.",
+                                            playbackState = PlaybackState.IDLE
+                                        )
+                                        return@launch
+                                    }
+
                                     Log.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                    DebugLogger.log(VM, "← fetchInitial ok | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
+
                                     player.play(url)
                                     Log.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
-                                    http.connect(action.serverUrl)
+                                    DebugLogger.log(VM, "→ player.play(url) called | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
+                                    try {
+                                        http.connect(action.serverUrl)
+                                        DebugLogger.log(VM, "→ http.connect() OK")
+                                    } catch (e: Exception) {
+                                        DebugLogger.log(VM, "✗ http.connect() FAILED", e)
+                                    }
                                 }
                             } else {
-                                // SSE source: push-based, fast — connect and play immediately.
+                                DebugLogger.log(VM, "→ SSE source: connect + play")
                                 subtitleSource.connect(action.serverUrl)
                                 player.play(url)
                             }
@@ -453,9 +512,11 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         val op = offlinePlayer
                         if (op == null) {
                             Log.w(VM, "play offline — no offline player")
+                            DebugLogger.log(VM, "✗ Play offline aborted — offlinePlayer is null")
                             return
                         }
                         Log.i(VM, "play offline")
+                        DebugLogger.log(VM, "▶ Play offline | segments=${_state.value.segmentsMeta.size}")
                         op.play("")
                     }
                 }
@@ -557,6 +618,13 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             CriAction.EnableDebug -> {
                 _state.value = _state.value.copy(debugEnabled = true)
                 prefs.edit().putBoolean("debug_enabled", true).apply()
+            }
+            CriAction.ToggleLogToFile -> {
+                val newVal = !_state.value.logToFileEnabled
+                com.crimobile.debug.DebugLogger.enabled = newVal
+                _state.value = _state.value.copy(logToFileEnabled = newVal)
+                prefs.edit().putBoolean("log_to_file_enabled", newVal).apply()
+                Log.i(VM, "logToFile = $newVal")
             }
             is CriAction.SetPlaybackMode -> {
                 switchPlaybackMode(action.mode)
@@ -903,7 +971,9 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        pronunciationPlayer.stop()
+        // pronunciationPlayer is lazy — its init may fail if the live player was
+        // never created (lateinit not initialized). Safe-call via runCatching.
+        runCatching { pronunciationPlayer.stop() }
         subtitleSource.disconnect()
         downloadJob?.cancel()
         offlinePlayer?.release()

@@ -1,6 +1,7 @@
 package com.crimobile.subtitles
 
 import android.util.Log
+import com.crimobile.debug.DebugLogger
 import com.crimobile.model.ConnectionStatus
 import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
@@ -64,6 +65,7 @@ class HttpSubtitleSource(
 
     override fun connect(serverUrl: String) {
         Log.i(HTTP_TAG, "connecting to $serverUrl (poll=${pollIntervalMs}ms)")
+        DebugLogger.log(HTTP_TAG, "connect → $serverUrl | pollInterval=${pollIntervalMs}ms")
         _connected.value = ConnectionStatus.CONNECTING
         // NOTE: do NOT clear seenIds here — fetchInitial() has already seeded it
         // with the newest segments. Clearing would make the first poll treat the
@@ -113,9 +115,15 @@ class HttpSubtitleSource(
     suspend fun fetchInitial(serverUrl: String, n: Int = 3, lite: Boolean = true): Boolean {
         val liteParam = if (lite) "&lite=true" else ""
         val batchUrl = "$serverUrl/api/segments/batch?last=$n$liteParam"
+        DebugLogger.log(HTTP_TAG, "GET $batchUrl")
         val jsonBody = withContext(Dispatchers.IO) {
             fetchUrl(batchUrl)
-        } ?: return false
+        }
+        if (jsonBody == null) {
+            DebugLogger.log(HTTP_TAG, "✗ fetchInitial: fetchUrl returned null (network error or empty body)")
+            return false
+        }
+        DebugLogger.log(HTTP_TAG, "← response ${jsonBody.length} chars")
 
         return try {
             val root = org.json.JSONObject(jsonBody)
@@ -125,8 +133,6 @@ class HttpSubtitleSource(
                 val segment = SubtitleParser.parseSegment(arr.getJSONObject(i))
                 synchronized(lock) {
                     segmentMap[segment.segment_id] = segment
-                    // Lite segments now keep word timing — background poll
-                    // only fetches NEW segments (beyond the 30 we already have).
                     seenIds.add(segment.segment_id)
                 }
                 segments.add(segment)
@@ -139,10 +145,14 @@ class HttpSubtitleSource(
                     _segmentsMeta.value = sorted.map { it.toMeta() }
                 }
                 Log.i(HTTP_TAG, "fetchInitial: ${segments.size} segments via bulk (lite=$lite), total=${segmentMap.size}")
+                DebugLogger.log(HTTP_TAG, "fetchInitial: ${segments.size} segments, ids=${segments.map { it.segment_id }}")
+            } else {
+                DebugLogger.log(HTTP_TAG, "fetchInitial: 0 segments in response")
             }
             true
         } catch (e: Exception) {
             Log.w(HTTP_TAG, "fetchInitial failed: ${e.message}")
+            DebugLogger.log(HTTP_TAG, "✗ fetchInitial parse error", e)
             false
         }
     }
@@ -274,18 +284,25 @@ class HttpSubtitleSource(
 
     /** Fetch a URL and return its body as a string, or null on failure. */
     private fun fetchUrl(url: String): String? {
+        val startMs = System.currentTimeMillis()
         return try {
             val request = Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
+            val elapsed = System.currentTimeMillis() - startMs
             if (response.isSuccessful) {
-                response.body?.string()
+                val body = response.body?.string()
+                DebugLogger.log(HTTP_TAG, "HTTP ${response.code} $url → ${body?.length ?: 0} chars | ${elapsed}ms")
+                body
             } else {
                 Log.w(HTTP_TAG, "HTTP ${response.code} for $url")
+                DebugLogger.log(HTTP_TAG, "✗ HTTP ${response.code} $url | ${elapsed}ms")
                 response.close()
                 null
             }
         } catch (e: Exception) {
+            val elapsed = System.currentTimeMillis() - startMs
             Log.w(HTTP_TAG, "fetch failed $url: ${e.message}")
+            DebugLogger.log(HTTP_TAG, "✗ fetch exception $url | ${elapsed}ms", e)
             null
         }
     }

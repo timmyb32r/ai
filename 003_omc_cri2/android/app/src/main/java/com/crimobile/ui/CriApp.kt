@@ -254,7 +254,9 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                         dictFontSizeSp = state.dictFontSizeSp,
                         onDictFontSize = { onAction(CriAction.SetDictFontSize(it)) },
                         metadataProtocol = state.metadataProtocol,
-                        onMetadataProtocol = { onAction(CriAction.SetMetadataProtocol(it)) }
+                        onMetadataProtocol = { onAction(CriAction.SetMetadataProtocol(it)) },
+                        logToFileEnabled = state.logToFileEnabled,
+                        onToggleLogToFile = { onAction(CriAction.ToggleLogToFile) }
                     )
                 }
             },
@@ -624,6 +626,8 @@ private fun SettingsDialog(
     onDictFontSize: (Int) -> Unit = {},
     metadataProtocol: String = "HTTP",
     onMetadataProtocol: (String) -> Unit = {},
+    logToFileEnabled: Boolean = false,
+    onToggleLogToFile: () -> Unit = {},
 ) {
     var editSize by remember { mutableStateOf(currentFontSize.toString()) }
     var editPinyinSize by remember { mutableStateOf(pinyinFontSizeSp.toString()) }
@@ -806,6 +810,19 @@ private fun SettingsDialog(
                             onCheckedChange = { onToggleAudioBoundaries() },
                             colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
                         )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Write logs to file", color = TextPrimary, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = logToFileEnabled,
+                            onCheckedChange = { onToggleLogToFile() },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
+                        )
+                    }
+                    if (logToFileEnabled) {
+                        Text(com.crimobile.debug.DebugLogger.logFilePath.ifEmpty { "(not ready)" },
+                            color = TextSecondary, fontSize = 10.sp)
                     }
                 }
             }

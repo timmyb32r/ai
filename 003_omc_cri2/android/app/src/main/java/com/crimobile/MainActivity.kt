@@ -12,6 +12,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
+import com.crimobile.debug.DebugLogger
 import com.crimobile.ui.CriApp
 import com.crimobile.viewmodel.CriViewModel
 
@@ -33,6 +34,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Init file logger — writes to app-specific external storage (no permissions needed).
+        DebugLogger.init(this)
 
         requestNotificationPermission()
 
