@@ -2,7 +2,7 @@ package pinyin
 
 import "testing"
 
-func TestValidateHierogliphPinyin_Valid(t *testing.T) {
+func TestValidateHieroglyphPinyin_Valid(t *testing.T) {
 	valid := []string{
 		// bare / tone digits / diacritics all normalise to the same syllable
 		"ma", "ma1", "ma3", "mǎ", "mā",
@@ -25,13 +25,13 @@ func TestValidateHierogliphPinyin_Valid(t *testing.T) {
 		"zhuang", "shuang", "guang", "xiong", "jiong", "hui", "duo", "lüe",
 	}
 	for _, s := range valid {
-		if err := ValidateHierogliphPinyin(s); err != nil {
-			t.Errorf("ValidateHierogliphPinyin(%q) = %v, want valid", s, err)
+		if err := ValidateHieroglyphPinyin(s); err != nil {
+			t.Errorf("ValidateHieroglyphPinyin(%q) = %v, want valid", s, err)
 		}
 	}
 }
 
-func TestValidateHierogliphPinyin_ImpossibleCombos(t *testing.T) {
+func TestValidateHieroglyphPinyin_ImpossibleCombos(t *testing.T) {
 	// Parts exist in isolation but the initial+final pair is illegal.
 	invalid := []string{
 		"fiang", // f cannot take -iang
@@ -43,13 +43,13 @@ func TestValidateHierogliphPinyin_ImpossibleCombos(t *testing.T) {
 		"ju e",  // embedded space
 	}
 	for _, s := range invalid {
-		if err := ValidateHierogliphPinyin(s); err == nil {
-			t.Errorf("ValidateHierogliphPinyin(%q) = nil, want error", s)
+		if err := ValidateHieroglyphPinyin(s); err == nil {
+			t.Errorf("ValidateHieroglyphPinyin(%q) = nil, want error", s)
 		}
 	}
 }
 
-func TestValidateHierogliphPinyin_JunkRejected(t *testing.T) {
+func TestValidateHieroglyphPinyin_JunkRejected(t *testing.T) {
 	// Exactly the failure modes the dictionary bug produced.
 	invalid := []string{
 		"",       // empty
@@ -66,8 +66,8 @@ func TestValidateHierogliphPinyin_JunkRejected(t *testing.T) {
 		"3ma",    // leading digit
 	}
 	for _, s := range invalid {
-		if err := ValidateHierogliphPinyin(s); err == nil {
-			t.Errorf("ValidateHierogliphPinyin(%q) = nil, want error", s)
+		if err := ValidateHieroglyphPinyin(s); err == nil {
+			t.Errorf("ValidateHieroglyphPinyin(%q) = nil, want error", s)
 		}
 	}
 }
@@ -95,11 +95,11 @@ func TestNumberedToDiacritic(t *testing.T) {
 	}
 }
 
-func TestValidateHierogliphPinyin_TableCoverage(t *testing.T) {
+func TestValidateHieroglyphPinyin_TableCoverage(t *testing.T) {
 	// Every canonical syllable must validate (guards against typos in the list
 	// and against splitInitial/compat drifting apart).
 	for _, s := range canonicalSyllables {
-		if err := ValidateHierogliphPinyin(s); err != nil {
+		if err := ValidateHieroglyphPinyin(s); err != nil {
 			t.Errorf("canonical syllable %q rejected: %v", s, err)
 		}
 	}

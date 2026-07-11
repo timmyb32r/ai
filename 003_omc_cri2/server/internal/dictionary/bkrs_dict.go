@@ -118,7 +118,7 @@ func LoadBKRS(dumpPath string) (Dictionary, error) {
 		// Only register genuine single syllables — this rejects markup, glosses
 		// AND multi-syllable strings (e.g. a whole-word reading "kōngfáng" that
 		// would otherwise pollute the map for 空).
-		if !pinyinlib.IsValidHierogliphPinyin(syl) {
+		if !pinyinlib.IsValidHieroglyphPinyin(syl) {
 			return
 		}
 		for _, existing := range d.charPinyins[ch] {
@@ -513,7 +513,7 @@ func splitWordPinyin(word, pinyin string, charMap map[string][]string) []string 
 			return []string{"?"}
 		}
 		fields := strings.Fields(strings.ReplaceAll(pinyin, "-", " "))
-		if len(fields) == 1 && pinyinlib.IsValidHierogliphPinyin(fields[0]) {
+		if len(fields) == 1 && pinyinlib.IsValidHieroglyphPinyin(fields[0]) {
 			return []string{cleanSyllable(fields[0])}
 		}
 		return []string{"?"}
@@ -619,7 +619,7 @@ func isToneVowelRune(r rune) bool {
 // allSingleSyllables reports whether every token is exactly one valid syllable.
 func allSingleSyllables(syllables []string) bool {
 	for _, s := range syllables {
-		if !pinyinlib.IsValidHierogliphPinyin(s) {
+		if !pinyinlib.IsValidHieroglyphPinyin(s) {
 			return false
 		}
 	}
@@ -737,7 +737,7 @@ func splitBySyllablePattern(pinyin string, charCount int) []string {
 		// splitter treats a whole diacritic run (e.g. "gōngqiǎo") as one token,
 		// so we reject such bogus multi-syllable pieces instead of emitting them.
 		for _, s := range syllables {
-			if !pinyinlib.IsValidHierogliphPinyin(s) {
+			if !pinyinlib.IsValidHieroglyphPinyin(s) {
 				return nil
 			}
 		}

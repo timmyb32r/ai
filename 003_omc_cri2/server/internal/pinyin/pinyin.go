@@ -179,14 +179,14 @@ func splitInitial(s string) (initial, final string) {
 	return "", s
 }
 
-// ValidateHierogliphPinyin reports whether s is a single valid Pinyin syllable
+// ValidateHieroglyphPinyin reports whether s is a single valid Pinyin syllable
 // (the reading of one Chinese character). It returns nil when valid, or a
 // descriptive error explaining which structural rule failed.
 //
 // Tone marks (both digits like "ma3" and diacritics like "mǎ") are tolerated
 // and stripped during normalisation; the letter ü may be written as "ü", "v"
 // or "u:".
-func ValidateHierogliphPinyin(s string) error {
+func ValidateHieroglyphPinyin(s string) error {
 	norm, err := normalize(s)
 	if err != nil {
 		return err
@@ -210,9 +210,9 @@ func ValidateHierogliphPinyin(s string) error {
 	return nil
 }
 
-// IsValidHierogliphPinyin is the boolean form of ValidateHierogliphPinyin.
-func IsValidHierogliphPinyin(s string) bool {
-	return ValidateHierogliphPinyin(s) == nil
+// IsValidHieroglyphPinyin is the boolean form of ValidateHieroglyphPinyin.
+func IsValidHieroglyphPinyin(s string) bool {
+	return ValidateHieroglyphPinyin(s) == nil
 }
 
 // toneMarks maps a base vowel to its tone-marked forms for tones 1..4.
@@ -368,7 +368,7 @@ func segmentExact(group string, n int) ([]string, bool) {
 		maxEnd := len(runes) - (left - 1)
 		for end := maxEnd; end > pos; end-- {
 			cand := string(runes[pos:end])
-			if IsValidHierogliphPinyin(cand) {
+			if IsValidHieroglyphPinyin(cand) {
 				res = append(res, cand)
 				if rec(end, left-1) {
 					return true

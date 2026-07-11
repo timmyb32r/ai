@@ -93,7 +93,7 @@ func TestPerCharacterPinyin_AllValidAcrossBKRS(t *testing.T) {
 						continue // explicit absent / unknown markers
 					}
 					localChecked++
-					if verr := pinyin.ValidateHierogliphPinyin(syl); verr != nil {
+					if verr := pinyin.ValidateHieroglyphPinyin(syl); verr != nil {
 						localFail = append(localFail, failure{
 							word: word, pinyin: entry.Pinyin,
 							syllable: syl, reason: verr.Error(),
@@ -189,7 +189,7 @@ func TestPerCharacterPinyin_TrickyCases(t *testing.T) {
 				t.Errorf("%s[%d]: got %q, want %q (full: %v)", tc.word, i, got, w, entry.CharPinyins)
 			}
 			// No syllable may be the whole-word pinyin or otherwise invalid.
-			if err := pinyin.ValidateHierogliphPinyin(got); err != nil {
+			if err := pinyin.ValidateHieroglyphPinyin(got); err != nil {
 				t.Errorf("%s[%d]: %q is not a valid syllable: %v", tc.word, i, got, err)
 			}
 		}

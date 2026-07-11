@@ -89,7 +89,7 @@ func parse(r *os.File) (*Resolver, error) {
 			// tokens like "de(75596)"
 			for _, tok := range strings.Fields(parts[2]) {
 				syl, freq, ok := parsePinluToken(tok)
-				if !ok || !pinyinlib.IsValidHierogliphPinyin(syl) {
+				if !ok || !pinyinlib.IsValidHieroglyphPinyin(syl) {
 					continue
 				}
 				acc.pinlu[syl] += freq
@@ -100,7 +100,7 @@ func parse(r *os.File) (*Resolver, error) {
 			}
 		case "kMandarin":
 			for _, syl := range strings.Fields(parts[2]) {
-				if pinyinlib.IsValidHierogliphPinyin(syl) {
+				if pinyinlib.IsValidHieroglyphPinyin(syl) {
 					acc.mandarin = syl
 					break
 				}

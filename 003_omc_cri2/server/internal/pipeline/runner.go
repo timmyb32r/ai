@@ -702,7 +702,7 @@ func (p *Pipeline) fillFromCedict(w *models.WordEntry, chars []rune) bool {
 	syllables := make([]string, len(fields))
 	for i, f := range fields {
 		syl := pinyinlib.NumberedToDiacritic(f)
-		if !pinyinlib.IsValidHierogliphPinyin(syl) {
+		if !pinyinlib.IsValidHieroglyphPinyin(syl) {
 			return false // don't emit anything unless the whole word is clean
 		}
 		syllables[i] = syl
