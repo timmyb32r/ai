@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube to SRT</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <h1>YouTube → SRT</h1>
+
+  <section id="input-section">
+    <input type="url" id="url-input" placeholder="https://www.youtube.com/watch?v=..." autofocus>
+    <button id="submit-btn">Transcribe</button>
+    <p id="error-msg" class="hidden"></p>
+  </section>
+
+  <section id="progress-section" class="hidden">
+    <div class="progress-bar">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+    <p id="stage-label">Extracting audio...</p>
+  </section>
+
+  <section id="done-section" class="hidden">
+    <p class="done-icon">✓</p>
+    <a id="download-link" class="button" download="transcript.srt">Download SRT</a>
+    <button id="new-btn" class="secondary">Transcribe Another</button>
+  </section>
+</div>
+<script src="/static/script.js"></script>
+</body>
+</html>

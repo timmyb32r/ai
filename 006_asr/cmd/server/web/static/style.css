@@ -1,0 +1,137 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: #0f0f0f;
+  color: #e0e0e0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#app {
+  width: 100%;
+  max-width: 520px;
+  padding: 2rem 1.5rem;
+}
+
+h1 {
+  text-align: center;
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 2rem;
+  letter-spacing: 0.02em;
+}
+
+#input-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+#url-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #1a1a1a;
+  color: #e0e0e0;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+#url-input:focus {
+  border-color: #666;
+}
+
+#url-input::placeholder {
+  color: #666;
+}
+
+#submit-btn, .button {
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  text-align: center;
+  text-decoration: none;
+  transition: opacity 0.2s;
+}
+
+#submit-btn {
+  background: #fff;
+  color: #000;
+}
+
+#submit-btn:hover { opacity: 0.85; }
+#submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.button {
+  display: block;
+  background: #2ecc71;
+  color: #000;
+  padding: 0.75rem 1.5rem;
+}
+
+.button:hover { opacity: 0.85; }
+
+.secondary {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  border: 1px solid #444;
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  color: #888;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.secondary:hover { color: #e0e0e0; border-color: #666; }
+
+.hidden { display: none !important; }
+
+#error-msg {
+  color: #e74c3c;
+  font-size: 0.9rem;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #1a1a1a;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #fff;
+  border-radius: 3px;
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+#stage-label {
+  text-align: center;
+  color: #888;
+  font-size: 0.9rem;
+}
+
+.done-icon {
+  text-align: center;
+  font-size: 3rem;
+  color: #2ecc71;
+  margin-bottom: 1rem;
+}
+
+#done-section {
+  text-align: center;
+}

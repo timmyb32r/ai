@@ -1,0 +1,54 @@
+# Base image: ffmpeg + sherpa-onnx + sense_voice model.
+# Build ONCE — rebuild only when model or sherpa-onnx version changes.
+#
+#   docker build -f Dockerfile.base -t yt2srt-base:latest .
+
+FROM debian:bookworm-slim
+
+# System dependencies: ffmpeg, TLS, fetch utils, python3 for sherpa-onnx
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ffmpeg ca-certificates wget python3 python3-pip libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
+# sherpa-onnx — installed once, rarely changes
+RUN pip3 install --no-cache-dir --break-system-packages sherpa-onnx-bin \
+ && command -v sherpa-onnx-offline
+
+# yt-dlp — for YouTube audio download
+RUN pip3 install --no-cache-dir --break-system-packages yt-dlp \
+ && command -v yt-dlp
+
+# ── Model — copied from .docker-cache/ into /opt/models/ ─────────────────
+# download-cache.sh pre-fetches the model to .docker-cache/.
+ARG MODEL_PATH=/opt/models
+RUN mkdir -p /opt/models
+
+COPY .docker-cache/ /tmp/docker-cache/
+
+RUN set -e; \
+    # sherpa-onnx models (directories)
+    for d in sense-voice-2024 sense-voice-v1 paraformer-zh; do \
+      if [ -d "/tmp/docker-cache/$d" ]; then \
+        cp -r "/tmp/docker-cache/$d" "/opt/models/$d" && echo "Copied $d/"; \
+      fi; \
+    done; \
+    rm -rf /tmp/docker-cache; \
+    if [ -z "$(ls -A /opt/models/ 2>/dev/null)" ]; then \
+      echo "WARNING: no model files in /opt/models/ — mount or download before running" >&2; \
+    else \
+      echo "Models: $(ls /opt/models/)"; \
+    fi
+
+# Environment defaults (overridable at runtime)
+ENV ADDR=:8080 \
+    ENGINE=sherpa-onnx \
+    ASR_MODEL=sense-voice-2024 \
+    MODEL_PATH=/opt/models \
+    DEPLOY_MODE=local \
+    LOG_LEVEL=info
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:8080/health || exit 1

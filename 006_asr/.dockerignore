@@ -1,0 +1,9 @@
+.claude/
+.omc/
+.git/
+.gitignore
+*.md
+.env.example
+.env
+models/
+docker-compose.yml

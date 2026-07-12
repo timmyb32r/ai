@@ -1,0 +1,18 @@
+services:
+  yt2srt:
+    build: .
+    image: yt2srt:latest
+    ports: ["8080:8080"]
+    environment:
+      - ADDR=:8080
+      - DEPLOY_MODE=local
+      - ENGINE=sherpa-onnx
+      - MODEL_PATH=/opt/models
+      - ASR_MODEL=sense-voice-2024
+      - LOG_LEVEL=debug
+      - TEMP_DIR=/tmp/yt2srt
+    volumes:
+      - yt2srt_temp:/tmp/yt2srt
+
+volumes:
+  yt2srt_temp:
