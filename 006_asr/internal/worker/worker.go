@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/timmyb32r/yt2srt/internal/asr"
 	"github.com/timmyb32r/yt2srt/internal/config"
@@ -31,7 +33,8 @@ func New(tr asr.Transcriber, store *storage.InMemoryStore, log logging.Logger, c
 
 // ProcessJob runs the full transcription pipeline for a job.
 func (w *Worker) ProcessJob(jobID string) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
 
 	job := w.store.Get(jobID)
 	if job == nil {
@@ -46,28 +49,57 @@ func (w *Worker) ProcessJob(jobID string) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// --- Extraction ---
+	// --- Extraction with live progress + heartbeat ---
+	extractStart := time.Now()
 	w.updateJob(jobID, func(j *models.Job) {
 		j.Status = models.StatusExtracting
-		j.Stage = "extracting audio"
-		j.Progress = 0.05
+		j.Stage = "downloading..."
+		j.Progress = 0.02
 	})
-	w.log.Info("worker", "extracting", "job_id", jobID, "url", job.URL)
+	// Heartbeat: update elapsed time every second so UI never looks frozen
+	heartbeatStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				elapsed := time.Since(extractStart).Round(time.Second)
+				w.updateJob(jobID, func(j *models.Job) {
+					// Only heartbeat if stage is still the default "downloading..." or our elapsed pattern
+					if j.Stage == "downloading..." || strings.HasPrefix(j.Stage, "downloading... (") {
+						j.Stage = fmt.Sprintf("downloading... (%v)", elapsed)
+					}
+				})
+			case <-heartbeatStop:
+				return
+			}
+		}
+	}()
+	w.log.Info("worker", "extracting", "job_id", jobID, "url", job.URL, "temp_dir", tempDir)
 
-	audioPath, err := extract.Download(ctx, w.cfg.YtDlpPath, job.URL, tempDir)
+	pcmPath := filepath.Join(tempDir, "audio.pcm")
+	lastUpdate := time.Now()
+	durationSec, err := extract.DownloadAudio(ctx, w.cfg.YtDlpPath, w.cfg.FFmpegPath, job.URL, pcmPath,
+		func(pct int, info string) {
+			if time.Since(lastUpdate) < 400*time.Millisecond {
+				return
+			}
+			lastUpdate = time.Now()
+			w.updateJob(jobID, func(j *models.Job) {
+				j.Stage = info
+				if pct >= 0 {
+					j.Progress = 0.02 + 0.03*float64(pct)/100.0
+				}
+			})
+		})
+	close(heartbeatStop)
 	if err != nil {
 		w.setError(jobID, fmt.Sprintf("download: %v", err))
 		return
 	}
-	defer os.Remove(audioPath)
-
-	pcmPath := filepath.Join(tempDir, "audio.pcm")
-	durationSec, err := extract.ConvertToPCM(ctx, w.cfg.FFmpegPath, audioPath, pcmPath)
-	if err != nil {
-		w.setError(jobID, fmt.Sprintf("convert: %v", err))
-		return
-	}
 	defer os.Remove(pcmPath)
+	w.log.Info("worker", "downloaded", "job_id", jobID, "duration_sec", durationSec)
 
 	w.updateJob(jobID, func(j *models.Job) { j.DurationSec = durationSec })
 

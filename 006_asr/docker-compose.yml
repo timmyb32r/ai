@@ -1,8 +1,9 @@
 services:
   yt2srt:
-    build: .
     image: yt2srt:latest
     ports: ["8080:8080"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - ADDR=:8080
       - DEPLOY_MODE=local
@@ -11,8 +12,10 @@ services:
       - ASR_MODEL=sense-voice-2024
       - LOG_LEVEL=debug
       - TEMP_DIR=/tmp/yt2srt
+      - YTDLP_PROXY=http://host.docker.internal:8889
     volumes:
       - yt2srt_temp:/tmp/yt2srt
+    restart: unless-stopped
 
 volumes:
   yt2srt_temp:

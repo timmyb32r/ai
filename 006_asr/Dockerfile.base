@@ -5,10 +5,10 @@
 
 FROM debian:bookworm-slim
 
-# System dependencies: ffmpeg, TLS, fetch utils, python3 for sherpa-onnx
+# System dependencies: ffmpeg, TLS, fetch utils, python3, nodejs (for yt-dlp JS runtime)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ffmpeg ca-certificates wget python3 python3-pip libgomp1 \
+      ffmpeg ca-certificates wget curl unzip python3 python3-pip libgomp1 nodejs \
  && rm -rf /var/lib/apt/lists/*
 
 # sherpa-onnx — installed once, rarely changes

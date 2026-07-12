@@ -45,7 +45,8 @@ if [ "${DIR}" = "sense-voice-2024" ]; then
         echo "==> Downloading SenseVoice int8 (~140MB)..."
         rm -rf "${CACHE_DIR}/${DIR}"
         mkdir -p "${CACHE_DIR}/${DIR}"
-        curl -L --progress-bar "${URL}" -o /tmp/sense-voice.tar.bz2
+        curl -L --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 600 \
+            --progress-bar "${URL}" -o /tmp/sense-voice.tar.bz2
         tar xjf /tmp/sense-voice.tar.bz2 -C "${CACHE_DIR}/${DIR}" --strip-components=1
         rm /tmp/sense-voice.tar.bz2
         echo "   ✓ model.int8.onnx ($(du -h "${CACHE_DIR}/${DIR}/model.int8.onnx" | cut -f1))"

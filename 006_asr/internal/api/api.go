@@ -39,7 +39,8 @@ func NewHandler(store *storage.InMemoryStore, wrk *worker.Worker, log logging.Lo
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/", h.handleIndex)
 	mux.HandleFunc("/health", h.handleHealth)
-	mux.Handle("/static/", securityHeaders(http.FileServer(http.FS(h.staticFS))))
+	fileServer := http.FileServer(http.FS(h.staticFS))
+	mux.Handle("/static/", securityHeaders(http.StripPrefix("/static/", fileServer)))
 	mux.HandleFunc("/api/transcribe", h.handleTranscribe)
 	mux.HandleFunc("/api/status/", h.handleStatus)
 	mux.HandleFunc("/api/download/", h.handleDownload)
@@ -143,9 +144,7 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize error message for API response — don't leak internal paths
-	resp := sanitizedJob(job)
-	writeJSON(w, 200, resp)
+	writeJSON(w, 200, job)
 }
 
 func (h *Handler) handleDownload(w http.ResponseWriter, r *http.Request) {
@@ -245,18 +244,9 @@ func stripQueryParams(rawURL string) string {
 	return parsed.String()
 }
 
-// sanitizedJob returns a copy of job with sanitized error messages.
-func sanitizedJob(job *models.Job) *models.Job {
-	copy := *job
-	if copy.Error != "" {
-		// Replace technical error with user-safe message
-		copy.Error = "processing failed"
-	}
-	return &copy
-}
-
 // setSecurityHeaders adds security-related HTTP headers.
 func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")

@@ -7,3 +7,6 @@
 FROM yt2srt-base:latest
 ARG CACHE_BUST
 COPY yt2srt /usr/local/bin/yt2srt
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

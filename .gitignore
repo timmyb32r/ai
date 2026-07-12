@@ -1,3 +1,7 @@
+*/.docker-cache-model/
+*/.docker-cache/
+*/.mcp.json
+
 # jetbrains IDE
 .idea
 .gradle/

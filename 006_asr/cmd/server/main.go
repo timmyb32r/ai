@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -44,7 +46,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer tr.Close()
-	log.Info("main", "transcriber_ready", "model", cfg.ModelCodename)
+	log.Info("main", "transcriber_ready", "model", cfg.ModelCodename, "num_cpu", runtime.NumCPU(), "goroutines", runtime.NumGoroutine())
 
 	// Set up store and worker
 	store := storage.NewInMemoryStore()
@@ -64,6 +66,9 @@ func main() {
 	handler := api.NewHandler(store, wrk, log, staticSub)
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
+
+	// pprof — delegates to DefaultServeMux (registered by net/http/pprof import)
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
