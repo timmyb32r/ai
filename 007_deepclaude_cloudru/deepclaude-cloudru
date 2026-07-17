@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# deepclaude-cloudru — Use Claude Code with cloud.ru (GLM / OpenAI-compatible models)
+# Usage: deepclaude-cloudru [--status] [--help] [-- claude-args...]
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- Config ---
+CLOUDRU_URL="${CLOUDRU_URL:-https://foundation-models.api.cloud.ru/v1}"
+CLOUDRU_MODEL="${CLOUDRU_MODEL:-zai-org/GLM-5.2}"
+PROXY_PORT="${PROXY_PORT:-3201}"
+KEY_FILE="$HOME/.cloudru"
+
+ACTION="launch"
+PROXY_PID=""
+
+# --- Parse args ---
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --status)   ACTION="status"; shift ;;
+        --help|-h)  ACTION="help"; shift ;;
+        --model|-m) CLOUDRU_MODEL="$2"; shift 2 ;;
+        *)          break ;;
+    esac
+done
+
+# --- Cleanup ---
+cleanup_proxy() {
+    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
+        kill "$PROXY_PID" 2>/dev/null || true
+        wait "$PROXY_PID" 2>/dev/null || true
+        echo "  Proxy stopped."
+    fi
+}
+trap cleanup_proxy EXIT
+
+# --- Helpers ---
+mask_key() {
+    local k="$1"
+    if [[ -z "$k" ]]; then echo "MISSING"; else echo "set (****${k: -4})"; fi
+}
+
+show_status() {
+    echo ""
+    echo "  deepclaude-cloudru — Status"
+    echo "  ==========================="
+    echo ""
+    echo "  API key:  $(mask_key "$(cat "$KEY_FILE" 2>/dev/null || echo '')")"
+    echo "  Endpoint: $CLOUDRU_URL"
+    echo "  Model:    $CLOUDRU_MODEL"
+    echo "  Proxy:    $(curl -s http://127.0.0.1:$PROXY_PORT/_proxy/status 2>/dev/null || echo 'not running')"
+    echo ""
+    echo "  Environment:"
+    echo "    CLOUDRU_MODEL  — model name (default: ZhipuAI/GLM-4-9B-Chat)"
+    echo "    CLOUDRU_URL    — API base URL"
+    echo "    PROXY_PORT     — local proxy port (default: 3201)"
+    echo ""
+}
+
+show_help() {
+    echo "deepclaude-cloudru — Claude Code with cloud.ru (GLM / OpenAI-compatible)"
+    echo ""
+    echo "Usage: deepclaude-cloudru [options] [-- claude-args...]"
+    echo ""
+    echo "Options:"
+    echo "  -m, --model <name>   Model name (default: ZhipuAI/GLM-4-9B-Chat)"
+    echo "  --status             Show configuration"
+    echo "  -h, --help           This help"
+    echo ""
+    echo "Environment:"
+    echo "  CLOUDRU_MODEL   Model to use"
+    echo "  CLOUDRU_URL     cloud.ru API base URL"
+    echo "  PROXY_PORT      Local proxy port (default: 3201)"
+    echo ""
+    echo "API key is read from ~/.cloudru"
+    echo ""
+    echo "Examples:"
+    echo "  deepclaude-cloudru"
+    echo "  deepclaude-cloudru -m ZhipuAI/GLM-4-9B-Chat"
+    echo "  deepclaude-cloudru -m 'ai-sage/GigaChat3-10B-A1.8B' -- --dangerously-skip-permissions"
+}
+
+launch() {
+    # --- Read API key ---
+    local api_key
+    api_key="$(cat "$KEY_FILE" 2>/dev/null | tr -d '\n' | tr -d ' ')"
+    if [[ -z "$api_key" ]]; then
+        echo "ERROR: No API key found in $KEY_FILE" >&2
+        echo "Put your cloud.ru API key in $KEY_FILE" >&2
+        exit 1
+    fi
+
+    # --- Start translation proxy ---
+    echo "  cloud.ru → Claude Code"
+    echo "  Endpoint: $CLOUDRU_URL"
+    echo "  Model:    $CLOUDRU_MODEL"
+    echo ""
+
+    export CLOUDRU_API_KEY="$api_key"
+    export CLOUDRU_URL
+    export CLOUDRU_MODEL
+    export PROXY_PORT
+
+    python3 "$SCRIPT_DIR/proxy/cloudru-proxy.py" 2>>/tmp/cloudru-proxy.log &
+    PROXY_PID=$!
+
+    # Wait for proxy to be ready
+    local tries=0
+    while ! curl -s "http://127.0.0.1:$PROXY_PORT/_proxy/status" >/dev/null 2>&1; do
+        sleep 0.1
+        tries=$((tries + 1))
+        if [[ $tries -gt 50 ]]; then
+            echo "ERROR: Proxy failed to start" >&2
+            exit 1
+        fi
+        # Check it didn't die
+        if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            echo "ERROR: Proxy died on startup" >&2
+            exit 1
+        fi
+    done
+
+    echo "  Proxy ready on :$PROXY_PORT"
+    echo ""
+
+    # --- Launch Claude Code against proxy ---
+    export ANTHROPIC_BASE_URL="http://127.0.0.1:$PROXY_PORT"
+    export ANTHROPIC_AUTH_TOKEN="cloudru-proxy"   # proxy ignores auth, uses its own key
+    unset ANTHROPIC_API_KEY
+
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="$CLOUDRU_MODEL"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="$CLOUDRU_MODEL"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CLOUDRU_MODEL"
+    export CLAUDE_CODE_SUBAGENT_MODEL="$CLOUDRU_MODEL"
+    unset CLAUDE_CODE_EFFORT_LEVEL
+
+    exec claude "$@"
+}
+
+# --- Main ---
+case "$ACTION" in
+    status) show_status ;;
+    help)   show_help ;;
+    launch) launch "$@" ;;
+esac
