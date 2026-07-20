@@ -49,12 +49,16 @@ type Pipeline struct {
 
 	asrCompleted atomic.Int64 // total segments transcribed by whisper
 	epochBase    float64      // Unix epoch at pipeline start — base for monotonic timeline
+
+	emptyStreak     int64 // consecutive segments with empty ASR output
+	emptyStreakAlarm int64 // set to 1 when alarm already fired (prevents log spam)
 }
 
 func (p *Pipeline) Run(ctx context.Context) error {
 	p.Logger.Info("pipeline", "starting")
-	// Clean old metadata from previous run to prevent timeline mismatch
-	os.RemoveAll(filepath.Join(p.OutputDir, "metadata"))
+	// Preserve metadata from previous runs — the cleanup loop (6h TTL)
+	// removes stale entries. Wiping everything on restart destroys the
+	// only fallback when ASR fails after restart.
 	os.MkdirAll(filepath.Join(p.OutputDir, "metadata"), 0o755)
 	os.Remove(filepath.Join(p.OutputDir, "hls", "playlist.m3u8"))
 	defer func() {
@@ -226,6 +230,22 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 	if err != nil {
 		p.Logger.Error("pipeline", "asr_failed", "id", chunk.SegmentID, "err", err)
 		segment = &models.TranscriptSegment{SegmentID: chunk.SegmentID, TextZh: ""}
+	}
+
+	// Track consecutive empty ASR output — systematic silence/failure detection.
+	// When the ASR model produces empty text for many segments in a row it
+	// usually means the audio source is dead or the model has stalled.
+	if segment.TextZh == "" {
+		streak := atomic.AddInt64(&p.emptyStreak, 1)
+		if streak >= 10 && atomic.CompareAndSwapInt64(&p.emptyStreakAlarm, 0, 1) {
+			p.Logger.Error("pipeline", "asr_empty_streak_alarm",
+				"streak", streak,
+				"msg", "ASR has produced 10+ empty segments in a row — audio source may be silent or model stalled",
+			)
+		}
+	} else {
+		atomic.StoreInt64(&p.emptyStreak, 0)
+		atomic.StoreInt64(&p.emptyStreakAlarm, 0)
 	}
 	// Monotonic timeline: epochBase + segmentID * HLSTime.
 	// Guarantees non-overlapping, sequential segments.
@@ -408,10 +428,14 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 	p.asrCompleted.Add(1)
 
 	totalMs := time.Since(t0).Milliseconds()
-	p.Logger.Info("pipeline", "asr_done",
+	logFn := p.Logger.Info
+	if segment.TextZh == "" {
+		logFn = p.Logger.Warn
+	}
+	logFn("pipeline", "asr_done",
 		"id", chunk.SegmentID, "asr_ms", asrMs, "tok_ms", tokenizeMs,
 		"dict_ms", dictMs, "store_ms", storeMs, "total_ms", totalMs,
-		"words", len(wordEntries),
+		"text_len", len([]rune(segment.TextZh)), "words", len(wordEntries),
 	)
 }
 

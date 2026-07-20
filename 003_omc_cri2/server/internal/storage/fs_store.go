@@ -102,6 +102,7 @@ func (s *fsStore) Read(segmentID int) (*models.TranscriptSegment, error) {
 	if err := json.Unmarshal(data, &seg); err != nil {
 		return nil, err
 	}
+	seg.HasContent = seg.TextZh != ""
 	return &seg, nil
 }
 

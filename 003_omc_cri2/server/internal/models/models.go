@@ -15,6 +15,7 @@ type TranscriptSegment struct {
 	TextPinyin       string      `json:"text_pinyin"`
 	TextEn           string      `json:"text_en"`
 	Words            []WordEntry `json:"words"`
+	HasContent       bool        `json:"has_content"` // true when ASR produced non-empty text
 
 	// RawTimestamps and RawTokens carry per-character timestamps from
 	// sherpa-onnx. When non-empty, the pipeline uses them to compute
