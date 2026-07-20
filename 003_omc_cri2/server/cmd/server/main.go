@@ -148,10 +148,12 @@ func main() {
 
 	// HTTP API
 	apiServer := &api.Server{
-		Store:   store,
-		Logger:  logger,
-		HLSDir:  cfg.OutputDir + "/hls",
-		MetaDir: cfg.OutputDir + "/metadata",
+		Store:     store,
+		Logger:    logger,
+		HLSDir:    cfg.OutputDir + "/hls",
+		MetaDir:   cfg.OutputDir + "/metadata",
+		AsrEngine: cfg.AsrEngine,
+		AsrModel:  cfg.AsrModel,
 	}
 
 	// ── pprof server (diagnostics) ────────────────────────────────────

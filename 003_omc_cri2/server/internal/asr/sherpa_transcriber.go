@@ -119,6 +119,10 @@ func (t *sherpaTranscriber) Transcribe(pcm []float32, segmentID int) (*models.Tr
 		return nil, fmt.Errorf("parse sherpa output: %w\nstderr: %s", err, tailStr(stderr.String(), 500))
 	}
 	if result == nil || result.Text == "" {
+		errOutput := strings.TrimSpace(stderr.String())
+		if errOutput != "" {
+			fmt.Fprintf(os.Stderr, "[W] sherpa-onnx empty output for segment %d; stderr: %s\n", segmentID, errOutput)
+		}
 		return &models.TranscriptSegment{
 			SegmentID: segmentID,
 			TextZh:    "",

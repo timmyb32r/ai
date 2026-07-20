@@ -153,7 +153,13 @@ func (t *whisperTranscriber) Transcribe(pcm []float32, segmentID int) (*models.T
 
 	// 3. Parse text output format: [HH:MM:SS.mmm --> HH:MM:SS.mmm]  text
 	output := strings.TrimSpace(stdout.String())
+	errOutput := strings.TrimSpace(stderr.String())
 	if output == "" {
+		// Log stderr even on success — whisper-cli may print diagnostics
+		// (model warnings, audio stats) that explain the empty output.
+		if errOutput != "" {
+			fmt.Fprintf(os.Stderr, "[W] whisper-cli empty output for segment %d; stderr: %s\n", segmentID, errOutput)
+		}
 		return &models.TranscriptSegment{
 			SegmentID: segmentID,
 			TextZh:    "",

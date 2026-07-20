@@ -56,9 +56,11 @@ type Pipeline struct {
 
 func (p *Pipeline) Run(ctx context.Context) error {
 	p.Logger.Info("pipeline", "starting")
-	// Preserve metadata from previous runs — the cleanup loop (6h TTL)
-	// removes stale entries. Wiping everything on restart destroys the
-	// only fallback when ASR fails after restart.
+	// Clean old metadata from previous runs to prevent stale segments
+	// with high segment_IDs from polluting ReadLatest queries.
+	// The cleanup loop (6h TTL) handles long-running stale data; this
+	// is a fresh-start reset for clean segment_ID numbering.
+	os.RemoveAll(filepath.Join(p.OutputDir, "metadata"))
 	os.MkdirAll(filepath.Join(p.OutputDir, "metadata"), 0o755)
 	os.Remove(filepath.Join(p.OutputDir, "hls", "playlist.m3u8"))
 	defer func() {
@@ -223,6 +225,15 @@ func (p *Pipeline) asrWorker(ctx context.Context, queue <-chan models.PCMChunk) 
 
 func (p *Pipeline) processASR(chunk models.PCMChunk) {
 	t0 := time.Now()
+
+	// Quick silence check: if PCM RMS is near zero the audio source is dead.
+	// Sample a subset to keep this cheap (< 1µs per segment).
+	if rms := sampleRMS(chunk.Samples); rms < 1e-6 {
+		p.Logger.Warn("pipeline", "pcm_silence",
+			"id", chunk.SegmentID, "rms", rms,
+			"msg", "Audio chunk is silent — check radio stream connectivity",
+		)
+	}
 
 	asrStart := time.Now()
 	segment, err := p.Transcriber.Transcribe(chunk.Samples, chunk.SegmentID)
@@ -787,6 +798,37 @@ func (p *Pipeline) fillPerChar(w *models.WordEntry, chars []rune) {
 	if changed && (w.Pinyin == "" || w.Pinyin == "_" || w.Pinyin == "?" || strings.ContainsAny(w.Pinyin, ",;?")) {
 		w.Pinyin = strings.Join(w.CharPinyin, " ")
 	}
+}
+
+// sampleRMS estimates RMS amplitude from a sparse sample of the PCM buffer.
+// Returns 0.0 for truly silent (all-zero) audio.
+func sampleRMS(samples []float32) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	// Check first, middle, and last 1000 samples — enough to detect silence
+	// without touching the entire 48000-sample buffer.
+	indices := []int{0, len(samples) / 2, len(samples) - 1000}
+	if indices[2] < 0 {
+		indices[2] = 0
+	}
+	var sum float64
+	count := 0
+	for _, base := range indices {
+		end := base + 1000
+		if end > len(samples) {
+			end = len(samples)
+		}
+		for i := base; i < end; i++ {
+			v := float64(samples[i])
+			sum += v * v
+		}
+		count += end - base
+	}
+	if count == 0 {
+		return 0
+	}
+	return sum / float64(count) // mean squared — sqrt not needed for threshold check
 }
 
 func resolveByContext(charIdx int, chars []rune, dict dictionary.Dictionary) string {

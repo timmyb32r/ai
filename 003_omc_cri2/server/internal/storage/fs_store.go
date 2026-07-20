@@ -126,9 +126,13 @@ func (s *fsStore) ReadRange(startSec, endSec float64) ([]models.TranscriptSegmen
 	return segments, nil
 }
 
-// ReadLatest reads the N most recent segments by segment_id.
+// ReadLatest reads the N most recent segments by timeline (newest first).
 // Used by the cold-start bulk endpoint to return everything the
 // client needs in a single HTTP request.
+//
+// Uses timeline_start_sec (Unix epoch) rather than segment_id so that
+// pipeline restarts (which reset segment_id to 0) don't return stale
+// pre-restart metadata instead of fresh data.
 func (s *fsStore) ReadLatest(n int) ([]models.TranscriptSegment, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -141,14 +145,20 @@ func (s *fsStore) ReadLatest(n int) ([]models.TranscriptSegment, error) {
 		return nil, nil
 	}
 
-	// Take the last N entries (highest segment_id).
-	start := len(idx.Segments) - n
-	if start < 0 {
-		start = 0
+	// Sort a copy by timeline_start_sec descending so we always return
+	// the most recent audio segments regardless of segment_id numbering.
+	sorted := append([]models.SegmentRef(nil), idx.Segments...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].TimelineStartSec > sorted[j].TimelineStartSec
+	})
+
+	end := n
+	if end > len(sorted) {
+		end = len(sorted)
 	}
 
-	result := make([]models.TranscriptSegment, 0, len(idx.Segments)-start)
-	for _, ref := range idx.Segments[start:] {
+	result := make([]models.TranscriptSegment, 0, end)
+	for _, ref := range sorted[:end] {
 		seg, err := s.Read(ref.ID)
 		if err != nil {
 			continue

@@ -90,6 +90,8 @@ type ServerStatus struct {
 	ClientsConnected      int     `json:"clients_connected"`
 	OldestSegmentStartSec float64 `json:"oldest_segment_start_sec"`
 	NewestSegmentEndSec   float64 `json:"newest_segment_end_sec"`
+	AsrEngine             string  `json:"asr_engine"`
+	AsrModel              string  `json:"asr_model"`
 }
 
 // SSESync is the initial sync event sent to new SSE connections.

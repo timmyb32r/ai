@@ -21,6 +21,8 @@ type Server struct {
 	Logger    logging.Logger
 	HLSDir    string // directory containing playlist.m3u8 and .ts files
 	MetaDir   string // directory containing .json metadata files
+	AsrEngine string // ASR engine name ("whisper" or "sherpa-onnx")
+	AsrModel  string // ASR model codename (e.g. "ggml-small")
 
 	clientsConnected atomic.Int64
 }
@@ -143,6 +145,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		MetadataFiles:     storeStats.TotalFiles,
 		LiveEdgeOffsetSec: 180.0, // TODO: compute from ingest stats
 		ClientsConnected:  int(s.clientsConnected.Load()),
+		AsrEngine:         s.AsrEngine,
+		AsrModel:          s.AsrModel,
 	}
 
 	// Populate archive time range from index so clients can validate sync windows.
