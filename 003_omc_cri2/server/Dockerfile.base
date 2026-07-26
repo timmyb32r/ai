@@ -105,6 +105,15 @@ RUN if [ -s /opt/dabkrs.gz ]; then \
       echo "WARNING: BKRS dump not found — set DICT=cedict for English mode" >&2; \
     fi
 
+# ── Wiktionary JSONL dump — Chinese-English from kaikki.org ────────────
+# Pre-downloaded by download-cache.sh. Optional — only validated when DICT=wiktionary.
+COPY .docker-cache/zh-extract.jsonl.gz /opt/zh-extract.jsonl.gz
+RUN if [ -s /opt/zh-extract.jsonl.gz ]; then \
+      echo "Wiktionary dump: $(du -h /opt/zh-extract.jsonl.gz | cut -f1)"; \
+    else \
+      echo "WARNING: Wiktionary dump not found — set DICT=bkrs or cedict instead" >&2; \
+    fi
+
 # ── Unihan readings — probable pinyin for ambiguous single characters ───
 # Required: fills a lone character's "?" reading with its most frequent
 # Mandarin reading (Unihan kHanyuPinlu). A missing/empty file fails the build
@@ -131,6 +140,7 @@ ENV ADDR=:8080 \
     DICT=bkrs \
     BKRS_PATH=/opt/dabkrs.gz \
     CEDICT_PATH=/opt/cedict_ts.u8 \
+    WIKTIONARY_PATH=/opt/zh-extract.jsonl.gz \
     UNIHAN_PATH=/opt/Unihan_Readings.txt \
     CHANNEL_URL=https://sk.cri.cn/905.m3u8 \
     OUTPUT_DIR=/tmp/china_radio_international \

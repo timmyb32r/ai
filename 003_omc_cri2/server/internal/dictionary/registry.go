@@ -25,6 +25,11 @@ var DictRegistry = map[string]DictInfo{
 		Description:  "CC-CEDICT — Chinese-English dictionary (community maintained)",
 		RequiredFile: "cedict_ts.u8",
 	},
+	"wiktionary": {
+		Codename:     "wiktionary",
+		Description:  "kaikki.org Wiktionary — Chinese-English from pre-parsed JSONL dump",
+		RequiredFile: "zh-extract.jsonl.gz",
+	},
 }
 
 // LookupDict returns the DictInfo for a codename.

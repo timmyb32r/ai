@@ -16,9 +16,10 @@ type Config struct {
 	ModelPath       string        // Path to ASR model file/directory
 	AsrEngine       string        // ASR engine: "whisper" or "sherpa-onnx"
 	AsrModel        string        // Model codename from registry (e.g. "ggml-small", "sense-voice-2024")
-	Dict            string        // Dictionary: "bkrs" or "cedict" (env DICT, default "bkrs")
+	Dict            string        // Dictionary: "bkrs", "cedict", or "wiktionary" (env DICT, default "bkrs")
 	DictPath        string        // Path to CC-CEDICT dictionary (cedict_ts.u8) — used when DICT=cedict
 	BKRSPath        string        // Path to BKRS raw dump (dabkrs.gz) — used when DICT=bkrs
+	WiktionaryPath  string        // Path to Wiktionary JSONL dump (zh-extract.jsonl.gz) — used when DICT=wiktionary
 	UnihanPath      string        // Path to Unihan_Readings.txt — optional; enables probable-reading fill for single-char "?"
 	GSEDictDir      string        // Path to gse dictionary directory
 	HanLPURL        string        // HanLP REST API URL (e.g. "http://localhost:8765"). Empty = use GSE.
@@ -43,6 +44,7 @@ func FromEnv() *Config {
 		Dict:            envStr("DICT", "bkrs"),
 		DictPath:        envStr("CEDICT_PATH", "/opt/cedict_ts.u8"),
 		BKRSPath:        envStr("BKRS_PATH", "/opt/dabkrs.gz"),
+			WiktionaryPath:  envStr("WIKTIONARY_PATH", "/opt/zh-extract.jsonl.gz"),
 		UnihanPath:      envStr("UNIHAN_PATH", "/opt/Unihan_Readings.txt"),
 		GSEDictDir:      envStr("GSE_DICT_PATH", "/opt/gse-dict"),
 		HanLPURL:        envStr("HANLP_URL", ""),
@@ -71,15 +73,18 @@ func (c *Config) Validate() error {
 	if c.AsrEngine != "" && c.AsrEngine != "whisper" && c.AsrEngine != "sherpa-onnx" {
 		return fmt.Errorf("ASR_ENGINE must be 'whisper' or 'sherpa-onnx', got %q", c.AsrEngine)
 	}
-	if c.Dict != "bkrs" && c.Dict != "cedict" {
-		return fmt.Errorf("DICT must be 'bkrs' or 'cedict', got %q", c.Dict)
+	if c.Dict != "bkrs" && c.Dict != "cedict" && c.Dict != "wiktionary" {
+		return fmt.Errorf("DICT must be 'bkrs', 'cedict', or 'wiktionary', got %q", c.Dict)
 	}
 	if c.Dict == "bkrs" && c.BKRSPath == "" {
 		return fmt.Errorf("BKRS_PATH is required when DICT=bkrs")
 	}
-	if c.Dict == "cedict" && c.DictPath == "" {
-		return fmt.Errorf("CEDICT_PATH is required when DICT=cedict")
-	}
+		if c.Dict == "cedict" && c.DictPath == "" {
+			return fmt.Errorf("CEDICT_PATH is required when DICT=cedict")
+		}
+		if c.Dict == "wiktionary" && c.WiktionaryPath == "" {
+			return fmt.Errorf("WIKTIONARY_PATH is required when DICT=wiktionary")
+		}
 	if c.GSEDictDir == "" && c.HanLPURL == "" {
 		return fmt.Errorf("GSE_DICT_PATH is required when HANLP_URL is not set (no tokenizer configured)")
 	}

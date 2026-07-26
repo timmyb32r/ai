@@ -63,8 +63,15 @@ case "${DICT}" in
         fi
         echo "CEDICT:     ${CEDICT_PATH} ($(wc -l < "${CEDICT_PATH}" 2>/dev/null || echo 'N/A') entries)"
         ;;
+    wiktionary)
+        if [ ! -f "${WIKTIONARY_PATH}" ]; then
+            echo "ERROR: Wiktionary JSONL dump not found at ${WIKTIONARY_PATH}" >&2
+            exit 1
+        fi
+        echo "Wiktionary: ${WIKTIONARY_PATH} ($(du -h "${WIKTIONARY_PATH}" 2>/dev/null | cut -f1 || echo 'N/A'))"
+        ;;
     *)
-        echo "ERROR: Unknown DICT '${DICT}'. Valid: bkrs, cedict" >&2
+        echo "ERROR: Unknown DICT '${DICT}'. Valid: bkrs, cedict, wiktionary" >&2
         exit 1
         ;;
 esac

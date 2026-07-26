@@ -83,6 +83,13 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("main", "dictionary", "dict", "cedict", "path", cfg.DictPath)
+	case "wiktionary":
+		dict, err = dictionary.LoadWiktionary(cfg.WiktionaryPath)
+		if err != nil {
+			logger.Error("main", "wiktionary_init_failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("main", "dictionary", "dict", "wiktionary", "path", cfg.WiktionaryPath)
 	default:
 		logger.Error("main", "unknown_dict", "dict", cfg.Dict)
 		os.Exit(1)
@@ -104,7 +111,7 @@ func main() {
 	// (e.g. entries with missing pinyin "_" like 天问). Only needed when BKRS is
 	// primary; in cedict mode the main dict already covers it. Optional.
 	var cedictFallback dictionary.Dictionary
-	if cfg.Dict == "bkrs" {
+	if cfg.Dict == "bkrs" || cfg.Dict == "wiktionary" {
 		if cd, cerr := dictionary.Load(cfg.DictPath); cerr != nil {
 			logger.Warn("main", "cedict_fallback_disabled", "path", cfg.DictPath, "err", cerr)
 		} else {
