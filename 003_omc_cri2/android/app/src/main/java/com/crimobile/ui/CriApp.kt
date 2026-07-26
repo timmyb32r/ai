@@ -1,6 +1,5 @@
 package com.crimobile.ui
 
-import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -78,6 +77,7 @@ import com.crimobile.offline.SegmentCache
 import com.crimobile.offline.SyncConfig
 import com.crimobile.viewmodel.CriAction
 import com.crimobile.viewmodel.CriViewState
+import com.crimobile.debug.DebugLogger
 
 // ── Design tokens (matching 001_omc_cri style) ────────────────────────
 private val Bg = Color(0xFF121212)
@@ -907,7 +907,7 @@ private fun SubtitleList(
                 is DragInteraction.Start -> {
                     if (scrollMode.value != ScrollMode.MANUAL) {
                         scrollMode.value = ScrollMode.MANUAL
-                        Log.i("CRIRadio:scroll", "FSM → MANUAL (user drag)")
+                        DebugLogger.i("CRIRadio:scroll", "FSM → MANUAL (user drag)")
                     }
                 }
                 is DragInteraction.Cancel, is DragInteraction.Stop -> {
@@ -947,7 +947,7 @@ private fun SubtitleList(
             if (recenterChannel.tryReceive().getOrNull() != null) {
                 scrollMode.value = ScrollMode.AUTO
                 initialized = false  // re-run the 40% centering on next AUTO tick
-                Log.i("CRIRadio:scroll", "RECENTER → AUTO")
+                DebugLogger.i("CRIRadio:scroll", "RECENTER → AUTO")
             }
 
             // ── Read current state into plain immutable locals ──
@@ -963,14 +963,14 @@ private fun SubtitleList(
             val shouldPause = !playing || pronouncing
             if (shouldPause && mode == ScrollMode.AUTO) {
                 scrollMode.value = ScrollMode.PAUSED
-                Log.d("CRIRadio:scroll", "FSM → PAUSED")
+                DebugLogger.d("CRIRadio:scroll", "FSM → PAUSED")
             }
             if (!shouldPause && mode == ScrollMode.PAUSED) {
                 scrollMode.value = ScrollMode.AUTO
                 // Resume smooth scroll WITHOUT re-centering. Buffering blips during
                 // cold start must not yank the list. Recenter is explicit (button)
                 // or automatic only when the word actually leaves the screen.
-                Log.i("CRIRadio:scroll", "FSM PAUSED → AUTO (resume, no recenter)")
+                DebugLogger.i("CRIRadio:scroll", "FSM PAUSED → AUTO (resume, no recenter)")
             }
             val currentMode = scrollMode.value
 
@@ -1006,7 +1006,7 @@ private fun SubtitleList(
 
                 // Heartbeat every 5s
                 if (tickNanos - lastLogNanos > 5_000_000_000L) {
-                    Log.d("CRIRadio:scroll",
+                    DebugLogger.d("CRIRadio:scroll",
                         "alive segs=${segs.size} activeSeg=$currentActiveSegId " +
                         "mode=$currentMode loop=$loopIterations")
                 }
@@ -1060,7 +1060,7 @@ private fun SubtitleList(
                         }
                     }
                     initialized = true
-                    Log.i("CRIRadio:scroll",
+                    DebugLogger.i("CRIRadio:scroll",
                         "INIT segs=${segs.size} activeIdx=$activeIdx targetIdx=$targetIdx initSpeed=%.1f".format(initSpeedPxPerSec))
                     return@withoutReadObservation ScrollResult.ScrollTo(targetIdx)
                 }
@@ -1129,7 +1129,7 @@ private fun SubtitleList(
             if (tickNanos - lastLogNanos > 2_000_000_000L) {
                 lastLogNanos = tickNanos
                 val posStr = dbgPosition?.let { "%.2f".format(it) } ?: "null"
-                Log.i("CRIRadio:scroll",
+                DebugLogger.i("CRIRadio:scroll",
                     ("mode=$currentMode reason=$dbgReason pos=$posStr mult=%.2f " +
                      "base=%.1f rawPx=%.2f/tick initSpeed=%.1f totalPx=%.0f " +
                      "activeIdx=$dbgActiveIdx segs=${segs.size} dt=%.0fms loop=$loopIterations").format(
@@ -1296,11 +1296,11 @@ private fun SegmentCard(
                                         .padding(horizontal = 1.5.dp)
                                         .clickable {
                                             if (!isPunctuationOnly(charCell.word.text)) {
-                                                Log.i("CRIRadio:tap",
+                                                DebugLogger.i("CRIRadio:tap",
                                                     "→ tapped \"${charCell.word.text}\" pinyin=${charCell.word.pinyin}")
                                                 onWordTapped(charCell.word)
                                             } else {
-                                                Log.d("CRIRadio:tap",
+                                                DebugLogger.d("CRIRadio:tap",
                                                     "→ skipped punctuation \"${charCell.text}\"")
                                             }
                                         }
@@ -1364,15 +1364,15 @@ private fun ScrollThumb(
                         val curVis = listState.layoutInfo.visibleItemsInfo.size
                         val curMax = (curTotal - curVis).coerceAtLeast(1)
                         val startFrac = listState.firstVisibleItemIndex.toFloat() / curMax
-                        Log.i("CRIRadio:thumb", "start: first=${listState.firstVisibleItemIndex} total=$curTotal frac=$startFrac")
+                        DebugLogger.i("CRIRadio:thumb", "start: first=${listState.firstVisibleItemIndex} total=$curTotal frac=$startFrac")
                         dragStartData = Triple(curMax, startFrac, 0f)
                     },
                     onDragEnd = {
-                        Log.i("CRIRadio:thumb", "end: first=${listState.firstVisibleItemIndex}")
+                        DebugLogger.i("CRIRadio:thumb", "end: first=${listState.firstVisibleItemIndex}")
                         dragStartData = null
                     },
                     onDragCancel = {
-                        Log.i("CRIRadio:thumb", "cancel")
+                        DebugLogger.i("CRIRadio:thumb", "cancel")
                         dragStartData = null
                     },
                     onVerticalDrag = { _, dragAmount ->
@@ -1385,7 +1385,7 @@ private fun ScrollThumb(
                         if (range <= 0) return@detectVerticalDragGestures
                         val newFraction = (startFrac + totalDy / range).coerceIn(0f, 1f)
                         val targetIdx = (newFraction * curMax).toInt().coerceIn(0, curMax)
-                        Log.d("CRIRadio:thumb", "drag: dY=$dragAmount totalDy=$totalDy newF=$newFraction target=$targetIdx firstNow=${listState.firstVisibleItemIndex}")
+                        DebugLogger.d("CRIRadio:thumb", "drag: dY=$dragAmount totalDy=$totalDy newF=$newFraction target=$targetIdx firstNow=${listState.firstVisibleItemIndex}")
                         coroutineScope.launch { listState.scrollToItem(targetIdx, 0) }
                     }
                 )

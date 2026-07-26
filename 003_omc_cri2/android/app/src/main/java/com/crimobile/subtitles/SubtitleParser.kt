@@ -1,9 +1,9 @@
 package com.crimobile.subtitles
 
-import android.util.Log
 import com.crimobile.model.SubtitleSegment
 import com.crimobile.model.WordEntry
 import org.json.JSONObject
+import com.crimobile.debug.DebugLogger
 
 /**
  * Shared JSON → SubtitleSegment parser used by all subtitle sources.
@@ -49,7 +49,7 @@ object SubtitleParser {
                 }
             }
             if (charPinyin.isEmpty() && !w.optString("pinyin", "").isNullOrBlank()) {
-                Log.w("CRIRadio:parse", "word=${w.optString("text")} — char_pinyin MISSING, pinyin=${w.optString("pinyin")}")
+                DebugLogger.w("CRIRadio:parse", "word=${w.optString("text")} — char_pinyin MISSING, pinyin=${w.optString("pinyin")}")
             }
             // Parse per-character uncertainty flags (probabilistic fills).
             val uncertainArray = w.optJSONArray("char_pinyin_uncertain")

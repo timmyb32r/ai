@@ -1,6 +1,5 @@
 package com.crimobile.subtitles
 
-import android.util.Log
 import com.crimobile.model.ConnectionStatus
 import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
@@ -19,6 +18,7 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import com.crimobile.debug.DebugLogger
 
 private const val SSE_TAG = "CRIRadio:sse"
 
@@ -46,7 +46,7 @@ class SseSubtitleSource : SubtitleSource {
     private val lock = Any()
 
     override fun connect(serverUrl: String) {
-        Log.i(SSE_TAG, "connecting to $serverUrl/api/subtitles")
+        DebugLogger.i(SSE_TAG, "connecting to $serverUrl/api/subtitles")
         _connected.value = ConnectionStatus.CONNECTING
 
         val request = Request.Builder()
@@ -57,25 +57,25 @@ class SseSubtitleSource : SubtitleSource {
         eventSource?.cancel()
         eventSource = EventSources.createFactory(client).newEventSource(request, object : EventSourceListener() {
             override fun onOpen(eventSource: EventSource, response: Response) {
-                Log.i(SSE_TAG, "connected")
+                DebugLogger.i(SSE_TAG, "connected")
                 _connected.value = ConnectionStatus.CONNECTED
             }
 
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 when (type) {
-                    "sync" -> { Log.d(SSE_TAG, "sync received"); handleSync(data) }
+                    "sync" -> { DebugLogger.d(SSE_TAG, "sync received"); handleSync(data) }
                     "segment" -> { /* batched: no per-segment log */ handleSegment(data) }
-                    else -> Log.w(SSE_TAG, "unknown event type=$type")
+                    else -> DebugLogger.w(SSE_TAG, "unknown event type=$type")
                 }
             }
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                Log.w(SSE_TAG, "connection failed err=${t?.message} code=${response?.code}")
+                DebugLogger.w(SSE_TAG, "connection failed err=${t?.message} code=${response?.code}")
                 _connected.value = ConnectionStatus.DISCONNECTED
             }
 
             override fun onClosed(eventSource: EventSource) {
-                Log.i(SSE_TAG, "closed segments=${segmentMap.size}")
+                DebugLogger.i(SSE_TAG, "closed segments=${segmentMap.size}")
                 _connected.value = ConnectionStatus.DISCONNECTED
             }
         })
@@ -111,17 +111,17 @@ class SseSubtitleSource : SubtitleSource {
             // Log every segment arrival with full metadata
             segmentLogCount++
             val wordSample = segment.words.take(3).joinToString("|") { "${it.text}@${it.start_sec}-${it.end_sec}" }
-            Log.i(SSE_TAG, "seg#${segmentLogCount} id=${segment.segment_id} " +
+            DebugLogger.i(SSE_TAG, "seg#${segmentLogCount} id=${segment.segment_id} " +
                 "tl=[${segment.timeline_start_sec}-${segment.timeline_end_sec}] " +
                 "text=${segment.text_zh.take(40)} " +
                 "words=${segment.words.size} sample=[$wordSample]")
         } catch (e: Exception) {
-            Log.w(SSE_TAG, "parse error: ${e.message}")
+            DebugLogger.w(SSE_TAG, "parse error: ${e.message}")
         }
     }
 
     override fun disconnect() {
-        Log.i(SSE_TAG, "disconnect total_segments=${segmentMap.size}")
+        DebugLogger.i(SSE_TAG, "disconnect total_segments=${segmentMap.size}")
         eventSource?.cancel()
         eventSource = null
         _connected.value = ConnectionStatus.DISCONNECTED

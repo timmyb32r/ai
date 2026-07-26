@@ -1,6 +1,5 @@
 package com.crimobile.offline
 
-import android.util.Log
 import com.crimobile.model.SubtitleSegment
 
 /**

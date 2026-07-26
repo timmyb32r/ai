@@ -1,9 +1,9 @@
 package com.crimobile.pronounce
 
-import android.util.Log
 import com.crimobile.model.WordEntry
 import com.crimobile.player.RadioPlayer
 import kotlinx.coroutines.*
+import com.crimobile.debug.DebugLogger
 
 private const val TAG = "CRIRadio:pronounce"
 
@@ -26,7 +26,7 @@ class PronunciationPlayer(
         pronounceJob?.cancel()
 
         val player = playerProvider() ?: run {
-            Log.w(TAG, "pronounce skipped — no active player")
+            DebugLogger.w(TAG, "pronounce skipped — no active player")
             return
         }
 
@@ -39,7 +39,7 @@ class PronunciationPlayer(
         val wordStartMs = (startSec * 1000).toLong()
         val wordDurationMs = ((endSec - startSec) * 1000).toLong().coerceAtLeast(200)
 
-        Log.i(TAG, "pronounce word=${word.text} startMs=$wordStartMs durationMs=$wordDurationMs savedPosMs=$originalTimelineMs")
+        DebugLogger.i(TAG, "pronounce word=${word.text} startMs=$wordStartMs durationMs=$wordDurationMs savedPosMs=$originalTimelineMs")
 
         player.pause()
         player.seekTo(wordStartMs)
@@ -48,7 +48,7 @@ class PronunciationPlayer(
         // Auto-stop after word duration, then restore position
         pronounceJob = scope.launch {
             delay(wordDurationMs)
-            Log.i(TAG, "pronounce done — restoring posMs=$originalTimelineMs")
+            DebugLogger.i(TAG, "pronounce done — restoring posMs=$originalTimelineMs")
             player.pause()
             player.seekTo(originalTimelineMs)
         }

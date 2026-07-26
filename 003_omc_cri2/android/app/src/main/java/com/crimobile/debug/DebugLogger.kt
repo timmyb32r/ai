@@ -122,28 +122,79 @@ object DebugLogger {
     }
 
     fun log(tag: String, message: String) {
-        Log.i(tag, message)
+        i(tag, message)
+    }
+
+    fun log(tag: String, message: String, throwable: Throwable) {
+        i(tag, message, throwable)
+    }
+
+    // ── Level-specific methods — mirror android.util.Log API ──────────
+
+    fun v(tag: String, msg: String) {
+        Log.v(tag, msg)
+        writeLine("V", tag, msg)
+    }
+
+    fun d(tag: String, msg: String) {
+        Log.d(tag, msg)
+        writeLine("D", tag, msg)
+    }
+
+    fun i(tag: String, msg: String) {
+        Log.i(tag, msg)
+        writeLine("I", tag, msg)
+    }
+
+    fun w(tag: String, msg: String) {
+        Log.w(tag, msg)
+        writeLine("W", tag, msg)
+    }
+
+    fun e(tag: String, msg: String) {
+        Log.e(tag, msg)
+        writeLine("E", tag, msg)
+    }
+
+    fun i(tag: String, msg: String, tr: Throwable) {
+        Log.i(tag, msg, tr)
+        writeLine("I", tag, msg)
+        writeThrowable(tr)
+    }
+
+    fun w(tag: String, msg: String, tr: Throwable) {
+        Log.w(tag, msg, tr)
+        writeLine("W", tag, msg)
+        writeThrowable(tr)
+    }
+
+    fun e(tag: String, msg: String, tr: Throwable) {
+        Log.e(tag, msg, tr)
+        writeLine("E", tag, msg)
+        writeThrowable(tr)
+    }
+
+    // ── Internal file I/O ─────────────────────────────────────────────
+
+    private fun writeLine(level: String, tag: String, msg: String) {
         if (!enabled || !ready) return
         val w = output ?: return
         synchronized(lock) {
             try {
                 val ts = dateFmt.format(Date())
-                w.println("$ts $tag $message")
+                w.println("$ts $level/$tag: $msg")
                 w.flush()
             } catch (_: Exception) { }
         }
     }
 
-    fun log(tag: String, message: String, throwable: Throwable) {
-        Log.i(tag, message, throwable)
+    private fun writeThrowable(tr: Throwable) {
         if (!enabled || !ready) return
         val w = output ?: return
         synchronized(lock) {
             try {
-                val ts = dateFmt.format(Date())
-                w.println("$ts $tag $message")
                 val sw = StringWriter()
-                throwable.printStackTrace(PrintWriter(sw))
+                tr.printStackTrace(PrintWriter(sw))
                 w.println(sw.toString())
                 w.flush()
             } catch (_: Exception) { }

@@ -1,7 +1,6 @@
 package com.crimobile.offline
 
 import android.content.Context
-import android.util.Log
 import com.crimobile.model.SubtitleSegment
 import com.crimobile.offline.SegmentIndex
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +15,7 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import com.crimobile.debug.DebugLogger
 
 data class ArchiveInfo(
     val oldestStartSec: Double = 0.0,
@@ -99,7 +99,7 @@ class DownloadEngine(
                 return@withContext Result.failure(Exception("No segments found for the requested time range"))
             }
 
-            Log.i(TAG, "downloadRange: ${allSegments.size} segments to download")
+            DebugLogger.i(TAG, "downloadRange: ${allSegments.size} segments to download")
 
             // Create session directory before downloading
             val sessionId = storageManager.createSession(startSec.toLong(), (endSec - startSec).toInt())
@@ -156,10 +156,10 @@ class DownloadEngine(
             ))
             storageManager.writeSessionsIndex(sessions)
 
-            Log.i(TAG, "downloadRange complete: $downloadedCount/$totalSize segments")
+            DebugLogger.i(TAG, "downloadRange complete: $downloadedCount/$totalSize segments")
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "downloadRange failed: ${e.message}", e)
+            DebugLogger.e(TAG, "downloadRange failed: ${e.message}", e)
             onProgress(DownloadProgress(
                 isRunning = false,
                 error = e.message ?: "Download failed"
@@ -224,11 +224,11 @@ class DownloadEngine(
             if (response.isSuccessful) {
                 response.body?.bytes()
             } else {
-                Log.w(TAG, "HTTP ${response.code} for $tsFile")
+                DebugLogger.w(TAG, "HTTP ${response.code} for $tsFile")
                 null
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to download ${segment.ts_file}: ${e.message}")
+            DebugLogger.w(TAG, "Failed to download ${segment.ts_file}: ${e.message}")
             null
         }
     }

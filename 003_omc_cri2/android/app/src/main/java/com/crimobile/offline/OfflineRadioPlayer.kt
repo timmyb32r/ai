@@ -2,7 +2,6 @@ package com.crimobile.offline
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -21,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.crimobile.debug.DebugLogger
 
 /**
  * Implements [RadioPlayer] using local .ts audio files via
@@ -69,7 +69,7 @@ class OfflineRadioPlayer(
         orderedSegments = available.sortedBy { it.segment_id }
         segmentOffsetsMs = offsets.toLongArray()
 
-        Log.i(TAG, "init ${orderedSegments.size} segments (${segments.size} total, " +
+        DebugLogger.i(TAG, "init ${orderedSegments.size} segments (${segments.size} total, " +
             "${segments.size - orderedSegments.size} missing audio)")
 
         // Play a single concatenated file when available (gapless by
@@ -83,7 +83,7 @@ class OfflineRadioPlayer(
                 val factory = DefaultMediaSourceFactory(context)
                 player.setMediaSource(factory.createMediaSource(MediaItem.fromUri(Uri.fromFile(concatFile))))
                 useContinuous = true
-                Log.i(TAG, "using continuous.ts — single-source gapless playback")
+                DebugLogger.i(TAG, "using continuous.ts — single-source gapless playback")
             } else {
                 // Legacy: per-segment files — still try gapless.
                 val concat = ConcatenatingMediaSource(/* isGapless = */ true)
@@ -95,7 +95,7 @@ class OfflineRadioPlayer(
                     builtCount++
                 }
                 player.setMediaSource(concat)
-                Log.i(TAG, "using ${orderedSegments.size} segments via ConcatenatingMediaSource (gapless)")
+                DebugLogger.i(TAG, "using ${orderedSegments.size} segments via ConcatenatingMediaSource (gapless)")
             }
             player.prepare()
         }
@@ -129,13 +129,13 @@ class OfflineRadioPlayer(
                     else -> PlaybackState.IDLE
                 }
                 if (newState != _playbackState.value) {
-                    Log.d(TAG, "state ${_playbackState.value} → $newState")
+                    DebugLogger.d(TAG, "state ${_playbackState.value} → $newState")
                     _playbackState.value = newState
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                Log.e(TAG, "error code=${error.errorCode} msg=${error.message}")
+                DebugLogger.e(TAG, "error code=${error.errorCode} msg=${error.message}")
                 _lastErrorMessage.value = error.message ?: "Offline playback error"
                 _playbackState.value = PlaybackState.ERROR
             }
@@ -164,25 +164,25 @@ class OfflineRadioPlayer(
             _playbackState.value = PlaybackState.ERROR
             return
         }
-        Log.i(TAG, "play (offline) — ${orderedSegments.size} segments${if (isContinuous) " (continuous)" else ""}")
+        DebugLogger.i(TAG, "play (offline) — ${orderedSegments.size} segments${if (isContinuous) " (continuous)" else ""}")
         _lastErrorMessage.value = null
         _playbackState.value = PlaybackState.LOADING
         player.play()
     }
 
     override fun pause() {
-        Log.i(TAG, "pause at=${_currentTimelineMs.value}ms")
+        DebugLogger.i(TAG, "pause at=${_currentTimelineMs.value}ms")
         _playbackState.value = PlaybackState.PAUSED
         player.pause()
     }
 
     override fun resume() {
-        Log.i(TAG, "resume")
+        DebugLogger.i(TAG, "resume")
         player.play()
     }
 
     override fun seekTo(timelineMs: Long) {
-        Log.d(TAG, "seekTo $timelineMs")
+        DebugLogger.d(TAG, "seekTo $timelineMs")
         val idx = findSegmentForTimelineMs(timelineMs)
         if (idx < 0) {
             player.seekTo(0L)
@@ -201,7 +201,7 @@ class OfflineRadioPlayer(
     }
 
     override fun seekToLiveEdge() {
-        Log.i(TAG, "seekToLiveEdge → last segment")
+        DebugLogger.i(TAG, "seekToLiveEdge → last segment")
         if (orderedSegments.isNotEmpty()) {
             if (isContinuous) {
                 player.seekTo(segmentOffsetsMs.last())
@@ -213,7 +213,7 @@ class OfflineRadioPlayer(
     }
 
     override fun release() {
-        Log.i(TAG, "release")
+        DebugLogger.i(TAG, "release")
         timelineJob?.cancel()
         player.release()
     }

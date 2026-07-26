@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,7 +28,7 @@ class MainActivity : ComponentActivity() {
      */
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            Log.i(TAG, "POST_NOTIFICATIONS granted=$granted")
+            DebugLogger.i(TAG, "POST_NOTIFICATIONS granted=$granted")
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,10 +54,10 @@ class MainActivity : ComponentActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             == PackageManager.PERMISSION_GRANTED
         ) {
-            Log.d(TAG, "POST_NOTIFICATIONS already granted")
+            DebugLogger.d(TAG, "POST_NOTIFICATIONS already granted")
             return
         }
-        Log.i(TAG, "requesting POST_NOTIFICATIONS")
+        DebugLogger.i(TAG, "requesting POST_NOTIFICATIONS")
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 

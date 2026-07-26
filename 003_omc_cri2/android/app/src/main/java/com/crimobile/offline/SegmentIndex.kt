@@ -1,11 +1,11 @@
 package com.crimobile.offline
 
-import android.util.Log
 import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import com.crimobile.debug.DebugLogger
 
 /**
  * Writes and reads the lightweight segment index for a session.
@@ -39,9 +39,9 @@ object SegmentIndex {
                 target.writeText(tmpFile.readText())
                 tmpFile.delete()
             }
-            Log.i(TAG, "wrote ${segments.size} entries to $INDEX_FILE_NAME")
+            DebugLogger.i(TAG, "wrote ${segments.size} entries to $INDEX_FILE_NAME")
         } catch (e: Exception) {
-            Log.w(TAG, "write failed: ${e.message}")
+            DebugLogger.w(TAG, "write failed: ${e.message}")
             tmpFile.delete()
         }
     }
@@ -64,7 +64,7 @@ object SegmentIndex {
                 )
             }
         } catch (e: Exception) {
-            Log.w(TAG, "read failed: ${e.message}")
+            DebugLogger.w(TAG, "read failed: ${e.message}")
             emptyList()
         }
     }

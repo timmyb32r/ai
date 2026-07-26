@@ -1,12 +1,12 @@
 package com.crimobile.offline
 
 import android.content.Context
-import android.util.Log
 import com.crimobile.model.SegmentMeta
 import com.crimobile.model.SubtitleSegment
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import com.crimobile.debug.DebugLogger
 
 /**
  * Manages locally stored subtitle segments and audio files for offline playback.
@@ -38,7 +38,7 @@ class OfflineStorageManager(private val context: Context) {
         val oldAudio = File(rootDir, "audio")
         val oldIndex = File(rootDir, "index.json")
         if (oldMeta.exists() || oldAudio.exists()) {
-            Log.i(TAG, "Deleting old flat storage structure")
+            DebugLogger.i(TAG, "Deleting old flat storage structure")
             rootDir.deleteRecursively()
         }
         oldIndex.delete()  // safety: remove stale root-level index
@@ -102,7 +102,7 @@ class OfflineStorageManager(private val context: Context) {
                 val obj = org.json.JSONObject(file.readText())
                 com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
             } catch (e: Exception) {
-                Log.w(TAG, "loadFullSegment: ${e.message}")
+                DebugLogger.w(TAG, "loadFullSegment: ${e.message}")
                 null
             }
         }
@@ -131,7 +131,7 @@ class OfflineStorageManager(private val context: Context) {
                         val obj = org.json.JSONObject(f.readText())
                         com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
                     } catch (e: Exception) {
-                        Log.w(TAG, "parse segment ${f.name}: ${e.message}")
+                        DebugLogger.w(TAG, "parse segment ${f.name}: ${e.message}")
                         null
                     }
                 }
@@ -214,7 +214,7 @@ class OfflineStorageManager(private val context: Context) {
             return try {
                 parseSessionsIndex(sessionsIndexFile.readText())
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to read sessions index, rebuilding: ${e.message}")
+                DebugLogger.w(TAG, "Failed to read sessions index, rebuilding: ${e.message}")
                 rebuildSessionsIndex()
             }
         }
@@ -272,7 +272,7 @@ class OfflineStorageManager(private val context: Context) {
         synchronized(lock) {
             if (rootDir.exists()) {
                 rootDir.deleteRecursively()
-                Log.i(TAG, "All offline data deleted")
+                DebugLogger.i(TAG, "All offline data deleted")
             }
         }
     }
@@ -282,7 +282,7 @@ class OfflineStorageManager(private val context: Context) {
             val d = sessionDir(sessionId)
             if (d.exists()) {
                 d.deleteRecursively()
-                Log.i(TAG, "Deleted session: $sessionId")
+                DebugLogger.i(TAG, "Deleted session: $sessionId")
             }
             // Remove from index
             val sessions = loadAllSessions().filter {
@@ -303,7 +303,7 @@ class OfflineStorageManager(private val context: Context) {
                 val d = sessionDir(sid)
                 if (d.exists()) {
                     d.deleteRecursively()
-                    Log.i(TAG, "Pruned old session: $sid")
+                    DebugLogger.i(TAG, "Pruned old session: $sid")
                 }
             }
             val remaining = sessions.filter { s ->
@@ -366,10 +366,10 @@ class OfflineStorageManager(private val context: Context) {
                     tmpFile.copyTo(outFile, overwrite = true)
                     tmpFile.delete()
                 }
-                Log.i(TAG, "concatenated ${tsFiles.size} .ts files → continuous.ts (${outFile.length()} bytes)")
+                DebugLogger.i(TAG, "concatenated ${tsFiles.size} .ts files → continuous.ts (${outFile.length()} bytes)")
                 return outFile
             } catch (e: Exception) {
-                Log.w(TAG, "concatAudioFiles failed: ${e.message}")
+                DebugLogger.w(TAG, "concatAudioFiles failed: ${e.message}")
                 tmpFile.delete()
                 return null
             }

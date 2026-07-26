@@ -1,6 +1,5 @@
 package com.crimobile.player
 
-import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -18,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.crimobile.debug.DebugLogger
 
 private const val TAG = "CRIRadio:player"
 
@@ -59,7 +59,7 @@ class ExoRadioPlayer(
                 // until the user retries or auto-retry succeeds.
                 if (newState == PlaybackState.IDLE && _playbackState.value == PlaybackState.ERROR) return
                 if (newState != _playbackState.value) {
-                    Log.i(TAG, "state ${_playbackState.value} → $newState")
+                    DebugLogger.i(TAG, "state ${_playbackState.value} → $newState")
                     _playbackState.value = newState
                     if (newState == PlaybackState.PLAYING) {
                         // Success — clear error and reset retry counter
@@ -69,11 +69,11 @@ class ExoRadioPlayer(
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
-                Log.e(TAG, "error code=${error.errorCode} msg=${error.message}")
+                DebugLogger.e(TAG, "error code=${error.errorCode} msg=${error.message}")
                 _lastErrorMessage.value = error.message ?: "Playback error (code ${error.errorCode})"
                 _playbackState.value = PlaybackState.ERROR
                 if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
-                    Log.w(TAG, "behind live window → seeking to live edge")
+                    DebugLogger.w(TAG, "behind live window → seeking to live edge")
                     _behindLiveWindow.value = true
                     seekToLiveEdge()
                 }
@@ -98,16 +98,16 @@ class ExoRadioPlayer(
     private fun scheduleRetry() {
         val url = currentHlsUrl ?: return
         if (retryCount >= MAX_RETRIES) {
-            Log.w(TAG, "max retries ($MAX_RETRIES) reached — giving up")
+            DebugLogger.w(TAG, "max retries ($MAX_RETRIES) reached — giving up")
             return
         }
         retryJob?.cancel()
         retryJob = scope.launch {
             val delayMs = RETRY_BASE_DELAY_MS * (1L shl retryCount)
             retryCount++
-            Log.i(TAG, "auto-retry #$retryCount in ${delayMs}ms (url=$url)")
+            DebugLogger.i(TAG, "auto-retry #$retryCount in ${delayMs}ms (url=$url)")
             delay(delayMs)
-            Log.i(TAG, "auto-retry #$retryCount — attempting reconnect")
+            DebugLogger.i(TAG, "auto-retry #$retryCount — attempting reconnect")
             play(url)
         }
     }
@@ -124,7 +124,7 @@ class ExoRadioPlayer(
     }
 
     override fun play(hlsUrl: String) {
-        Log.i(TAG, "play url=$hlsUrl")
+        DebugLogger.i(TAG, "play url=$hlsUrl")
         currentHlsUrl = hlsUrl
         retryCount = 0  // reset on manual play
         retryJob?.cancel()
@@ -158,21 +158,21 @@ class ExoRadioPlayer(
     }
 
     override fun pause() {
-        Log.i(TAG, "pause at=${_currentTimelineMs.value}ms")
+        DebugLogger.i(TAG, "pause at=${_currentTimelineMs.value}ms")
         pausedAtTimelineMs = _currentTimelineMs.value
         _playbackState.value = PlaybackState.PAUSED
         player.pause()
     }
 
     override fun resume() {
-        Log.i(TAG, "resume pausedAt=${pausedAtTimelineMs}ms")
+        DebugLogger.i(TAG, "resume pausedAt=${pausedAtTimelineMs}ms")
         val window = Timeline.Window()
         val timeline = player.currentTimeline
         if (timeline.isEmpty) { player.play(); return }
         timeline.getWindow(player.currentMediaItemIndex, window)
         if (pausedAtTimelineMs > 0 && window.windowStartTimeMs != C.TIME_UNSET) {
             if (pausedAtTimelineMs < window.windowStartTimeMs) {
-                Log.w(TAG, "paused position fell behind DVR window")
+                DebugLogger.w(TAG, "paused position fell behind DVR window")
                 _behindLiveWindow.value = true
                 seekToLiveEdge()
             } else {
@@ -183,7 +183,7 @@ class ExoRadioPlayer(
     }
 
     override fun seekTo(timelineMs: Long) {
-        Log.d(TAG, "seekTo $timelineMs")
+        DebugLogger.d(TAG, "seekTo $timelineMs")
         pausedAtTimelineMs = timelineMs  // remember so resume() doesn't jump back
         val window = Timeline.Window()
         val timeline = player.currentTimeline
@@ -195,13 +195,13 @@ class ExoRadioPlayer(
     }
 
     override fun seekToLiveEdge() {
-        Log.i(TAG, "seekToLiveEdge")
+        DebugLogger.i(TAG, "seekToLiveEdge")
         player.seekToDefaultPosition()
         _behindLiveWindow.value = false
     }
 
     override fun release() {
-        Log.i(TAG, "release")
+        DebugLogger.i(TAG, "release")
         retryJob?.cancel()
         player.release()
     }

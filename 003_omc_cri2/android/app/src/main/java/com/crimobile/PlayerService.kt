@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
@@ -23,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import com.crimobile.debug.DebugLogger
 
 /**
  * Foreground service that owns the ExoPlayer and the Media3 session.
@@ -51,7 +51,7 @@ class PlayerService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        Log.i(TAG, "onCreate — creating ExoPlayer and MediaSession")
+        DebugLogger.i(TAG, "onCreate — creating ExoPlayer and MediaSession")
 
         // 1. Single ExoPlayer — used for both audio playback and MediaSession.
         exoPlayer = ExoPlayer.Builder(this)
@@ -98,18 +98,18 @@ class PlayerService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        Log.i(TAG, "onTaskRemoved — stopping self")
+        DebugLogger.i(TAG, "onTaskRemoved — stopping self")
         stopSelf()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_PLAY -> {
-                Log.i(TAG, "onStartCommand ACTION_PLAY")
+                DebugLogger.i(TAG, "onStartCommand ACTION_PLAY")
                 player.resume()
             }
             ACTION_PAUSE -> {
-                Log.i(TAG, "onStartCommand ACTION_PAUSE")
+                DebugLogger.i(TAG, "onStartCommand ACTION_PAUSE")
                 player.pause()
             }
         }
@@ -117,7 +117,7 @@ class PlayerService : MediaSessionService() {
     }
 
     override fun onDestroy() {
-        Log.i(TAG, "onDestroy — releasing player")
+        DebugLogger.i(TAG, "onDestroy — releasing player")
         stateCollectJob?.cancel()
         player.release()
         RadioPlayerHolder.clearPlayer()

@@ -1,6 +1,5 @@
 package com.crimobile.subtitles
 
-import android.util.Log
 import com.crimobile.debug.DebugLogger
 import com.crimobile.model.ConnectionStatus
 import com.crimobile.model.SegmentMeta
@@ -64,7 +63,7 @@ class HttpSubtitleSource(
     private val tsFilePattern = Regex("^(\\d{9})\\.ts$")
 
     override fun connect(serverUrl: String) {
-        Log.i(HTTP_TAG, "connecting to $serverUrl (poll=${pollIntervalMs}ms)")
+        DebugLogger.i(HTTP_TAG, "connecting to $serverUrl (poll=${pollIntervalMs}ms)")
         DebugLogger.log(HTTP_TAG, "connect → $serverUrl | pollInterval=${pollIntervalMs}ms")
         _connected.value = ConnectionStatus.CONNECTING
         // NOTE: do NOT clear seenIds here — fetchInitial() has already seeded it
@@ -90,14 +89,14 @@ class HttpSubtitleSource(
                         if (consecutiveFailures >= maxConsecutiveFailures) {
                             _connected.value = ConnectionStatus.DISCONNECTED
                         }
-                        Log.w(HTTP_TAG, "poll failed ($consecutiveFailures/$maxConsecutiveFailures)")
+                        DebugLogger.w(HTTP_TAG, "poll failed ($consecutiveFailures/$maxConsecutiveFailures)")
                     }
                 } catch (e: Exception) {
                     consecutiveFailures++
                     if (consecutiveFailures >= maxConsecutiveFailures) {
                         _connected.value = ConnectionStatus.DISCONNECTED
                     }
-                    Log.w(HTTP_TAG, "poll error: ${e.message} ($consecutiveFailures/$maxConsecutiveFailures)")
+                    DebugLogger.w(HTTP_TAG, "poll error: ${e.message} ($consecutiveFailures/$maxConsecutiveFailures)")
                 }
                 delay(pollIntervalMs)
             }
@@ -144,14 +143,14 @@ class HttpSubtitleSource(
                     _segments.value = sorted
                     _segmentsMeta.value = sorted.map { it.toMeta() }
                 }
-                Log.i(HTTP_TAG, "fetchInitial: ${segments.size} segments via bulk (lite=$lite), total=${segmentMap.size}")
+                DebugLogger.i(HTTP_TAG, "fetchInitial: ${segments.size} segments via bulk (lite=$lite), total=${segmentMap.size}")
                 DebugLogger.log(HTTP_TAG, "fetchInitial: ${segments.size} segments, ids=${segments.map { it.segment_id }}")
             } else {
                 DebugLogger.log(HTTP_TAG, "fetchInitial: 0 segments in response")
             }
             true
         } catch (e: Exception) {
-            Log.w(HTTP_TAG, "fetchInitial failed: ${e.message}")
+            DebugLogger.w(HTTP_TAG, "fetchInitial failed: ${e.message}")
             DebugLogger.log(HTTP_TAG, "✗ fetchInitial parse error", e)
             false
         }
@@ -169,7 +168,7 @@ class HttpSubtitleSource(
         // 2. Extract .ts filenames and their segment IDs (chronological: oldest → newest)
         val tsIds = parseTsIds(playlistBody)
         if (tsIds.isEmpty()) {
-            Log.d(HTTP_TAG, "playlist has no .ts entries")
+            DebugLogger.d(HTTP_TAG, "playlist has no .ts entries")
             return true // empty playlist is valid, not a failure
         }
 
@@ -198,7 +197,7 @@ class HttpSubtitleSource(
 
         if (newIds.isEmpty()) return true
 
-        Log.d(HTTP_TAG, "playlist has ${tsIds.size} .ts entries, fetching ${newIds.size} new (fill-forward, tail-bounded to $WINDOW_SIZE)")
+        DebugLogger.d(HTTP_TAG, "playlist has ${tsIds.size} .ts entries, fetching ${newIds.size} new (fill-forward, tail-bounded to $WINDOW_SIZE)")
 
         // 5. Fetch metadata concurrently, newest segments first.
         //
@@ -245,7 +244,7 @@ class HttpSubtitleSource(
                                 }
                                 segment
                             } catch (e: Exception) {
-                                Log.w(HTTP_TAG, "parse error for id=$id: ${e.message}")
+                                DebugLogger.w(HTTP_TAG, "parse error for id=$id: ${e.message}")
                                 null
                             }
                         } else null
@@ -271,13 +270,13 @@ class HttpSubtitleSource(
                 }
                 if (isFirstEmit) {
                     isFirstEmit = false
-                    Log.i(HTTP_TAG, "first batch: $batchFetched segments (live edge) in ~${batchSize}RTT — UI visible now")
+                    DebugLogger.i(HTTP_TAG, "first batch: $batchFetched segments (live edge) in ~${batchSize}RTT — UI visible now")
                 }
             }
         }
 
         if (fetched > 0) {
-            Log.i(HTTP_TAG, "fetched $fetched new segments, total=${segmentMap.size}")
+            DebugLogger.i(HTTP_TAG, "fetched $fetched new segments, total=${segmentMap.size}")
         }
         return true
     }
@@ -294,14 +293,14 @@ class HttpSubtitleSource(
                 DebugLogger.log(HTTP_TAG, "HTTP ${response.code} $url → ${body?.length ?: 0} chars | ${elapsed}ms")
                 body
             } else {
-                Log.w(HTTP_TAG, "HTTP ${response.code} for $url")
+                DebugLogger.w(HTTP_TAG, "HTTP ${response.code} for $url")
                 DebugLogger.log(HTTP_TAG, "✗ HTTP ${response.code} $url | ${elapsed}ms")
                 response.close()
                 null
             }
         } catch (e: Exception) {
             val elapsed = System.currentTimeMillis() - startMs
-            Log.w(HTTP_TAG, "fetch failed $url: ${e.message}")
+            DebugLogger.w(HTTP_TAG, "fetch failed $url: ${e.message}")
             DebugLogger.log(HTTP_TAG, "✗ fetch exception $url | ${elapsed}ms", e)
             null
         }
@@ -333,7 +332,7 @@ class HttpSubtitleSource(
             try {
                 SubtitleParser.parseSegment(org.json.JSONObject(jsonBody))
             } catch (e: Exception) {
-                Log.w(HTTP_TAG, "fetchSegmentFull parse error for id=$segmentId: ${e.message}")
+                DebugLogger.w(HTTP_TAG, "fetchSegmentFull parse error for id=$segmentId: ${e.message}")
                 null
             }
         } else null
@@ -363,7 +362,7 @@ class HttpSubtitleSource(
     }
 
     override fun disconnect() {
-        Log.i(HTTP_TAG, "disconnect total_segments=${segmentMap.size}")
+        DebugLogger.i(HTTP_TAG, "disconnect total_segments=${segmentMap.size}")
         pollJob?.cancel()
         pollJob = null
         _connected.value = ConnectionStatus.DISCONNECTED

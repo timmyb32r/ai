@@ -8,13 +8,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.crimobile.ServerConfig
+import com.crimobile.debug.DebugLogger
 
 /**
  * WorkManager CoroutineWorker that downloads the configured sync window
@@ -32,7 +32,7 @@ class SyncWorker(
         val config = SyncConfig.fromPrefs(prefs)
 
         if (!config.enabled) {
-            Log.i(TAG, "Sync disabled — skipping")
+            DebugLogger.i(TAG, "Sync disabled — skipping")
             return Result.success()
         }
 
@@ -53,12 +53,12 @@ class SyncWorker(
             val archive = engine.fetchArchiveInfo()
             if (archive.oldestStartSec > 0.0) {
                 if (startSec < archive.oldestStartSec) {
-                    Log.w(TAG, "Sync window start clamped to archive: " +
+                    DebugLogger.w(TAG, "Sync window start clamped to archive: " +
                         "${startSec} → ${archive.oldestStartSec}")
                     startSec = archive.oldestStartSec
                 }
                 if (startSec >= endSec) {
-                    Log.w(TAG, "No new content in archive for configured window")
+                    DebugLogger.w(TAG, "No new content in archive for configured window")
                     return Result.success()
                 }
             }
@@ -79,14 +79,14 @@ class SyncWorker(
                     initialSyncDone = true
                 ))
                 storageManager.pruneOldSessions(config.keepLastNSyncs)
-                Log.i(TAG, "Sync complete — ${storageManager.totalSegmentCount()} segments stored")
+                DebugLogger.i(TAG, "Sync complete — ${storageManager.totalSegmentCount()} segments stored")
                 Result.success()
             } else {
-                Log.w(TAG, "Sync failed: ${result.exceptionOrNull()?.message}")
+                DebugLogger.w(TAG, "Sync failed: ${result.exceptionOrNull()?.message}")
                 Result.retry()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Sync error: ${e.message}", e)
+            DebugLogger.e(TAG, "Sync error: ${e.message}", e)
             Result.retry()
         }
     }

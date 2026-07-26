@@ -2,7 +2,6 @@ package com.crimobile.viewmodel
 
 import android.app.Application
 import android.content.Context
-import android.util.Log
 import com.crimobile.debug.DebugLogger
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -195,21 +194,21 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val obtained = RadioPlayerHolder.awaitPlayer()
             if (obtained == null) {
-                Log.e(VM, "PlayerService did not start — player unavailable")
+                DebugLogger.e(VM, "PlayerService did not start — player unavailable")
                 _state.value = _state.value.copy(
                     error = "Media player service failed to start. Please restart the app."
                 )
                 return@launch
             }
             player = obtained
-            Log.i(VM, "player obtained from RadioPlayerHolder")
+            DebugLogger.i(VM, "player obtained from RadioPlayerHolder")
 
             // If user tapped Play before the player was ready, execute it now.
             val pending = pendingPlayUrl
             if (pending != null) {
                 pendingPlayUrl = null
                 DebugLogger.log(VM, "▶ Executing deferred Play | serverUrl=$pending")
-                Log.i(VM, "executing deferred Play for $pending")
+                DebugLogger.i(VM, "executing deferred Play for $pending")
                 dispatch(CriAction.Play(pending))
             }
 
@@ -219,7 +218,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING) {
                         _state.value = _state.value.copy(playbackState = ps)
                         if (ps == PlaybackState.PLAYING && coldStartT0 > 0) {
-                            Log.i(TIMING, "event=player_ready elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                            DebugLogger.i(TIMING, "event=player_ready elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
                             coldStartT0 = 0 // one-shot
                         }
                     }
@@ -286,7 +285,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         if (activeSegmentMeta != null && activeSegmentMeta.segment_id != lastActiveSegId) {
                             lastActiveSegId = activeSegmentMeta.segment_id
                             segmentCache?.pin(activeSegmentMeta.segment_id)
-                            Log.i(VM, "▶seg id=${activeSegmentMeta.segment_id} " +
+                            DebugLogger.i(VM, "▶seg id=${activeSegmentMeta.segment_id} " +
                                 "segTL=[${activeSegmentMeta.timeline_start_sec}-${activeSegmentMeta.timeline_end_sec}] " +
                                 "playerSec=${"%.1f".format(playerSec)} text=${fullSeg?.text_zh?.take(50) ?: activeSegmentMeta.text_zh.take(50)}")
                         }
@@ -295,7 +294,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             lastActiveWord = activeWord
                             val relStart = activeWord.start_sec - (activeSegmentMeta.timeline_start_sec)
                             val relEnd = activeWord.end_sec - (activeSegmentMeta.timeline_start_sec)
-                            Log.i(VM, "▷word text=${activeWord.text} " +
+                            DebugLogger.i(VM, "▷word text=${activeWord.text} " +
                                 "wTL=[${activeWord.start_sec}-${activeWord.end_sec}] " +
                                 "relTL=[%.3f-%.3f] ".format(relStart, relEnd) +
                                 "playerSec=%.3f playerMs=$playerMs".format(playerSec))
@@ -304,7 +303,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         val now = System.currentTimeMillis()
                         if (activeSegmentMeta != null && now - lastSyncLog > 2000) {
                             lastSyncLog = now
-                            Log.d(VM, "sync playerSec=%.1f segId=${activeSegmentMeta.segment_id} ".format(playerSec) +
+                            DebugLogger.d(VM, "sync playerSec=%.1f segId=${activeSegmentMeta.segment_id} ".format(playerSec) +
                                 "segTL=[${activeSegmentMeta.timeline_start_sec}-${activeSegmentMeta.timeline_end_sec}] " +
                                 "word=${activeWord?.text} wTL=[${activeWord?.start_sec}-${activeWord?.end_sec}] " +
                                 "delay=${delay.toInt()}s")
@@ -314,7 +313,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             lastSyncLog = now
                             val first = segmentsMeta.firstOrNull()
                             val last = segmentsMeta.lastOrNull()
-                            Log.w(VM, "sync MISS: no active segment. playerSec=%.1f".format(playerSec) +
+                            DebugLogger.w(VM, "sync MISS: no active segment. playerSec=%.1f".format(playerSec) +
                                 " playerMs=$playerMs segs=${segmentsMeta.size} " +
                                 "loadedRange=[${first?.timeline_start_sec}-${last?.timeline_end_sec}] " +
                                 "(player ${if (last != null && playerSec > last.timeline_end_sec) "AHEAD of" else if (first != null && playerSec < first.timeline_start_sec) "BEHIND" else "inside?"} window)")
@@ -370,7 +369,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
                         if (finalSegment != null && finalSegment.segment_id != lastActiveSegId) {
                             lastActiveSegId = finalSegment.segment_id
-                            Log.i(VM, "▶seg id=${finalSegment.segment_id} " +
+                            DebugLogger.i(VM, "▶seg id=${finalSegment.segment_id} " +
                                 "segTL=[${finalSegment.timeline_start_sec}-${finalSegment.timeline_end_sec}] " +
                                 "playerSec=${"%.1f".format(playerSec)} text=${finalSegment.text_zh.take(50)}")
                         }
@@ -379,7 +378,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             lastActiveWord = activeWord
                             val relStart = activeWord.start_sec - (activeSegment.timeline_start_sec)
                             val relEnd = activeWord.end_sec - (activeSegment.timeline_start_sec)
-                            Log.i(VM, "▷word text=${activeWord.text} " +
+                            DebugLogger.i(VM, "▷word text=${activeWord.text} " +
                                 "wTL=[${activeWord.start_sec}-${activeWord.end_sec}] " +
                                 "relTL=[%.3f-%.3f] ".format(relStart, relEnd) +
                                 "playerSec=%.3f playerMs=$playerMs".format(playerSec))
@@ -388,7 +387,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         val now = System.currentTimeMillis()
                         if (finalSegment != null && now - lastSyncLog > 2000) {
                             lastSyncLog = now
-                            Log.d(VM, "sync playerSec=%.1f segId=${finalSegment.segment_id} ".format(playerSec) +
+                            DebugLogger.d(VM, "sync playerSec=%.1f segId=${finalSegment.segment_id} ".format(playerSec) +
                                 "segTL=[${finalSegment.timeline_start_sec}-${finalSegment.timeline_end_sec}] " +
                                 "word=${finalWord?.text} wTL=[${finalWord?.start_sec}-${finalWord?.end_sec}] " +
                                 "delay=${delay.toInt()}s")
@@ -398,7 +397,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             lastSyncLog = now
                             val first = segments.firstOrNull()
                             val last = segments.lastOrNull()
-                            Log.w(VM, "sync MISS: no active segment. playerSec=%.1f".format(playerSec) +
+                            DebugLogger.w(VM, "sync MISS: no active segment. playerSec=%.1f".format(playerSec) +
                                 " playerMs=$playerMs segs=${segments.size} " +
                                 "loadedRange=[${first?.timeline_start_sec}-${last?.timeline_end_sec}] " +
                                 "(player ${if (last != null && playerSec > last.timeline_end_sec) "AHEAD of" else if (first != null && playerSec < first.timeline_start_sec) "BEHIND" else "inside?"} window)")
@@ -428,7 +427,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private fun requireActivePlayer(): Boolean {
         val p = activePlayerOrNull()
         if (p == null) {
-            Log.w(VM, "requireActivePlayer — no player for mode ${_state.value.playbackMode}")
+            DebugLogger.w(VM, "requireActivePlayer — no player for mode ${_state.value.playbackMode}")
         }
         return p != null
     }
@@ -447,19 +446,19 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             _state.value = _state.value.copy(playbackState = PlaybackState.LOADING)
                             return
                         }
-                        Log.i(VM, "play server=${action.serverUrl}")
+                        DebugLogger.i(VM, "play server=${action.serverUrl}")
                         val url = "${action.serverUrl}/hls/playlist.m3u8"
                         DebugLogger.log(VM, "HLS URL = $url")
                         val wasPaused = _state.value.playbackState == PlaybackState.PAUSED
                         if (wasPaused && action.serverUrl == currentServerUrl) {
-                            Log.i(VM, "play resuming from paused position")
+                            DebugLogger.i(VM, "play resuming from paused position")
                             DebugLogger.log(VM, "▶ Play resume | serverUrl=${action.serverUrl}")
                             player.resume()
                         } else {
-                            Log.i(VM, "play new stream")
+                            DebugLogger.i(VM, "play new stream")
                             currentServerUrl = action.serverUrl
                             coldStartT0 = System.nanoTime()
-                            Log.i(TIMING, "event=play_tapped elapsed_ms=0")
+                            DebugLogger.i(TIMING, "event=play_tapped elapsed_ms=0")
                             DebugLogger.log(VM, "▶ Play cold-start | serverUrl=${action.serverUrl} | protocol=${_state.value.metadataProtocol}")
 
                             if (subtitleSource is com.crimobile.subtitles.HttpSubtitleSource) {
@@ -467,7 +466,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                 viewModelScope.launch {
                                     val http = subtitleSource as com.crimobile.subtitles.HttpSubtitleSource
 
-                                    Log.i(TIMING, "event=fetch_initial_start elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                    DebugLogger.i(TIMING, "event=fetch_initial_start elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
                                     DebugLogger.log(VM, "→ fetchInitial(server=${action.serverUrl}, n=$INITIAL_BATCH, lite=true)")
 
                                     // fetchInitial with retry (up to 3 attempts)
@@ -500,7 +499,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                         return@launch
                                     }
 
-                                    Log.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                    DebugLogger.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
                                     DebugLogger.log(VM, "← fetchInitial ok | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
 
                                     // Pre-lookup removed: computing playerSec from metadata timeline
@@ -509,7 +508,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                     // segment within 1-2 frames (~100-200ms) — imperceptible.
 
                                     player.play(url)
-                                    Log.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                    DebugLogger.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
                                     DebugLogger.log(VM, "→ player.play(url) called | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
                                     try {
                                         http.connect(action.serverUrl)
@@ -528,11 +527,11 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     PlaybackMode.OFFLINE_SAVED -> {
                         val op = offlinePlayer
                         if (op == null) {
-                            Log.w(VM, "play offline — no offline player")
+                            DebugLogger.w(VM, "play offline — no offline player")
                             DebugLogger.log(VM, "✗ Play offline aborted — offlinePlayer is null")
                             return
                         }
-                        Log.i(VM, "play offline")
+                        DebugLogger.i(VM, "play offline")
                         DebugLogger.log(VM, "▶ Play offline | segments=${_state.value.segmentsMeta.size}")
                         op.play("")
                     }
@@ -541,7 +540,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             }
             CriAction.Pause -> {
                 val ap = activePlayerOrNull() ?: return
-                Log.i(VM, "pause")
+                DebugLogger.i(VM, "pause")
                 ap.pause()
                 _state.value = _state.value.copy(isPronouncing = false)
             }
@@ -553,13 +552,13 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     dispatch(CriAction.Play(ServerConfig.defaultUrl))
                     return
                 }
-                Log.i(VM, "resume")
+                DebugLogger.i(VM, "resume")
                 ap.resume()
                 _state.value = _state.value.copy(isPronouncing = false)
             }
             is CriAction.WordTapped -> {
                 val ap = activePlayerOrNull() ?: return
-                Log.i(VM, "word_tapped text=${action.word.text} pinyin=${action.word.pinyin}")
+                DebugLogger.i(VM, "word_tapped text=${action.word.text} pinyin=${action.word.pinyin}")
                 ap.pause()
                 val segment = segmentCache?.getOrLoad(action.segmentId)
                     ?: _state.value.segments.find { it.segment_id == action.segmentId }
@@ -624,11 +623,11 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                         )
                                     )
                                 }
-                                Log.i(VM, "dict_lazy_fetched seg=${segment.segment_id} " +
+                                DebugLogger.i(VM, "dict_lazy_fetched seg=${segment.segment_id} " +
                                     "word=${action.word.text} trans=${fullWord?.translation?.take(30)}")
                             }
                         } catch (e: Exception) {
-                            Log.w(VM, "dict_lazy_fetch failed seg=${segment.segment_id}: ${e.message}")
+                            DebugLogger.w(VM, "dict_lazy_fetch failed seg=${segment.segment_id}: ${e.message}")
                         } finally {
                             pendingDictFetches.remove(segment.segment_id)
                         }
@@ -639,7 +638,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(wordPopup = null, isPronouncing = false)
             }
             CriAction.PronounceWord -> {
-                Log.i(VM, "pronounce_word")
+                DebugLogger.i(VM, "pronounce_word")
                 val word = savedWord.value ?: return
                 val words = _state.value.activeSegment?.words ?: return
                 val wordIdx = words.indexOfFirst { w -> w === word }
@@ -653,7 +652,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(isPronouncing = true)
             }
             CriAction.SaveWord -> {
-                Log.i(VM, "save_word")
+                DebugLogger.i(VM, "save_word")
                 val word = savedWord.value ?: return
                 val context = _state.value.activeSegment?.text_zh ?: ""
                 vocabularyStore.appendWord(word, context)
@@ -694,7 +693,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 com.crimobile.debug.DebugLogger.enabled = newVal
                 _state.value = _state.value.copy(logToFileEnabled = newVal)
                 prefs.edit().putBoolean("log_to_file_enabled", newVal).apply()
-                Log.i(VM, "logToFile = $newVal")
+                DebugLogger.i(VM, "logToFile = $newVal")
             }
             is CriAction.SetPlaybackMode -> {
                 switchPlaybackMode(action.mode)
@@ -716,7 +715,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         val info = engine.fetchArchiveInfo()
                         _state.value = _state.value.copy(archiveInfo = info)
                     } catch (e: Exception) {
-                        Log.w(VM, "Failed to load archive info: ${e.message}")
+                        DebugLogger.w(VM, "Failed to load archive info: ${e.message}")
                     }
                 }
             }
@@ -798,7 +797,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             is CriAction.SetMetadataProtocol -> {
                 val newProtocol = action.protocol
                 if (newProtocol == _state.value.metadataProtocol) return
-                Log.i(VM, "SetMetadataProtocol → $newProtocol")
+                DebugLogger.i(VM, "SetMetadataProtocol → $newProtocol")
 
                 // Persist preference
                 prefs.edit().putString("metadata_protocol", newProtocol).apply()
@@ -825,7 +824,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun switchPlaybackMode(mode: PlaybackMode) {
         if (mode == _state.value.playbackMode) return
-        Log.i(VM, "switchPlaybackMode → $mode")
+        DebugLogger.i(VM, "switchPlaybackMode → $mode")
 
         when (mode) {
             PlaybackMode.LIVE_STREAMING -> {

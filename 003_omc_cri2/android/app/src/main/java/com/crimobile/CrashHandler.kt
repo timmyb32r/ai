@@ -5,7 +5,6 @@ import android.content.ContentValues
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
-import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.io.PrintWriter
@@ -13,6 +12,7 @@ import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.crimobile.debug.DebugLogger
 
 /**
  * Global uncaught-exception handler.
@@ -40,7 +40,7 @@ object CrashHandler : Thread.UncaughtExceptionHandler {
         defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler(this)
         installed = true
-        Log.i(TAG, "crash handler installed")
+        DebugLogger.i(TAG, "crash handler installed")
     }
 
     override fun uncaughtException(thread: Thread, throwable: Throwable) {
@@ -86,7 +86,7 @@ object CrashHandler : Thread.UncaughtExceptionHandler {
         values.put(MediaStore.Downloads.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
 
-        Log.i(TAG, "crash dump written to Downloads/$FILE_NAME")
+        DebugLogger.i(TAG, "crash dump written to Downloads/$FILE_NAME")
     }
 
     // ── API < 29 : public Downloads ──────────────────────────────────
@@ -97,7 +97,7 @@ object CrashHandler : Thread.UncaughtExceptionHandler {
         dir.mkdirs()
         val file = File(dir, FILE_NAME)
         FileOutputStream(file).use { it.write(dump.toByteArray(Charsets.UTF_8)) }
-        Log.i(TAG, "crash dump written to ${file.absolutePath}")
+        DebugLogger.i(TAG, "crash dump written to ${file.absolutePath}")
     }
 
     // ── Fallback ─────────────────────────────────────────────────────
@@ -113,9 +113,9 @@ object CrashHandler : Thread.UncaughtExceptionHandler {
                 append(throwableToString(writeError))
             }
             file.writeText(dump, Charsets.UTF_8)
-            Log.w(TAG, "crash dump written to fallback: ${file.absolutePath}")
+            DebugLogger.w(TAG, "crash dump written to fallback: ${file.absolutePath}")
         } catch (_: Exception) {
-            Log.e(TAG, "could not write crash dump anywhere", original)
+            DebugLogger.e(TAG, "could not write crash dump anywhere", original)
         }
     }
 

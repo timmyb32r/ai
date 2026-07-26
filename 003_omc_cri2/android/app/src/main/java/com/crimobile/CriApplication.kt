@@ -2,7 +2,7 @@ package com.crimobile
 
 import android.app.Application
 import android.content.Intent
-import android.util.Log
+import com.crimobile.debug.DebugLogger
 
 /**
  * Bootstraps crash handler, then starts PlayerService so the player
@@ -26,7 +26,7 @@ class CriApplication : Application() {
         } catch (e: Exception) {
             // Survive service start failures (e.g. app restarted in background
             // after a crash). The ViewModel handles a missing player gracefully.
-            Log.e(TAG, "Failed to start PlayerService: ${e.message}")
+            DebugLogger.e(TAG, "Failed to start PlayerService: ${e.message}")
         }
     }
 

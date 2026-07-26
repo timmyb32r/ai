@@ -1,11 +1,11 @@
 package com.crimobile.player
 
-import android.util.Log
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
+import com.crimobile.debug.DebugLogger
 
 /**
  * Singleton bridge — PlayerService writes the player here, CriViewModel reads it.
@@ -33,7 +33,7 @@ object RadioPlayerHolder {
                 _player.filterNotNull().first()
             }
         } catch (e: TimeoutCancellationException) {
-            Log.w(TAG, "Timed out waiting for PlayerService after ${timeoutMs}ms")
+            DebugLogger.w(TAG, "Timed out waiting for PlayerService after ${timeoutMs}ms")
             null
         }
     }

@@ -1,7 +1,6 @@
 package com.crimobile.offline
 
 import android.content.Context
-import android.util.Log
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
@@ -9,6 +8,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
+import com.crimobile.debug.DebugLogger
 
 /**
  * Manages WorkManager periodic scheduling for offline audio sync.
@@ -52,7 +52,7 @@ object SyncScheduler {
                 request
             )
 
-        Log.i(TAG, "Scheduled daily sync at ${"%02d".format(config.syncHourOfDay)}:" +
+        DebugLogger.i(TAG, "Scheduled daily sync at ${"%02d".format(config.syncHourOfDay)}:" +
             "${"%02d".format(config.syncMinute)} " +
             "wifiOnly=${config.wifiOnly} initialDelay=${initialDelayMs}ms")
     }
@@ -60,7 +60,7 @@ object SyncScheduler {
     /** Remove the scheduled sync job. */
     fun cancel(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
-        Log.i(TAG, "Sync cancelled")
+        DebugLogger.i(TAG, "Sync cancelled")
     }
 
     // ── Internal ───────────────────────────────────────────────────────
