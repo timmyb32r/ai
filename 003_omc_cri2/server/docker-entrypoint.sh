@@ -78,6 +78,42 @@ fi
 # ── Create output directories ─────────────────────────────────────────────
 mkdir -p "${OUTPUT_DIR}/hls" "${OUTPUT_DIR}/metadata"
 
+# ── Start HanLP NLP tokenizer in background ───────────────────────────
+# Unset HANLP_URL — HanLP library reads it as a download mirror URL.
+HANLP_PORT="${HANLP_PORT:-8765}"
+echo ""
+echo "Starting HanLP tokenizer on :${HANLP_PORT}..."
+env -u HANLP_URL python3 /usr/local/bin/hanlp_server.py "${HANLP_PORT}" &
+HANLP_PID=$!
+
+# Wait for HanLP to become ready.
+echo "Waiting for HanLP to become ready..."
+for i in $(seq 1 60); do
+    if python3 -c "
+import urllib.request, json
+try:
+    req = urllib.request.Request(
+        'http://127.0.0.1:${HANLP_PORT}/parse',
+        data=json.dumps({'text':'测试'}).encode(),
+        headers={'Content-Type':'application/json'}
+    )
+    urllib.request.urlopen(req, timeout=5)
+    exit(0)
+except Exception:
+    exit(1)
+" 2>/dev/null; then
+        echo "HanLP ready (attempt $i)"
+        break
+    fi
+    sleep 2
+done
+
+# Verify HanLP is still running.
+if ! kill -0 "${HANLP_PID}" 2>/dev/null; then
+    echo "ERROR: HanLP failed to start" >&2
+    exit 1
+fi
+
 echo ""
 echo "Starting server on ${ADDR}..."
 exec /usr/local/bin/criradio-server

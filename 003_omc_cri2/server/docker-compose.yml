@@ -1,24 +1,5 @@
 services:
-  # ── HanLP Chinese NLP tokenizer ──────────────────────────────────────
-  hanlp:
-    build:
-      context: .
-      dockerfile: Dockerfile.hanlp
-    image: criradio-hanlp:latest
-    container_name: criradio-hanlp
-    ports:
-      - "8765:8765"
-    volumes:
-      - hanlp_models:/root/.hanlp
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,json; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8765/parse', data=json.dumps({'text':'你好'}).encode(), headers={'Content-Type':'application/json'}))"]
-      interval: 10s
-      timeout: 10s
-      retries: 30
-      start_period: 30s
-
-  # ── CRI Radio main server ────────────────────────────────────────────
+  # ── CRI Radio main server (HanLP runs inside the container) ────────────
   criradio:
     image: criradio-server:latest
     container_name: criradio
@@ -35,20 +16,18 @@ services:
       - OUTPUT_DIR=/tmp/china_radio_international
       - DELAY=180s
       - LOG_LEVEL=info
-      # When HANLP_URL is set, HanLP REST API is used instead of local GSE.
-      - HANLP_URL=http://hanlp:8765
+      # HanLP runs inside the same container on localhost.
+      - HANLP_URL=http://127.0.0.1:8765
     volumes:
       - criradio_data:/tmp/china_radio_international
+      - hanlp_models:/root/.hanlp
     restart: unless-stopped
-    depends_on:
-      hanlp:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/status"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 180s
 
 volumes:
   criradio_data:

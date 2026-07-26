@@ -11,6 +11,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ffmpeg ca-certificates wget curl bzip2 unzip libgomp1 libmp3lame0 \
+      python3 python3-pip \
  && rm -rf /var/lib/apt/lists/*
 
 # ── ASR engine selection ──────────────────────────────────────────────────
@@ -42,6 +43,22 @@ RUN if [ "${ASR_ENGINE}" = "sherpa-onnx" ]; then \
       && pip3 install --no-cache-dir --break-system-packages sherpa-onnx-bin \
       && command -v sherpa-onnx-offline ; \
     fi
+
+# ── HanLP Chinese NLP tokenizer ──────────────────────────────────────────
+# CPU-only PyTorch + compatible transformers + HanLP.
+# Model is pre-downloaded at build time — no network needed at container start.
+RUN pip3 install --no-cache-dir --break-system-packages \
+    torch --index-url https://download.pytorch.org/whl/cpu \
+ && pip3 install --no-cache-dir --break-system-packages \
+    "transformers>=4.30,<5.0"
+RUN pip3 install --no-cache-dir --break-system-packages hanlp
+
+COPY hanlp_server.py /usr/local/bin/hanlp_server.py
+
+ENV HANLP_HOME=/root/.hanlp
+RUN mkdir -p /root/.hanlp \
+ && python3 -c "import hanlp; hanlp.load(hanlp.pretrained.tok.COARSE_ELECTRA_SMALL_ZH); print('[hanlp] model pre-downloaded')"
+VOLUME /root/.hanlp
 
 # ── ASR model — copied from .docker-cache/ into /opt/models/ ──────────────
 # The download-cache.sh script should pre-fetch models to .docker-cache/.
