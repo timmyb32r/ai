@@ -196,16 +196,17 @@ func main() {
 	defer cancel()
 
 	pipe := &pipeline.Pipeline{
-		Ingestor:    ingestor,
-		Transcriber: transcriber,
-		Tokenizer:   tok,
-		Dictionary:  dict,
-		Unihan:      unihanResolver,
-		Cedict:      cedictFallback,
-		Store:       store,
-		Logger:      logger,
-		OutputDir:   cfg.OutputDir,
-		HLSTime:     cfg.HLSTime,
+		Ingestor:     ingestor,
+		Transcriber:  transcriber,
+		Tokenizer:    tok,
+		Dictionary:   dict,
+		Unihan:       unihanResolver,
+		Cedict:       cedictFallback,
+		Store:        store,
+		Logger:       logger,
+		OutputDir:    cfg.OutputDir,
+		HLSTime:      cfg.HLSTime,
+		ASRBatchSize: cfg.ASRBatchSize,
 	}
 
 	go func() {

@@ -22,6 +22,7 @@ type Config struct {
 	UnihanPath      string        // Path to Unihan_Readings.txt — optional; enables probable-reading fill for single-char "?"
 	GSEDictDir      string        // Path to gse dictionary directory
 	HLSTime         int           // Seconds per HLS segment (default: 3)
+	ASRBatchSize    int           // PCM fragments per ASR batch (default: 2, range: 1-8)
 	HLSWindow       int           // Number of HLS segments to keep (default: 3600 = 3 hours)
 	Delay           time.Duration // Processing delay from live edge (default: 180s)
 	Addr            string        // HTTP listen address (default: :8080)
@@ -44,6 +45,7 @@ func FromEnv() *Config {
 		UnihanPath:      envStr("UNIHAN_PATH", "/opt/Unihan_Readings.txt"),
 		GSEDictDir:      envStr("GSE_DICT_PATH", "/opt/gse-dict"),
 		HLSTime:         envInt("HLS_TIME", 3),
+		ASRBatchSize:    envInt("ASR_BATCH_SIZE", 2),
 		HLSWindow:       envInt("HLS_WINDOW", 3600),
 		Delay:           envDuration("DELAY", 180*time.Second),
 		Addr:            envStr("ADDR", ":8080"),
@@ -81,6 +83,9 @@ func (c *Config) Validate() error {
 	}
 	if c.HLSTime < 1 || c.HLSTime > 10 {
 		return fmt.Errorf("HLS_TIME must be between 1 and 10 seconds, got %d", c.HLSTime)
+	}
+	if c.ASRBatchSize < 1 || c.ASRBatchSize > 8 {
+		return fmt.Errorf("ASR_BATCH_SIZE must be 1-8, got %d", c.ASRBatchSize)
 	}
 	if c.HLSWindow < 1 {
 		return fmt.Errorf("HLS_WINDOW must be positive, got %d", c.HLSWindow)

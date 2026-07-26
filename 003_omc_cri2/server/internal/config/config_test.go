@@ -15,6 +15,7 @@ func TestConfigDefaults(t *testing.T) {
 	os.Unsetenv("GSE_DICT_PATH")
 	os.Unsetenv("DICT")
 	os.Unsetenv("BKRS_PATH")
+	os.Unsetenv("ASR_BATCH_SIZE")
 
 	cfg := FromEnv()
 
@@ -35,6 +36,9 @@ func TestConfigDefaults(t *testing.T) {
 	}
 	if cfg.BKRSPath != "/opt/dabkrs.gz" {
 		t.Errorf("default BKRSPath: got %s, want /opt/dabkrs.gz", cfg.BKRSPath)
+	}
+	if cfg.ASRBatchSize != 2 {
+		t.Errorf("default ASRBatchSize: got %d, want 2", cfg.ASRBatchSize)
 	}
 }
 
@@ -58,6 +62,7 @@ func TestConfigValidate(t *testing.T) {
 				Delay:      180 * time.Second,
 				Addr:       ":8080",
 				LogLevel:   "info",
+				ASRBatchSize: 2,
 			},
 		},
 		{
@@ -74,37 +79,56 @@ func TestConfigValidate(t *testing.T) {
 				Delay:      180 * time.Second,
 				Addr:       ":8080",
 				LogLevel:   "info",
+				ASRBatchSize: 2,
 			},
 		},
 		{
 			name:   "empty ChannelURL",
-			cfg:    &Config{ChannelURL: "", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			cfg:    &Config{ChannelURL: "", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", ASRBatchSize: 2, HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
 			errMsg: "CHANNEL_URL",
 		},
 		{
 			name:   "invalid HLSTime",
-			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", HLSTime: 0, HLSWindow: 100, LogLevel: "info"},
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", ASRBatchSize: 2, HLSTime: 0, HLSWindow: 100, LogLevel: "info"},
 			errMsg: "HLS_TIME",
 		},
 		{
 			name:   "invalid LogLevel",
-			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "verbose"},
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", ASRBatchSize: 2, HLSTime: 3, HLSWindow: 100, LogLevel: "verbose"},
 			errMsg: "LOG_LEVEL",
 		},
 		{
 			name:   "invalid DICT value",
-			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "invalid", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "invalid", GSEDictDir: "/g", ASRBatchSize: 2, HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
 			errMsg: "DICT",
 		},
 		{
 			name:   "bkrs without BKRS_PATH",
-			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "", GSEDictDir: "/g", ASRBatchSize: 2, HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
 			errMsg: "BKRS_PATH",
 		},
 		{
 			name:   "cedict without CEDICT_PATH",
-			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "cedict", DictPath: "", GSEDictDir: "/g", HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "cedict", DictPath: "", GSEDictDir: "/g", ASRBatchSize: 2, HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
 			errMsg: "CEDICT_PATH",
+		},
+		{
+			name:   "ASRBatchSize 0 (too small)",
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", ASRBatchSize: 0, HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			errMsg: "ASR_BATCH_SIZE",
+		},
+		{
+			name:   "ASRBatchSize 9 (too large)",
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", ASRBatchSize: 9, HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+			errMsg: "ASR_BATCH_SIZE",
+		},
+		{
+			name:   "ASRBatchSize 1 (valid min)",
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", ASRBatchSize: 1, HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
+		},
+		{
+			name:   "ASRBatchSize 8 (valid max)",
+			cfg:    &Config{ChannelURL: "x", OutputDir: "/tmp", ModelPath: "/m", Dict: "bkrs", BKRSPath: "/b", GSEDictDir: "/g", ASRBatchSize: 8, HLSTime: 3, HLSWindow: 100, LogLevel: "info"},
 		},
 	}
 
@@ -133,6 +157,16 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel from env: got %s, want debug", cfg.LogLevel)
+	}
+}
+
+func TestASRBatchSizeFromEnv(t *testing.T) {
+	os.Setenv("ASR_BATCH_SIZE", "5")
+	defer os.Unsetenv("ASR_BATCH_SIZE")
+
+	cfg := FromEnv()
+	if cfg.ASRBatchSize != 5 {
+		t.Errorf("ASRBatchSize from env: got %d, want 5", cfg.ASRBatchSize)
 	}
 }
 

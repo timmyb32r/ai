@@ -26,6 +26,14 @@ import (
 	"github.com/criradio/server/internal/unihan"
 )
 
+const defaultASRWorkers = 8
+
+type batchJob struct {
+	samples    []float32
+	firstSegID int
+	batchSize  int
+}
+
 type Pipeline struct {
 	Ingestor    ingest.Ingestor
 	Transcriber asr.Transcriber
@@ -37,6 +45,13 @@ type Pipeline struct {
 	Logger      logging.Logger
 	OutputDir   string
 	HLSTime     int
+	ASRBatchSize int
+
+	batchQueue  chan batchJob
+	resultCh    chan *models.TranscriptSegment
+	storeMu     sync.Mutex
+	nextStoreID int
+	pendingSegs map[int]*models.TranscriptSegment
 
 	hlsStdin io.WriteCloser
 	hlsCmd   *exec.Cmd
@@ -115,16 +130,14 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		return err
 	}
 
-	asrQueue := make(chan models.PCMChunk, 256)
-	// Parallel whisper workers — each processes one segment at a time.
-	// Whisper small model + 2 threads/worker ≈ 3s per segment.
-	// 4 workers × 2 threads = 8 threads total.
-	// MUST be 8 — parallel whisper processes consume the ASR queue.
-	// 8 workers × small model ≈ continuous subtitle output matching ingest rate.
-	// DO NOT reduce — fewer workers = subtitles lag behind ingest.
-	asrWorkers := 8
-	for i := 0; i < asrWorkers; i++ {
-		go p.asrWorker(ctx, asrQueue)
+	p.batchQueue = make(chan batchJob, 256)
+	for i := 0; i < defaultASRWorkers; i++ {
+		go p.batchWorker(ctx)
+	}
+
+	// Default ASR batch size when not set (backward compat with tests)
+	if p.ASRBatchSize <= 0 {
+		p.ASRBatchSize = 2
 	}
 
 	// Start with current time, then refine to HLS PROGRAM-DATE-TIME when available.
@@ -140,17 +153,24 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	p.writeEmptyPlaylist(hlsDir)
 
 	p.Logger.Info("pipeline", "running")
-	go p.statsReporter(ctx, asrQueue)
+	p.resultCh = make(chan *models.TranscriptSegment, 256)
+	p.pendingSegs = make(map[int]*models.TranscriptSegment)
+	p.nextStoreID = 0
+	go p.orderedCollector(ctx)
+	go p.statsReporter(ctx)
 
 	segmentID := 0
+	var batchBuf []models.PCMChunk
 	for {
 		select {
 		case <-ctx.Done():
-			close(asrQueue)
+			p.flushBatch(ctx, batchBuf)
+			close(p.batchQueue)
 			return ctx.Err()
 		case chunk, ok := <-pcmCh:
 			if !ok {
-				close(asrQueue)
+				p.flushBatch(ctx, batchBuf)
+				close(p.batchQueue)
 				return fmt.Errorf("ingest stream ended unexpectedly")
 			}
 			if chunk.Error != nil {
@@ -165,12 +185,22 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			p.Logger.Info("pipeline", "hls_segment", "id", segmentID, "hls_ms", hlsMs)
 
 			chunk.SegmentID = segmentID
-			select {
-			case asrQueue <- chunk:
-			default:
-				p.Logger.Warn("pipeline", "asr_queue_full", "id", segmentID)
-			}
 			segmentID++
+
+			// Добавляем чанк в буфер
+			batchBuf = append(batchBuf, chunk)
+
+			// Для batch_size > 1: не отправляем батч, пока в буфере только segment 0.
+			if p.ASRBatchSize > 1 && len(batchBuf) == 1 && batchBuf[0].SegmentID == 0 {
+				continue
+			}
+
+			// Если буфер заполнен: создать BatchJob, сдвинуть окно
+			if len(batchBuf) >= p.ASRBatchSize {
+				p.submitBatch(ctx, batchBuf[:p.ASRBatchSize])
+				// Sliding window: сдвиг на 1, оставляем последние batchSize-1 элементов
+				batchBuf = batchBuf[1:]
+			}
 		}
 	}
 }
@@ -209,59 +239,228 @@ func (p *Pipeline) writePCMToHLS(samples []float32) {
 	}
 }
 
-func (p *Pipeline) asrWorker(ctx context.Context, queue <-chan models.PCMChunk) {
+func (p *Pipeline) batchWorker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case chunk, ok := <-queue:
+		case job, ok := <-p.batchQueue:
 			if !ok {
 				return
 			}
-			p.processASR(chunk)
+			p.processBatch(job)
 		}
 	}
 }
 
-func (p *Pipeline) processASR(chunk models.PCMChunk) {
-	t0 := time.Now()
-
-	// Quick silence check: if PCM RMS is near zero the audio source is dead.
-	// Sample a subset to keep this cheap (< 1µs per segment).
-	if rms := sampleRMS(chunk.Samples); rms < 1e-6 {
+func (p *Pipeline) processBatch(job batchJob) {
+	// Silence check on stitched PCM
+	if rms := sampleRMS(job.samples); rms < 1e-6 {
 		p.Logger.Warn("pipeline", "pcm_silence",
-			"id", chunk.SegmentID, "rms", rms,
-			"msg", "Audio chunk is silent — check radio stream connectivity",
+			"batch_first_id", job.firstSegID, "rms", rms,
 		)
 	}
 
+	// ASR
 	asrStart := time.Now()
-	segment, err := p.Transcriber.Transcribe(chunk.Samples, chunk.SegmentID)
+	stitchedSeg, err := p.Transcriber.Transcribe(job.samples, job.firstSegID)
 	asrMs := time.Since(asrStart).Milliseconds()
+
 	if err != nil {
-		p.Logger.Error("pipeline", "asr_failed", "id", chunk.SegmentID, "err", err)
-		segment = &models.TranscriptSegment{SegmentID: chunk.SegmentID, TextZh: ""}
+		p.Logger.Error("pipeline", "asr_failed",
+			"batch_first_id", job.firstSegID, "err", err)
+		stitchedSeg = &models.TranscriptSegment{
+			SegmentID: job.firstSegID, TextZh: "",
+		}
 	}
 
-	// Track consecutive empty ASR output — systematic silence/failure detection.
-	// When the ASR model produces empty text for many segments in a row it
-	// usually means the audio source is dead or the model has stalled.
+	// Split batch result — извлекаем только первый сегмент
+	seg := p.splitBatchResult(stitchedSeg, job)
+	if seg == nil {
+		return // пустой/ошибочный батч
+	}
+
+	// Empty streak tracking
+	p.trackEmptyStreak(seg)
+
+	// Отправить в ordered collector
+	select {
+	case p.resultCh <- seg:
+	case <-time.After(5 * time.Second):
+		p.Logger.Error("pipeline", "result_ch_full", "id", seg.SegmentID)
+	}
+
+	p.Logger.Info("pipeline", "batch_complete",
+		"first_id", job.firstSegID, "batch_size", job.batchSize,
+		"asr_ms", asrMs)
+}
+
+// submitBatch склеивает PCM-чанки и отправляет батч в очередь воркеров.
+func (p *Pipeline) submitBatch(ctx context.Context, chunks []models.PCMChunk) {
+	if len(chunks) == 0 {
+		return
+	}
+	totalSamples := 0
+	for _, c := range chunks {
+		totalSamples += len(c.Samples)
+	}
+	stitched := make([]float32, 0, totalSamples)
+	for _, c := range chunks {
+		stitched = append(stitched, c.Samples...)
+	}
+	job := batchJob{
+		samples:    stitched,
+		firstSegID: chunks[0].SegmentID,
+		batchSize:  len(chunks),
+	}
+	select {
+	case p.batchQueue <- job:
+	case <-ctx.Done():
+		return
+	}
+}
+
+// flushBatch обрабатывает остаток буфера при завершении ingest-потока.
+func (p *Pipeline) flushBatch(ctx context.Context, buf []models.PCMChunk) {
+	if len(buf) == 0 {
+		return
+	}
+	p.submitBatch(ctx, buf)
+}
+
+// splitBatchResult разбивает результат ASR батча на индивидуальный сегмент.
+// Для batch_size=1 возвращает as-is.
+// Для batch_size>1: фильтрует слова/тайминги, относящиеся к первому сегменту.
+func (p *Pipeline) splitBatchResult(
+	stitched *models.TranscriptSegment,
+	job batchJob,
+) *models.TranscriptSegment {
+	if job.batchSize <= 1 {
+		stitched.SegmentID = job.firstSegID
+		return stitched
+	}
+
+	boundary := float64(p.HLSTime) // граница первого сегмента в секундах от начала audio
+
+	// --- Определяем текст для первого сегмента ---
+	var keptText string
+	var keptTimestamps []float64
+
+	if len(stitched.RawTimestamps) > 0 {
+		// === Sherpa-onnx path: character-level timestamps ===
+		splitIdx := 0
+		for splitIdx < len(stitched.RawTimestamps) && stitched.RawTimestamps[splitIdx] < boundary {
+			splitIdx++
+		}
+		if splitIdx == 0 && len(stitched.RawTimestamps) > 0 {
+			splitIdx = 1
+		}
+
+		chars := []rune(stitched.TextZh)
+		keptText = string(chars[:min(splitIdx, len(chars))])
+		keptTimestamps = stitched.RawTimestamps[:min(splitIdx, len(stitched.RawTimestamps))]
+	} else {
+		// === Whisper path: phrase-level timestamps ===
+		const boundaryTolerance = 0.5
+		var textParts []string
+		for _, w := range stitched.Words {
+			if w.StartSec < boundary+boundaryTolerance {
+				textParts = append(textParts, w.Text)
+			}
+		}
+		keptText = strings.Join(textParts, "")
+	}
+
+	if keptText == "" {
+		return &models.TranscriptSegment{
+			SegmentID:  job.firstSegID,
+			TextZh:     "",
+			HasContent: false,
+		}
+	}
+
+	result := &models.TranscriptSegment{
+		SegmentID:     job.firstSegID,
+		TextZh:        keptText,
+		RawTimestamps: keptTimestamps,
+	}
+
+	return result
+}
+
+// orderedCollector читает результаты из resultCh и передаёт их в emitOrdered
+// для упорядоченной обработки.
+func (p *Pipeline) orderedCollector(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case seg := <-p.resultCh:
+			p.emitOrdered(seg)
+		}
+	}
+}
+
+// emitOrdered гарантирует, что сегменты сохраняются в порядке возрастания segment ID.
+// Если сегмент пришёл не по порядку — помещается в pendingSegs до прихода ожидаемого.
+func (p *Pipeline) emitOrdered(seg *models.TranscriptSegment) {
+	p.storeMu.Lock()
+	defer p.storeMu.Unlock()
+
+	if seg.SegmentID == p.nextStoreID {
+		// Наш черёд — обрабатываем и проверяем pending
+		p.processDownstream(seg)
+		p.nextStoreID++
+
+		for {
+			if next, ok := p.pendingSegs[p.nextStoreID]; ok {
+				delete(p.pendingSegs, p.nextStoreID)
+				p.processDownstream(next)
+				p.nextStoreID++
+			} else {
+				break
+			}
+		}
+	} else if seg.SegmentID > p.nextStoreID {
+		// Пришёл будущий сегмент — в pending
+		p.pendingSegs[seg.SegmentID] = seg
+		if len(p.pendingSegs) > 100 {
+			p.Logger.Error("pipeline", "pending_segs_overflow",
+				"count", len(p.pendingSegs), "next_id", p.nextStoreID,
+				"msg", "Pending segments exceeded 100 — possible segment loss or queue stall",
+			)
+		}
+	} else {
+		// seg.SegmentID < p.nextStoreID: уже обработан — игнорируем
+		p.Logger.Warn("pipeline", "duplicate_or_stale_segment", "id", seg.SegmentID)
+	}
+}
+
+// trackEmptyStreak отслеживает последовательность пустых результатов ASR.
+func (p *Pipeline) trackEmptyStreak(segment *models.TranscriptSegment) {
 	if segment.TextZh == "" {
 		streak := atomic.AddInt64(&p.emptyStreak, 1)
 		if streak >= 10 && atomic.CompareAndSwapInt64(&p.emptyStreakAlarm, 0, 1) {
 			p.Logger.Error("pipeline", "asr_empty_streak_alarm",
 				"streak", streak,
-				"msg", "ASR has produced 10+ empty segments in a row — audio source may be silent or model stalled",
+				"msg", "ASR has produced 10+ empty segments in a row",
 			)
 		}
 	} else {
 		atomic.StoreInt64(&p.emptyStreak, 0)
 		atomic.StoreInt64(&p.emptyStreakAlarm, 0)
 	}
+}
+
+// processDownstream выполняет полную обработку одного сегмента:
+// токенизация, словарь, pinyin, timestamps, store, playlist.
+// Вызывается ТОЛЬКО из orderedCollector (гарантированный порядок).
+func (p *Pipeline) processDownstream(segment *models.TranscriptSegment) {
+	t0 := time.Now()
+
 	// Monotonic timeline: epochBase + segmentID * HLSTime.
-	// Guarantees non-overlapping, sequential segments.
-	segment.TimelineStartSec = p.epochBase + float64(chunk.SegmentID)*float64(p.HLSTime)
-	segment.TimelineEndSec = p.epochBase + float64(chunk.SegmentID+1)*float64(p.HLSTime)
+	segment.TimelineStartSec = p.epochBase + float64(segment.SegmentID)*float64(p.HLSTime)
+	segment.TimelineEndSec = p.epochBase + float64(segment.SegmentID+1)*float64(p.HLSTime)
 
 	tokStart := time.Now()
 	words := p.Tokenizer.Segment(segment.TextZh)
@@ -271,9 +470,6 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 	segDuration := segment.TimelineEndSec - segment.TimelineStartSec
 	wordEntries := make([]models.WordEntry, 0, len(words))
 
-	// When the transcriber provides per-character timestamps (sherpa-onnx),
-	// use GSE's CharStart/CharEnd as direct indices into the timestamps array
-	// for accurate per-word timing (matches 001_omc_cri's timestampWords).
 	hasRawTimestamps := len(segment.RawTimestamps) > 0
 	if hasRawTimestamps {
 		for _, t := range words {
@@ -309,7 +505,6 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 							charPinyin = append(charPinyin, resolved)
 							parts = append(parts, resolved)
 						} else {
-							// Context failed — fall back to old per-character lookup.
 							if cp := p.Dictionary.LookupPinyin(string(ch)); cp != "" && !strings.ContainsAny(cp, ",;") {
 								charPinyin = append(charPinyin, cp)
 								parts = append(parts, cp)
@@ -332,7 +527,6 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 			if t.CharEnd < len(segment.RawTimestamps) {
 				endSec = segment.TimelineStartSec + segment.RawTimestamps[t.CharEnd]
 			} else if t.CharEnd == len([]rune(segment.TextZh)) && len(segment.RawTimestamps) > 0 {
-				// Last word: estimate end from median inter-token gap
 				last := segment.RawTimestamps[len(segment.RawTimestamps)-1]
 				medianGap := estimateMedianGap(segment.RawTimestamps)
 				endSec = segment.TimelineStartSec + last + medianGap
@@ -386,7 +580,6 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 							charPinyin = append(charPinyin, resolved)
 							parts = append(parts, resolved)
 						} else {
-							// Context failed — fall back to per-character lookup.
 							if cp := p.Dictionary.LookupPinyin(string(ch)); cp != "" && !strings.ContainsAny(cp, ",;") {
 								charPinyin = append(charPinyin, cp)
 								parts = append(parts, cp)
@@ -424,18 +617,18 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 	dictMs := time.Since(dictStart).Milliseconds()
 	segment.TextPinyin = buildPinyinText(wordEntries)
 	segment.TextEn = buildEnText(wordEntries)
-	segment.TSFile = segmentFileName(chunk.SegmentID) + ".ts"
+	segment.TSFile = segmentFileName(segment.SegmentID) + ".ts"
+	segment.HasContent = segment.TextZh != ""
 
 	storeStart := time.Now()
 	if err := p.Store.Write(segment); err != nil {
-		p.Logger.Error("pipeline", "store_failed", "id", chunk.SegmentID, "err", err)
+		p.Logger.Error("pipeline", "store_failed", "id", segment.SegmentID, "err", err)
 		return
 	}
 	storeMs := time.Since(storeStart).Milliseconds()
 
 	// Update subtitled playlist — only segments with completed ASR.
-	// This GUARANTEES the invariant: no audio without subtitles.
-	p.updateSubtitledPlaylist(chunk.SegmentID)
+	p.updateSubtitledPlaylist(segment.SegmentID)
 	p.asrCompleted.Add(1)
 
 	totalMs := time.Since(t0).Milliseconds()
@@ -444,7 +637,7 @@ func (p *Pipeline) processASR(chunk models.PCMChunk) {
 		logFn = p.Logger.Warn
 	}
 	logFn("pipeline", "asr_done",
-		"id", chunk.SegmentID, "asr_ms", asrMs, "tok_ms", tokenizeMs,
+		"id", segment.SegmentID, "asr_ms", 0, "tok_ms", tokenizeMs,
 		"dict_ms", dictMs, "store_ms", storeMs, "total_ms", totalMs,
 		"text_len", len([]rune(segment.TextZh)), "words", len(wordEntries),
 	)
@@ -622,7 +815,7 @@ func (p *Pipeline) waitForHLSTimeline(ctx context.Context, hlsDir string, timeou
 
 // statsReporter logs ingest-vs-ASR progress every 5 seconds.
 // Includes goroutine count and ASR queue depth for remote hang diagnostics.
-func (p *Pipeline) statsReporter(ctx context.Context, asrQueue chan models.PCMChunk) {
+func (p *Pipeline) statsReporter(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	var lastIngested, lastTranscribed int64
@@ -643,7 +836,7 @@ func (p *Pipeline) statsReporter(ctx context.Context, asrQueue chan models.PCMCh
 				"d_ingest", deltaIngest,
 				"d_trans", deltaTrans,
 				"goroutines", runtime.NumGoroutine(),
-				"asr_queue", fmt.Sprintf("%d/%d", len(asrQueue), cap(asrQueue)),
+				"asr_queue", fmt.Sprintf("%d/%d", len(p.batchQueue), cap(p.batchQueue)),
 			)
 			lastIngested = ingested
 			lastTranscribed = transcribed
