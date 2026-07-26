@@ -1,0 +1,25 @@
+# HanLP REST API — Chinese NLP tokenization service (CPU-only, minimal).
+# Serves POST /parse on port 8765 via a self-contained stdlib HTTP server.
+#
+# Build:
+#   docker build -f Dockerfile.hanlp -t criradio-hanlp:latest .
+
+FROM python:3.11-slim
+
+# ── CPU-only PyTorch (from pytorch.org) + compatible transformers (from PyPI).
+RUN pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir \
+    "transformers>=4.30,<5.0"
+
+# ── HanLP — sees torch+transformers already satisfied, won't pull incompatible versions.
+RUN pip install --no-cache-dir hanlp
+
+COPY hanlp_server.py /usr/local/bin/hanlp_server.py
+
+ENV HANLP_HOME=/root/.hanlp
+VOLUME /root/.hanlp
+
+EXPOSE 8765
+
+CMD ["python", "/usr/local/bin/hanlp_server.py", "8765"]

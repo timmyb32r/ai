@@ -21,6 +21,7 @@ type Config struct {
 	BKRSPath        string        // Path to BKRS raw dump (dabkrs.gz) — used when DICT=bkrs
 	UnihanPath      string        // Path to Unihan_Readings.txt — optional; enables probable-reading fill for single-char "?"
 	GSEDictDir      string        // Path to gse dictionary directory
+	HanLPURL        string        // HanLP REST API URL (e.g. "http://localhost:8765"). Empty = use GSE.
 	HLSTime         int           // Seconds per HLS segment (default: 3)
 	ASRBatchSize    int           // PCM fragments per ASR batch (default: 2, range: 1-8)
 	HLSWindow       int           // Number of HLS segments to keep (default: 3600 = 3 hours)
@@ -44,6 +45,7 @@ func FromEnv() *Config {
 		BKRSPath:        envStr("BKRS_PATH", "/opt/dabkrs.gz"),
 		UnihanPath:      envStr("UNIHAN_PATH", "/opt/Unihan_Readings.txt"),
 		GSEDictDir:      envStr("GSE_DICT_PATH", "/opt/gse-dict"),
+		HanLPURL:        envStr("HANLP_URL", ""),
 		HLSTime:         envInt("HLS_TIME", 3),
 		ASRBatchSize:    envInt("ASR_BATCH_SIZE", 2),
 		HLSWindow:       envInt("HLS_WINDOW", 3600),
@@ -78,8 +80,8 @@ func (c *Config) Validate() error {
 	if c.Dict == "cedict" && c.DictPath == "" {
 		return fmt.Errorf("CEDICT_PATH is required when DICT=cedict")
 	}
-	if c.GSEDictDir == "" {
-		return fmt.Errorf("GSE_DICT_PATH is required")
+	if c.GSEDictDir == "" && c.HanLPURL == "" {
+		return fmt.Errorf("GSE_DICT_PATH is required when HANLP_URL is not set (no tokenizer configured)")
 	}
 	if c.HLSTime < 1 || c.HLSTime > 10 {
 		return fmt.Errorf("HLS_TIME must be between 1 and 10 seconds, got %d", c.HLSTime)

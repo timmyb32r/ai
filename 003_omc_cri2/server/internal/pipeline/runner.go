@@ -277,6 +277,36 @@ func (p *Pipeline) processBatch(job batchJob) {
 		stitchedSeg = &models.TranscriptSegment{
 			SegmentID: job.firstSegID, TextZh: "",
 		}
+	} else if stitchedSeg.TextZh != "" {
+		p.Logger.Info("pipeline", "asr_text",
+			"batch_first_id", job.firstSegID,
+			"text", stitchedSeg.TextZh,
+		)
+	}
+
+	// Tokenize the FULL stitched text BEFORE splitting.
+	// This gives the tokenizer (HanLP) full context across the
+	// segment boundary, producing correct word boundaries.
+	if job.batchSize > 1 && stitchedSeg.TextZh != "" {
+		tokStart := time.Now()
+		tokens, err := p.Tokenizer.Segment(stitchedSeg.TextZh)
+		if err != nil {
+			p.Logger.Error("pipeline", "batch_tokenize_failed",
+				"first_id", job.firstSegID, "err", err)
+		} else {
+			stitchedSeg.PreComputedTokens = tokens
+			var tokenTexts []string
+			for _, t := range tokens {
+				tokenTexts = append(tokenTexts, t.Text)
+			}
+			p.Logger.Info("pipeline", "batch_tokenize",
+				"first_id", job.firstSegID,
+				"text_len", len([]rune(stitchedSeg.TextZh)),
+				"tokens", len(tokens),
+				"words", strings.Join(tokenTexts, " | "),
+				"tok_ms", time.Since(tokStart).Milliseconds(),
+			)
+		}
 	}
 
 	// Split batch result — извлекаем только первый сегмент
@@ -397,6 +427,20 @@ func (p *Pipeline) splitBatchResult(
 		SegmentID:     job.firstSegID,
 		TextZh:        keptText,
 		RawTimestamps: keptTimestamps,
+	}
+
+	// Split pre-computed tokens: keep only tokens belonging to the kept text.
+	// splitIdx is the character boundary. Tokens with CharEnd <= splitIdx
+	// are fully in the kept portion.
+	if len(stitched.PreComputedTokens) > 0 && job.batchSize > 1 {
+		keptLen := len([]rune(keptText))
+		var keptTokens []models.Token
+		for _, tok := range stitched.PreComputedTokens {
+			if tok.CharEnd <= keptLen {
+				keptTokens = append(keptTokens, tok)
+			}
+		}
+		result.PreComputedTokens = keptTokens
 	}
 
 	return result
@@ -553,8 +597,30 @@ func (p *Pipeline) processDownstream(segment *models.TranscriptSegment) {
 	segment.TimelineEndSec = p.epochBase + float64(segment.SegmentID+1)*float64(p.HLSTime)
 
 	tokStart := time.Now()
-	words := p.Tokenizer.Segment(segment.TextZh)
+	var words []models.Token
+	if len(segment.PreComputedTokens) > 0 {
+		words = segment.PreComputedTokens
+	} else {
+		var err error
+		words, err = p.Tokenizer.Segment(segment.TextZh)
+		if err != nil {
+			p.Logger.Error("pipeline", "tokenize_failed", "id", segment.SegmentID, "err", err)
+			words = nil
+		}
+	}
 	tokenizeMs := time.Since(tokStart).Milliseconds()
+
+	// Diagnostic: log tokenized words per segment.
+	if len(words) > 0 {
+		var wordTexts []string
+		for _, w := range words {
+			wordTexts = append(wordTexts, w.Text)
+		}
+		p.Logger.Info("pipeline", "segment_tokens",
+			"id", segment.SegmentID,
+			"words", strings.Join(wordTexts, " | "),
+		)
+	}
 
 	dictStart := time.Now()
 	segDuration := segment.TimelineEndSec - segment.TimelineStartSec

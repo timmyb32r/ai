@@ -1,6 +1,7 @@
 package tokenizer
 
 import (
+	"github.com/criradio/server/internal/models"
 	"github.com/go-ego/gse"
 )
 
@@ -25,9 +26,9 @@ func New(dictPath string) (Tokenizer, error) {
 // Segment splits Chinese text into words using gse dictionary-based segmentation
 // with HMM enabled for better accuracy. Returns tokens with character (rune) positions.
 // Matches 001_omc_cri's gseSegmenter.Segment() approach.
-func (t *gseTokenizer) Segment(text string) []Token {
+func (t *gseTokenizer) Segment(text string) ([]models.Token, error) {
 	if text == "" {
-		return nil
+		return nil, nil
 	}
 
 	// Use Cut() with HMM — same API as 001_omc_cri.
@@ -36,7 +37,7 @@ func (t *gseTokenizer) Segment(text string) []Token {
 
 	// Build tokens with rune offsets
 	textLen := len([]rune(text))
-	tokens := make([]Token, 0, len(words))
+	tokens := make([]models.Token, 0, len(words))
 	runePos := 0
 	for _, word := range words {
 		wordRunes := len([]rune(word))
@@ -47,7 +48,7 @@ func (t *gseTokenizer) Segment(text string) []Token {
 		if end > textLen {
 			end = textLen
 		}
-		tokens = append(tokens, Token{
+		tokens = append(tokens, models.Token{
 			Text:      word,
 			CharStart: runePos,
 			CharEnd:   end,
@@ -57,7 +58,7 @@ func (t *gseTokenizer) Segment(text string) []Token {
 			break
 		}
 	}
-	return tokens
+	return tokens, nil
 }
 
 func (t *gseTokenizer) Close() error {

@@ -48,7 +48,10 @@ func TestSegmentSimple(t *testing.T) {
 	}
 	defer tok.Close()
 
-	tokens := tok.Segment("欢迎收听国际广播电台")
+	tokens, err := tok.Segment("欢迎收听国际广播电台")
+	if err != nil {
+		t.Fatalf("Segment() failed: %v", err)
+	}
 	if len(tokens) == 0 {
 		t.Fatal("expected non-empty tokens")
 	}
@@ -80,7 +83,10 @@ func TestSegmentEmpty(t *testing.T) {
 	}
 	defer tok.Close()
 
-	tokens := tok.Segment("")
+	tokens, err := tok.Segment("")
+	if err != nil {
+		t.Fatalf("Segment() failed: %v", err)
+	}
 	if len(tokens) != 0 {
 		t.Errorf("expected empty tokens for empty input, got %d", len(tokens))
 	}
@@ -95,7 +101,10 @@ func TestSegmentCharIndices(t *testing.T) {
 	defer tok.Close()
 
 	// "中国北京" = 4 characters, positions 0,1,2,3
-	tokens := tok.Segment("中国北京")
+	tokens, err := tok.Segment("中国北京")
+	if err != nil {
+		t.Fatalf("Segment() failed: %v", err)
+	}
 	if len(tokens) == 0 {
 		t.Fatal("expected non-empty tokens")
 	}
@@ -136,6 +145,8 @@ func BenchmarkSegment(b *testing.B) {
 	text := "欢迎收听国际广播电台中国北京"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		tok.Segment(text)
+		if _, err := tok.Segment(text); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

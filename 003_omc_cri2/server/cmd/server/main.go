@@ -53,11 +53,16 @@ func main() {
 
 	// ── Initialize modules ──────────────────────────────────────────────
 
-	// Tokenizer
-	tok, err := tokenizer.New(cfg.GSEDictDir)
-	if err != nil {
+	// Tokenizer: HanLP REST API when HANLP_URL is set, otherwise local GSE.
+	tok, err := tokenizer.New(cfg.GSEDictDir) // default: GSE (declares err for later use)
+	if cfg.HanLPURL != "" {
+		tok = tokenizer.NewHanLP(cfg.HanLPURL)
+		logger.Info("main", "tokenizer", "engine", "hanlp", "url", cfg.HanLPURL)
+	} else if err != nil {
 		logger.Error("main", "tokenizer_init_failed", "err", err)
 		os.Exit(1)
+	} else {
+		logger.Info("main", "tokenizer", "engine", "gse", "dict", cfg.GSEDictDir)
 	}
 	defer tok.Close()
 

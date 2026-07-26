@@ -14,7 +14,6 @@ import (
 	"github.com/criradio/server/internal/logging"
 	"github.com/criradio/server/internal/models"
 	"github.com/criradio/server/internal/storage"
-	"github.com/criradio/server/internal/tokenizer"
 )
 
 type mockIngestor struct {
@@ -29,11 +28,11 @@ func (m *mockIngestor) Stats() ingest.Stats { return ingest.Stats{} }
 
 type mockTokenizer struct{}
 
-func (m *mockTokenizer) Segment(text string) []tokenizer.Token {
-	return []tokenizer.Token{
+func (m *mockTokenizer) Segment(text string) ([]models.Token, error) {
+	return []models.Token{
 		{Text: "你好", CharStart: 0, CharEnd: 2},
 		{Text: "世界", CharStart: 2, CharEnd: 4},
-	}
+	}, nil
 }
 func (m *mockTokenizer) Close() error { return nil }
 
@@ -105,7 +104,7 @@ func TestProcessASR_NonRawCharPinyin_BuiltCorrectly(t *testing.T) {
 
 	// A tokenizer that produces words the dictionary won't find.
 	tok := &fixedTokenizer{
-		tokens: []tokenizer.Token{
+		tokens: []models.Token{
 			{Text: "试点", CharStart: 0, CharEnd: 2},
 			{Text: "测评", CharStart: 2, CharEnd: 4},
 			{Text: "长", CharStart: 4, CharEnd: 5},
@@ -473,9 +472,9 @@ func (d *nonRawTestDict) Stats() dictionary.Stats         { return dictionary.St
 func (d *nonRawTestDict) Close() error                    { return nil }
 
 // fixedTokenizer returns a fixed list of tokens regardless of input text.
-type fixedTokenizer struct{ tokens []tokenizer.Token }
+type fixedTokenizer struct{ tokens []models.Token }
 
-func (t *fixedTokenizer) Segment(text string) []tokenizer.Token { return t.tokens }
+func (t *fixedTokenizer) Segment(text string) ([]models.Token, error) { return t.tokens, nil }
 func (t *fixedTokenizer) Close() error                          { return nil }
 
 // ---- Sliding-Window Batch ASR tests ----

@@ -110,6 +110,7 @@ ENV ADDR=:8080 \
     ASR_MODEL=${ASR_MODEL} \
     MODEL_PATH=/opt/models \
     GSE_DICT_PATH=/opt/gse-dict \
+    HANLP_URL= \
     DICT=bkrs \
     BKRS_PATH=/opt/dabkrs.gz \
     CEDICT_PATH=/opt/cedict_ts.u8 \

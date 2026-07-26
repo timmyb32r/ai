@@ -22,6 +22,21 @@ type TranscriptSegment struct {
 	// accurate per-word timestamps instead of proportional distribution.
 	RawTimestamps []float64 `json:"-"`
 	RawTokens     []string  `json:"-"`
+	// PreComputedTokens carries tokens from a batch-level tokenizer
+	// (e.g. HanLP on stitched text). When non-nil, processDownstream
+	// uses these instead of calling the per-segment tokenizer.
+	// PreComputedTokens carries tokens from a batch-level tokenizer
+	// (e.g. HanLP on stitched text). When non-nil, processDownstream
+	// uses these instead of calling the per-segment tokenizer.
+	// Not serialized to JSON — internal pipeline use only.
+	PreComputedTokens []Token `json:"-"`
+}
+
+// Token is a word segmented from Chinese text with rune-level positions.
+type Token struct {
+	Text      string // the word
+	CharStart int    // index of first rune in the source text
+	CharEnd   int    // index after last rune (exclusive)
 }
 
 // WordSense is one structured meaning within a dictionary entry.
