@@ -176,15 +176,33 @@ else
     echo "   ✓ dabkrs.gz ($(du -h "${BKRS_FILE}" | cut -f1))"
 fi
 
-# ── Wiktionary JSONL dump — kaikki.org pre-parsed Chinese Wiktionary ──────
+# ── Wiktionary JSONL dump — kaikki.org enwiktionary (English) extract ──
+# The raw dump is 2.6 GB and contains ALL languages. We pre-filter it to
+# only Chinese entries (lang_code=zh) so the Docker image stays small (~200 MB).
 WIKT_FILE="zh-extract.jsonl.gz"
+WIKT_RAW="/tmp/raw-wiktextract-data.jsonl.gz"
 if [ -f "${WIKT_FILE}" ]; then
-    echo "==> Wiktionary dump already cached ($(du -h "${WIKT_FILE}" | cut -f1))"
+    echo "==> Wiktionary (zh-filtered) already cached ($(du -h "${WIKT_FILE}" | cut -f1))"
 else
-    WIKT_URL="https://kaikki.org/dictionary/downloads/zh/zh-extract.jsonl.gz"
-    echo "==> Downloading Wiktionary JSONL dump (~215MB)..."
-    curl -fL --progress-bar "${WIKT_URL}" -o "${WIKT_FILE}"
-    echo "   ✓ zh-extract.jsonl.gz ($(du -h "${WIKT_FILE}" | cut -f1))"
+    WIKT_URL="https://kaikki.org/dictionary/raw-wiktextract-data.jsonl.gz"
+    echo "==> Downloading English Wiktionary dump (~2.6GB)..."
+    curl -fL --progress-bar "${WIKT_URL}" -o "${WIKT_RAW}"
+    echo "   ✓ raw dump ($(du -h "${WIKT_RAW}" | cut -f1))"
+
+    echo "==> Filtering Chinese entries only (lang_code=zh)..."
+    python3 -c "
+import gzip, sys
+with gzip.open('${WIKT_RAW}', 'rt', encoding='utf-8') as inf, \
+     gzip.open('${WIKT_FILE}', 'wt', encoding='utf-8') as outf:
+    count = 0
+    for line in inf:
+        if '\"lang_code\"' in line and '\"zh\"' in line:
+            outf.write(line)
+            count += 1
+    print(f'   ✓ {count} Chinese entries written')
+"
+    rm -f "${WIKT_RAW}"
+    echo "   ✓ ${WIKT_FILE} ($(du -h "${WIKT_FILE}" | cut -f1))"
 fi
 
 # ── Unihan readings (probable pinyin for ambiguous single characters) ──────
