@@ -701,6 +701,19 @@ func testLastSegmentSolo(t *testing.T) {
 		ASRBatchSize: 2,
 	}
 
+	// Override mock to return sherpa-style text with relative timestamps
+	// appropriate for stitched audio (0-6s). Without this, the default mock
+	// returns absolute timestamps that don't work with the guard zone.
+	p.Transcriber.(*asr.MockTranscriber).TranscribeFn = func(pcm []float32, segmentID int) (*models.TranscriptSegment, error) {
+		// Return unique text per batch so dedupBoundary doesn't see false overlap.
+		// Timestamps are relative to stitched audio start.
+		return &models.TranscriptSegment{
+			SegmentID:     segmentID,
+			TextZh:        fmt.Sprintf("seg%d文本", segmentID),
+			RawTimestamps: []float64{0.5, 1.0, 1.5, 2.0}, // all < boundary=2.7
+		}, nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -786,7 +799,8 @@ func testOutputOrdering(t *testing.T) {
 
 // testBatchSplit_WhisperPath verifies that splitBatchResult correctly splits
 // a stitched ASR result when using phrase-level timestamps (whisper path).
-// Words whose StartSec is within the boundary+tolerance are kept.
+// Words whose StartSec is within boundary (=HLSTime - guardSeconds) are kept.
+// Words in the guard zone are excluded — they will be recognized in the next batch.
 func testBatchSplit_WhisperPath(t *testing.T) {
 	p := &Pipeline{HLSTime: 3}
 
@@ -796,7 +810,7 @@ func testBatchSplit_WhisperPath(t *testing.T) {
 	}
 
 	// Stitched result from ASR (two 3-second segments stitched = 6 seconds)
-	// Boundary = 3s, tolerance = 0.5s → cutoff at 3.5s
+	// Boundary = HLSTime - guardSeconds = 3.0 - 0.3 = 2.7
 	stitched := &models.TranscriptSegment{
 		SegmentID: 0,
 		TextZh:    "今天天气很好我们出去散步一起吃饭",
@@ -815,11 +829,11 @@ func testBatchSplit_WhisperPath(t *testing.T) {
 		t.Errorf("SegmentID: got %d, want 0", result.SegmentID)
 	}
 
-	// Words with StartSec < 3.5:
-	//   今天天气很好 (0 < 3.5) → included
-	//   我们出去散步 (3.0 < 3.5) → included
-	//   一起吃饭 (4.0 < 3.5) → excluded
-	expected := "今天天气很好我们出去散步"
+	// Words with StartSec < 2.7:
+	//   今天天气很好 (0 < 2.7) → kept
+	//   我们出去散步 (3.0 >= 2.7) → excluded (guard zone)
+	//   一起吃饭 (4.0 >= 2.7) → excluded
+	expected := "今天天气很好"
 	if result.TextZh != expected {
 		t.Errorf("TextZh: got %q, want %q", result.TextZh, expected)
 	}
@@ -880,4 +894,84 @@ func TestBatchSizeInvalid(t *testing.T) {
 	// (test cases "ASRBatchSize 0" and "ASRBatchSize 9").
 	// Mark as skipped since config validation is tested elsewhere.
 	t.Skip("config validation for ASRBatchSize (0 and 9) is tested in config/config_test.go")
+}
+
+// TestGuardZonePreventsBoundaryDuplicates verifies that splitBatchResult
+// with guardSeconds=0.3 excludes characters in the guard zone from the kept
+// portion. This prevents duplicates at segment boundaries — including the case
+// where ASR produces DIFFERENT characters for the same syllable in adjacent
+// batches (e.g., "氣" in batch [N-1,N] vs "其" in batch [N,N+1] for the same "qi").
+func TestGuardZonePreventsBoundaryDuplicates(t *testing.T) {
+	const hlTime = 3
+	const guard = 0.3
+
+	p := &Pipeline{HLSTime: hlTime}
+
+	// Simulate batch [N-1, N]: character "氣" at 2.95s (inside old boundary,
+	// inside guard zone)
+	stitched1 := &models.TranscriptSegment{
+		SegmentID:     10,
+		TextZh:        "陽氣",
+		RawTimestamps: []float64{1.5, 2.95},
+	}
+	job1 := batchJob{firstSegID: 10, batchSize: 2}
+	result1 := p.splitBatchResult(stitched1, job1)
+
+	// With guard zone: 2.95 > (3.0 - 0.3) = 2.7, so "氣" should be EXCLUDED
+	if result1.TextZh == "陽氣" {
+		t.Errorf("guard zone failed for batch [N-1,N]: '氣' at 2.95s should be "+
+			"excluded (2.95 > boundary-guard=%.1f), got %q", float64(hlTime)-guard, result1.TextZh)
+	}
+	if result1.TextZh != "陽" {
+		t.Errorf("expected only '陽' from batch [N-1,N], got %q", result1.TextZh)
+	}
+
+	// Simulate batch [N, N+1]: character "其" at 0.05s (different char, same "qi" syllable)
+	stitched2 := &models.TranscriptSegment{
+		SegmentID:     11,
+		TextZh:        "其始",
+		RawTimestamps: []float64{0.05, 1.2},
+	}
+	job2 := batchJob{firstSegID: 11, batchSize: 2}
+	result2 := p.splitBatchResult(stitched2, job2)
+
+	// With guard zone: 0.05 < 2.7 and 1.2 < 2.7, so both chars should be INCLUDED
+	if result2.TextZh != "其始" {
+		t.Errorf("expected '其始' from batch [N,N+1] (both chars before boundary-guard), got %q",
+			result2.TextZh)
+	}
+
+	// Verify NO duplicate: "氣" appears only in segment 11 (from batch [N,N+1]),
+	// not in segment 10 (from batch [N-1,N]).
+	// The guard zone ensures each syllable is recognized exactly once.
+	t.Logf("segment 10: %q, segment 11: %q — no duplicate 'qi' character", result1.TextZh, result2.TextZh)
+}
+
+// TestGuardZoneWhisperPath verifies guard zone works for whisper phrase-level timestamps.
+func TestGuardZoneWhisperPath(t *testing.T) {
+	const hlTime = 3
+	const guard = 0.3
+
+	p := &Pipeline{HLSTime: hlTime}
+
+	// Phrase "天气" spans [2.5, 3.2] — crosses the guard boundary
+	stitched := &models.TranscriptSegment{
+		SegmentID: 5,
+		TextZh:    "今天天气很好",
+		Words: []models.WordEntry{
+			{Text: "今天", CharStart: 0, CharEnd: 2, StartSec: 0.5, EndSec: 1.5},
+			{Text: "天气", CharStart: 2, CharEnd: 4, StartSec: 2.5, EndSec: 3.2}, // crosses boundary
+			{Text: "很好", CharStart: 4, CharEnd: 6, StartSec: 3.5, EndSec: 4.5},
+		},
+	}
+	job := batchJob{firstSegID: 5, batchSize: 2}
+	result := p.splitBatchResult(stitched, job)
+
+	// "今天" has StartSec=0.5 < 2.7 → kept
+	// "天气" has StartSec=2.5 < 2.7 → kept (starts before guard boundary)
+	// "很好" has StartSec=3.5 >= 2.7 → excluded
+	if result.TextZh != "今天天气" {
+		t.Errorf("expected '今天天气' (phrase with StartSec < boundary-guard=%.1f), got %q",
+			float64(hlTime)-guard, result.TextZh)
+	}
 }

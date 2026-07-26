@@ -53,6 +53,11 @@ type Pipeline struct {
 	nextStoreID int
 	pendingSegs map[int]*models.TranscriptSegment
 
+	// lastEmittedSeg — последний сегмент, прошедший processDownstream.
+	// Используется dedupBoundary для межсегментной текстовой дедупликации.
+	// Защищён storeMu (emitOrdered — единственный writer).
+	lastEmittedSeg *models.TranscriptSegment
+
 	hlsStdin io.WriteCloser
 	hlsCmd   *exec.Cmd
 	hlsMu    sync.Mutex
@@ -340,7 +345,14 @@ func (p *Pipeline) splitBatchResult(
 		return stitched
 	}
 
-	boundary := float64(p.HLSTime) // граница первого сегмента в секундах от начала audio
+	// Граница первого сегмента в секундах от начала stitched audio.
+	// guardSeconds исключает символы вблизи границы из kept-порции —
+	// они будут правильно распознаны в СЛЕДУЮЩЕМ батче, где у них
+	// есть полноценный левый контекст. Это предотвращает дубликаты
+	// (включая ситуацию, когда ASR выдаёт РАЗНЫЕ иероглифы для одного
+	// и того же слога на границе в соседних батчах).
+	const guardSeconds = 0.3
+	boundary := float64(p.HLSTime) - guardSeconds
 
 	// --- Определяем текст для первого сегмента ---
 	var keptText string
@@ -348,6 +360,9 @@ func (p *Pipeline) splitBatchResult(
 
 	if len(stitched.RawTimestamps) > 0 {
 		// === Sherpa-onnx path: character-level timestamps ===
+		// Оставляем только символы с timestamp строго до boundary.
+		// Символы в guard zone [boundary, HLSTime) отбрасываются —
+		// они попадут в следующий батч где будут правильно распознаны.
 		splitIdx := 0
 		for splitIdx < len(stitched.RawTimestamps) && stitched.RawTimestamps[splitIdx] < boundary {
 			splitIdx++
@@ -361,10 +376,12 @@ func (p *Pipeline) splitBatchResult(
 		keptTimestamps = stitched.RawTimestamps[:min(splitIdx, len(stitched.RawTimestamps))]
 	} else {
 		// === Whisper path: phrase-level timestamps ===
-		const boundaryTolerance = 0.5
+		// Оставляем только фразы, которые уверенно в первом сегменте
+		// (StartSec < boundary). Фразы в guard zone отбрасываются —
+		// они попадут в следующий батч.
 		var textParts []string
 		for _, w := range stitched.Words {
-			if w.StartSec < boundary+boundaryTolerance {
+			if w.StartSec < boundary {
 				textParts = append(textParts, w.Text)
 			}
 		}
@@ -408,13 +425,15 @@ func (p *Pipeline) emitOrdered(seg *models.TranscriptSegment) {
 	defer p.storeMu.Unlock()
 
 	if seg.SegmentID == p.nextStoreID {
-		// Наш черёд — обрабатываем и проверяем pending
+		// Наш черёд — дедупликация, затем downstream, затем drain pending
+		p.dedupBoundary(seg)
 		p.processDownstream(seg)
 		p.nextStoreID++
 
 		for {
 			if next, ok := p.pendingSegs[p.nextStoreID]; ok {
 				delete(p.pendingSegs, p.nextStoreID)
+				p.dedupBoundary(next)
 				p.processDownstream(next)
 				p.nextStoreID++
 			} else {
@@ -450,6 +469,73 @@ func (p *Pipeline) trackEmptyStreak(segment *models.TranscriptSegment) {
 		atomic.StoreInt64(&p.emptyStreak, 0)
 		atomic.StoreInt64(&p.emptyStreakAlarm, 0)
 	}
+}
+
+// dedupBoundary выполняет текстовую дедупликацию на стыке сегментов.
+// Сравнивает первые до 5 рун текущего сегмента с последними до 5 рунами
+// предыдущего. При перекрытии >= 2 рун удаляет дубликат из начала сегмента.
+//
+// Это safety net поверх guard zone в splitBatchResult: guard zone
+// предотвращает большинство дубликатов на границе, а текстовая дедупликация
+// ловит оставшиеся (например, когда ASR всё же включил хвост в оба сегмента).
+func (p *Pipeline) dedupBoundary(seg *models.TranscriptSegment) {
+	// Сегмент 0: не с чем сравнивать, но запоминаем для следующего
+	if seg.SegmentID == 0 {
+		p.lastEmittedSeg = seg
+		return
+	}
+
+	prevSeg := p.lastEmittedSeg
+	if prevSeg == nil || prevSeg.TextZh == "" || seg.TextZh == "" {
+		p.lastEmittedSeg = seg
+		return
+	}
+
+	prevRunes := []rune(prevSeg.TextZh)
+	curRunes := []rune(seg.TextZh)
+
+	const windowSize = 5
+	const minOverlap = 2
+
+	prevTail := prevRunes
+	if len(prevTail) > windowSize {
+		prevTail = prevTail[len(prevTail)-windowSize:]
+	}
+	curHead := curRunes
+	if len(curHead) > windowSize {
+		curHead = curHead[:windowSize]
+	}
+
+	// Ищем максимальное перекрытие (от большего к меньшему)
+	overlap := 0
+	for l := min(len(prevTail), len(curHead)); l >= minOverlap; l-- {
+		if string(prevTail[len(prevTail)-l:]) == string(curHead[:l]) {
+			overlap = l
+			break
+		}
+	}
+
+	if overlap > 0 {
+		seg.TextZh = string(curRunes[overlap:])
+
+		// Корректируем RawTimestamps
+		trimIdx := overlap
+		if trimIdx > len(seg.RawTimestamps) {
+			trimIdx = len(seg.RawTimestamps)
+		}
+		seg.RawTimestamps = seg.RawTimestamps[trimIdx:]
+
+		// Words НЕ корректируем — processDownstream перезаписывает их
+		// через токенизацию свежего TextZh.
+
+		p.Logger.Info("pipeline", "boundary_dedup",
+			"seg_id", seg.SegmentID,
+			"overlap", overlap,
+			"removed", string(curRunes[:overlap]),
+		)
+	}
+
+	p.lastEmittedSeg = seg
 }
 
 // processDownstream выполняет полную обработку одного сегмента:
