@@ -145,14 +145,15 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		p.ASRBatchSize = 2
 	}
 
-	// Start with current time, then refine to HLS PROGRAM-DATE-TIME when available.
+	// Wait synchronously for the HLS playlist so epochBase is authoritative
+	// BEFORE any segments are written.  Async refinement causes a timeline gap:
+	// early segments get time.Now() base → gap → later segments get HLS
+	// PROGRAM-DATE-TIME base → player falls into the gap → sync MISS.
 	p.epochBase = float64(time.Now().UnixMilli()) / 1000.0
-	go func() {
-		if base := p.waitForHLSTimeline(ctx, hlsDir, 30*time.Second); base > 0 {
-			p.epochBase = base
-			p.Logger.Info("pipeline", "timeline_base_refined", "epoch", base)
-		}
-	}()
+	if base := p.waitForHLSTimeline(ctx, hlsDir, 30*time.Second); base > 0 {
+		p.epochBase = base
+		p.Logger.Info("pipeline", "timeline_base_refined", "epoch", base)
+	}
 
 	// Create empty subtitled playlist so ExoPlayer doesn't 404 on startup
 	p.writeEmptyPlaylist(hlsDir)
