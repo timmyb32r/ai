@@ -24,4 +24,18 @@ interface SubtitleSource {
 
     /** Disconnect and clear cached segments. */
     fun disconnect()
+
+    /**
+     * Fetch a single segment with full word-level dictionary data.
+     * Returns null if the source doesn't support on-demand fetching
+     * (SSE always sends full data; offline reads from disk).
+     */
+    suspend fun fetchSegmentFull(serverUrl: String, segmentId: Int): SubtitleSegment? = null
+
+    /**
+     * Insert or replace a segment in the local cache and re-emit.
+     * Used after [fetchSegmentFull] to persist the full-data segment
+     * so subsequent taps on the same segment don't re-fetch.
+     */
+    fun upsertSegment(segment: SubtitleSegment) {}
 }

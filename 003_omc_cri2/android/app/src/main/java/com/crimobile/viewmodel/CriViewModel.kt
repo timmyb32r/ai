@@ -151,6 +151,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var lastActiveWord: WordEntry? = null
     private var pendingPlayUrl: String? = null  // deferred Play until player is ready
     private var coldStartT0: Long = 0  // timing: System.nanoTime() when Play was tapped
+    private val pendingDictFetches = mutableSetOf<Int>()  // segment IDs being lazy-fetched
 
     // ── Offline mode ───────────────────────────────────────────────────
     private val offlineStorageManager by lazy { OfflineStorageManager(getApplication()) }
@@ -580,6 +581,59 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
                 savedWord.value = action.word
+
+                // Lazy dictionary fetch: if the word was cold-loaded via ?lite=true,
+                // its translation/senses/cedict_meanings are empty. Fetch the full
+                // segment once and update the popup + cache so subsequent taps on
+                // any word in this segment use the cached full data.
+                val needsDict = action.word.translation.isEmpty() &&
+                    action.word.senses.isEmpty() &&
+                    action.word.cedict_meanings.isEmpty()
+                if (needsDict && segment != null && segment.segment_id !in pendingDictFetches) {
+                    pendingDictFetches.add(segment.segment_id)
+                    viewModelScope.launch {
+                        try {
+                            val fullSeg = subtitleSource.fetchSegmentFull(
+                                currentServerUrl, segment.segment_id
+                            )
+                            if (fullSeg != null) {
+                                // Cache the full segment so subsequent taps skip the network.
+                                subtitleSource.upsertSegment(fullSeg)
+
+                                // Find the matching word in the full segment.
+                                val fullWord = fullSeg.words.find { w ->
+                                    w.text == action.word.text &&
+                                        w.char_start == action.word.char_start
+                                }
+                                // Update the popup if it still shows the same word.
+                                val currentPopup = _state.value.wordPopup
+                                if (fullWord != null) {
+                                    savedWord.value = fullWord
+                                }
+                                if (currentPopup != null &&
+                                    currentPopup.word.text == action.word.text &&
+                                    currentPopup.word.char_start == action.word.char_start
+                                ) {
+                                    _state.value = _state.value.copy(
+                                        wordPopup = currentPopup.copy(
+                                            word = fullWord ?: currentPopup.word,
+                                            segment = fullSeg,
+                                            translation = fullWord?.translation ?: "",
+                                            senses = fullWord?.senses ?: emptyList(),
+                                            cedictMeanings = fullWord?.cedict_meanings ?: emptyList()
+                                        )
+                                    )
+                                }
+                                Log.i(VM, "dict_lazy_fetched seg=${segment.segment_id} " +
+                                    "word=${action.word.text} trans=${fullWord?.translation?.take(30)}")
+                            }
+                        } catch (e: Exception) {
+                            Log.w(VM, "dict_lazy_fetch failed seg=${segment.segment_id}: ${e.message}")
+                        } finally {
+                            pendingDictFetches.remove(segment.segment_id)
+                        }
+                    }
+                }
             }
             CriAction.DismissPopup -> {
                 _state.value = _state.value.copy(wordPopup = null, isPronouncing = false)

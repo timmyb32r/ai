@@ -318,6 +318,50 @@ class HttpSubtitleSource(
             }
     }
 
+    /**
+     * Fetch a single segment with full dictionary data from the metadata endpoint.
+     * Used for lazy dictionary loading: when the user taps a word whose segment
+     * was cold-loaded via ?lite=true, this fetches the complete segment so the
+     * word popup shows translation, senses, and CC-CEDICT glosses.
+     */
+    override suspend fun fetchSegmentFull(serverUrl: String, segmentId: Int): SubtitleSegment? {
+        val metadataUrl = "$serverUrl/api/metadata/${segmentIdToFilename(segmentId)}"
+        val jsonBody = withContext(Dispatchers.IO) {
+            fetchUrl(metadataUrl)
+        }
+        return if (jsonBody != null) {
+            try {
+                SubtitleParser.parseSegment(org.json.JSONObject(jsonBody))
+            } catch (e: Exception) {
+                Log.w(HTTP_TAG, "fetchSegmentFull parse error for id=$segmentId: ${e.message}")
+                null
+            }
+        } else null
+    }
+
+    /**
+     * Insert or replace a segment in the local cache. After [fetchSegmentFull],
+     * this persists the full-data segment so subsequent taps on the same segment
+     * use cached data without a network round-trip.
+     */
+    override fun upsertSegment(segment: SubtitleSegment) {
+        var changed = false
+        synchronized(lock) {
+            // Only replace if we already have this segment (don't add new ones here).
+            if (segment.segment_id in seenIds) {
+                segmentMap[segment.segment_id] = segment
+                changed = true
+            }
+        }
+        if (changed) {
+            synchronized(lock) {
+                val sorted = segmentMap.values.sortedBy { it.timeline_start_sec }
+                _segments.value = sorted
+                _segmentsMeta.value = sorted.map { it.toMeta() }
+            }
+        }
+    }
+
     override fun disconnect() {
         Log.i(HTTP_TAG, "disconnect total_segments=${segmentMap.size}")
         pollJob?.cancel()
