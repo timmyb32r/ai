@@ -84,6 +84,13 @@ RUN set -e; \
         cp -r "/tmp/docker-cache/$d" "/opt/models/$d" && echo "Copied $d/"; \
       fi; \
     done; \
+    # ── Wiktionary JSONL dump (optional) ──
+    if [ -f "/tmp/docker-cache/zh-extract.jsonl.gz" ]; then \
+      cp "/tmp/docker-cache/zh-extract.jsonl.gz" /opt/zh-extract.jsonl.gz && \
+      echo "Wiktionary dump: $(du -h /opt/zh-extract.jsonl.gz | cut -f1)"; \
+    else \
+      echo "WARNING: Wiktionary dump not found — DICT=wiktionary will not work" >&2; \
+    fi; \
     rm -rf /tmp/docker-cache; \
     if [ -z "$(ls -A /opt/models/ 2>/dev/null)" ]; then \
       echo "WARNING: no model files in /opt/models/ — mount or download before running" >&2; \
@@ -103,15 +110,6 @@ RUN if [ -s /opt/dabkrs.gz ]; then \
       echo "BKRS dump: $(du -h /opt/dabkrs.gz | cut -f1)"; \
     else \
       echo "WARNING: BKRS dump not found — set DICT=cedict for English mode" >&2; \
-    fi
-
-# ── Wiktionary JSONL dump — Chinese-English from kaikki.org ────────────
-# Pre-downloaded by download-cache.sh. Optional — only validated when DICT=wiktionary.
-COPY .docker-cache/zh-extract.jsonl.gz /opt/zh-extract.jsonl.gz
-RUN if [ -s /opt/zh-extract.jsonl.gz ]; then \
-      echo "Wiktionary dump: $(du -h /opt/zh-extract.jsonl.gz | cut -f1)"; \
-    else \
-      echo "WARNING: Wiktionary dump not found — set DICT=bkrs or cedict instead" >&2; \
     fi
 
 # ── Unihan readings — probable pinyin for ambiguous single characters ───

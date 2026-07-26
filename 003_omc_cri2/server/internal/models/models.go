@@ -66,7 +66,8 @@ type WordEntry struct {
 	// CedictMeanings are the CC-CEDICT English glosses for this word, shown as a
 	// second dictionary tab. Populated when the word exists in CEDICT; empty
 	// otherwise. Independent of Trans/Senses (which come from the primary dict).
-	CedictMeanings []string `json:"cedict_meanings,omitempty"`
+	CedictMeanings    []string `json:"cedict_meanings,omitempty"`
+	WiktionaryMeanings []string `json:"wiktionary_meanings,omitempty"`
 }
 
 // SegmentIndex is the index.json mapping segment IDs to files and timeline positions.
@@ -107,6 +108,7 @@ type ServerStatus struct {
 	NewestSegmentEndSec   float64 `json:"newest_segment_end_sec"`
 	AsrEngine             string  `json:"asr_engine"`
 	AsrModel              string  `json:"asr_model"`
+	Dictionary            string  `json:"dictionary"`
 }
 
 // SSESync is the initial sync event sent to new SSE connections.

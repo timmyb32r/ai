@@ -23,7 +23,7 @@ fi
 
 if [ -z "${MODEL}" ] && [ "${DICT_ONLY}" = false ]; then
     echo "USAGE: $0 <model-short-name>" >&2
-    echo "   or: $0 --dict-only         (download only dictionaries: CC-CEDICT + BKRS + gse)" >&2
+    echo "   or: $0 --dict-only         (download only dictionaries: CC-CEDICT + BKRS + Wiktionary + gse)" >&2
     echo "" >&2
     echo "sherpa-onnx models:" >&2
     echo "  sense-voice-2024      SenseVoice Small (zh/en/ja/ko/yue, int8, ~140MB)" >&2
@@ -174,6 +174,17 @@ else
         curl -fL --progress-bar "${BKRS_URL}" -o "${BKRS_FILE}"
     fi
     echo "   ✓ dabkrs.gz ($(du -h "${BKRS_FILE}" | cut -f1))"
+fi
+
+# ── Wiktionary JSONL dump — kaikki.org pre-parsed Chinese Wiktionary ──────
+WIKT_FILE="zh-extract.jsonl.gz"
+if [ -f "${WIKT_FILE}" ]; then
+    echo "==> Wiktionary dump already cached ($(du -h "${WIKT_FILE}" | cut -f1))"
+else
+    WIKT_URL="https://kaikki.org/dictionary/downloads/zh/zh-extract.jsonl.gz"
+    echo "==> Downloading Wiktionary JSONL dump (~215MB)..."
+    curl -fL --progress-bar "${WIKT_URL}" -o "${WIKT_FILE}"
+    echo "   ✓ zh-extract.jsonl.gz ($(du -h "${WIKT_FILE}" | cut -f1))"
 fi
 
 # ── Unihan readings (probable pinyin for ambiguous single characters) ──────

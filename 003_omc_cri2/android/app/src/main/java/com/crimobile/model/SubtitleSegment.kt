@@ -59,7 +59,9 @@ data class WordEntry(
     val translation: String,
     val senses: List<WordSense> = emptyList(),
     // CC-CEDICT English glosses (second dictionary), if the word is in CEDICT.
-    val cedict_meanings: List<String> = emptyList()
+    val cedict_meanings: List<String> = emptyList(),
+    // Wiktionary English glosses (third dictionary), if the word is in Wiktionary.
+    val wiktionary_meanings: List<String> = emptyList()
 )
 
 
@@ -89,5 +91,6 @@ data class WordPopupState(
     val pinyin: String,
     val translation: String,
     val senses: List<WordSense> = emptyList(),
-    val cedictMeanings: List<String> = emptyList()
+    val cedictMeanings: List<String> = emptyList(),
+    val wiktionaryMeanings: List<String> = emptyList()
 )

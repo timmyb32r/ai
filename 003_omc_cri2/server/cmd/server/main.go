@@ -121,6 +121,17 @@ func main() {
 		}
 	}
 
+	// Wiktionary: supplementary dictionary — loaded whenever the file is present.
+	// Non-fatal if missing; the third dictionary tab simply won't appear in the app.
+	var wiktionaryDict dictionary.Dictionary
+	if wd, werr := dictionary.LoadWiktionary(cfg.WiktionaryPath); werr != nil {
+		logger.Warn("main", "wiktionary_disabled", "path", cfg.WiktionaryPath, "err", werr)
+	} else {
+		wiktionaryDict = wd
+		defer wiktionaryDict.Close()
+		logger.Info("main", "wiktionary_loaded", "path", cfg.WiktionaryPath)
+	}
+
 	// Storage
 	store, err := storage.New(cfg.OutputDir)
 	if err != nil {
@@ -160,12 +171,13 @@ func main() {
 
 	// HTTP API
 	apiServer := &api.Server{
-		Store:     store,
-		Logger:    logger,
-		HLSDir:    cfg.OutputDir + "/hls",
-		MetaDir:   cfg.OutputDir + "/metadata",
-		AsrEngine: cfg.AsrEngine,
-		AsrModel:  cfg.AsrModel,
+		Store:      store,
+		Logger:     logger,
+		HLSDir:     cfg.OutputDir + "/hls",
+		MetaDir:    cfg.OutputDir + "/metadata",
+		AsrEngine:  cfg.AsrEngine,
+		AsrModel:   cfg.AsrModel,
+		Dictionary: cfg.Dict,
 	}
 
 	// ── pprof server (diagnostics) ────────────────────────────────────
@@ -214,6 +226,7 @@ func main() {
 		Dictionary:   dict,
 		Unihan:       unihanResolver,
 		Cedict:       cedictFallback,
+		Wiktionary:   wiktionaryDict,
 		Store:        store,
 		Logger:       logger,
 		OutputDir:    cfg.OutputDir,

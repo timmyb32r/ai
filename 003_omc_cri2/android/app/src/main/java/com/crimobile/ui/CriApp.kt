@@ -374,7 +374,8 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                     onAction(CriAction.DismissPopup)
                     onAction(CriAction.Resume)
                 },
-                dictFontSizeSp = state.dictFontSizeSp
+                dictFontSizeSp = state.dictFontSizeSp,
+                dictionary = state.dictionary
             )
         }
     }
@@ -1411,7 +1412,8 @@ private fun WordPopupDialog(
     onPronounce: () -> Unit,
     onSave: () -> Unit,
     onPlayFromHere: () -> Unit = {},
-    dictFontSizeSp: Int = 14
+    dictFontSizeSp: Int = 14,
+    dictionary: String = "bkrs"
 ) {
     val dictFont = dictFontSizeSp.sp
     val clipboard = LocalClipboardManager.current
@@ -1461,9 +1463,10 @@ private fun WordPopupDialog(
                     )
                 }
 
-                // Dictionaries: BKRS (primary) and CC-CEDICT (secondary).
-                // Two tabs when both are present; otherwise show whichever exists.
+                // Three independent dictionaries: BKRS (primary), Wiktionary, CC-CEDICT.
+                // Show tabs for whichever have data.
                 val hasBkrs = popup.senses.isNotEmpty() || popup.translation.isNotBlank()
+                val hasWiktionary = popup.wiktionaryMeanings.isNotEmpty()
                 val hasCedict = popup.cedictMeanings.isNotEmpty()
 
                 @Composable
@@ -1536,32 +1539,64 @@ private fun WordPopupDialog(
                     }
                 }
 
-                Spacer(Modifier.height(12.dp))
-                when {
-                    hasBkrs && hasCedict -> {
-                        var selectedTab by remember(popup.word.text) { mutableStateOf(0) }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("БКРС", "CEDICT").forEachIndexed { idx, title ->
-                                val selected = selectedTab == idx
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = if (selected) Amber.copy(alpha = 0.2f) else TextSecondary.copy(alpha = 0.1f),
-                                    modifier = Modifier.clickable { selectedTab = idx }
-                                ) {
-                                    Text(
-                                        title,
-                                        color = if (selected) Amber else TextSecondary,
-                                        fontSize = 14.sp,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                    )
-                                }
-                            }
+                @Composable
+                fun WiktionaryContent() {
+                    popup.wiktionaryMeanings.forEachIndexed { i, meaning ->
+                        Spacer(Modifier.height(6.dp))
+                        Row {
+                            Text(
+                                "${i + 1}. ",
+                                color = Amber,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(meaning, color = TextPrimary, fontSize = dictFont)
                         }
-                        if (selectedTab == 0) BkrsContent() else CedictContent()
                     }
-                    hasBkrs -> BkrsContent()
-                    hasCedict -> CedictContent()
+                }
+
+                Spacer(Modifier.height(12.dp))
+                // All three tabs always visible. Active tabs (with data) are
+                // highlighted and clickable; inactive tabs are dimmed.
+                // Default selection: first tab that has content.
+                val tabs = listOf(
+                    "БКРС" to hasBkrs,
+                    "Wiki" to hasWiktionary,
+                    "CEDICT" to hasCedict,
+                )
+                val firstActive = tabs.indexOfFirst { it.second }
+                var selectedTab by remember(popup.word.text) {
+                    mutableStateOf(if (firstActive >= 0) firstActive else 0)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    tabs.forEachIndexed { idx, (title, active) ->
+                        val selected = selectedTab == idx && active
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (selected) Amber.copy(alpha = 0.2f)
+                                    else TextSecondary.copy(alpha = 0.08f),
+                            modifier = if (active) Modifier.clickable { selectedTab = idx }
+                                       else Modifier
+                        ) {
+                            Text(
+                                title,
+                                color = when {
+                                    selected -> Amber
+                                    active -> TextSecondary
+                                    else -> TextSecondary.copy(alpha = 0.35f)
+                                },
+                                fontSize = 14.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                when (selectedTab) {
+                    0 -> BkrsContent()
+                    1 -> WiktionaryContent()
+                    2 -> CedictContent()
                 }
 
                 Spacer(Modifier.height(8.dp))

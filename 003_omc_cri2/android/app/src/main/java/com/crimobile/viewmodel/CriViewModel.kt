@@ -49,6 +49,7 @@ data class CriViewState(
     val debugEnabled: Boolean = false,  // true when .cri_debug file exists
     val logToFileEnabled: Boolean = false,  // redirect logs to file
     val metadataProtocol: String = "HTTP",  // "HTTP" or "SSE"
+    val dictionary: String = "bkrs",  // server's primary dictionary codename ("bkrs", "cedict", "wiktionary")
     val wordPopup: WordPopupState? = null,
     val isPronouncing: Boolean = false,  // true while PronounceWord audio plays
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
@@ -461,6 +462,20 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             DebugLogger.i(TIMING, "event=play_tapped elapsed_ms=0")
                             DebugLogger.log(VM, "▶ Play cold-start | serverUrl=${action.serverUrl} | protocol=${_state.value.metadataProtocol}")
 
+                            // Fetch server dictionary type for tab label.
+                            viewModelScope.launch {
+                                try {
+                                    val json = withContext(Dispatchers.IO) {
+                                        java.net.URL("${action.serverUrl}/api/status").readText()
+                                    }
+                                    val dict = org.json.JSONObject(json).optString("dictionary", "")
+                                    if (dict.isNotEmpty()) {
+                                        _state.value = _state.value.copy(dictionary = dict)
+                                        DebugLogger.i(VM, "server dictionary=$dict")
+                                    }
+                                } catch (_: Exception) {}
+                            }
+
                             if (subtitleSource is com.crimobile.subtitles.HttpSubtitleSource) {
                                 _state.value = _state.value.copy(playbackState = PlaybackState.LOADING)
                                 viewModelScope.launch {
@@ -576,7 +591,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         pinyin = action.word.pinyin,
                         translation = action.word.translation,
                         senses = action.word.senses,
-                        cedictMeanings = action.word.cedict_meanings
+                        cedictMeanings = action.word.cedict_meanings,
+                        wiktionaryMeanings = action.word.wiktionary_meanings
                     )
                 )
                 savedWord.value = action.word
@@ -619,7 +635,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                             segment = fullSeg,
                                             translation = fullWord?.translation ?: "",
                                             senses = fullWord?.senses ?: emptyList(),
-                                            cedictMeanings = fullWord?.cedict_meanings ?: emptyList()
+                                            cedictMeanings = fullWord?.cedict_meanings ?: emptyList(),
+                                            wiktionaryMeanings = fullWord?.wiktionary_meanings ?: emptyList()
                                         )
                                     )
                                 }

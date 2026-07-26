@@ -21,8 +21,9 @@ type Server struct {
 	Logger    logging.Logger
 	HLSDir    string // directory containing playlist.m3u8 and .ts files
 	MetaDir   string // directory containing .json metadata files
-	AsrEngine string // ASR engine name ("whisper" or "sherpa-onnx")
-	AsrModel  string // ASR model codename (e.g. "ggml-small")
+	AsrEngine   string // ASR engine name ("whisper" or "sherpa-onnx")
+	AsrModel    string // ASR model codename (e.g. "ggml-small")
+	Dictionary  string // Dictionary codename ("bkrs", "cedict", "wiktionary")
 
 	clientsConnected atomic.Int64
 }
@@ -150,6 +151,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ClientsConnected:  int(s.clientsConnected.Load()),
 		AsrEngine:         s.AsrEngine,
 		AsrModel:          s.AsrModel,
+		Dictionary:        s.Dictionary,
 	}
 
 	// Populate archive time range from index so clients can validate sync windows.
@@ -327,6 +329,7 @@ func (s *Server) handleBatchSegments(w http.ResponseWriter, r *http.Request) {
 				w := &segments[i].Words[j]
 				w.Senses = nil
 				w.CedictMeanings = nil
+				w.WiktionaryMeanings = nil
 				w.Trans = ""
 			}
 		}

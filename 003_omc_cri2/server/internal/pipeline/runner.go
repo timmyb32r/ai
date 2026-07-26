@@ -41,6 +41,7 @@ type Pipeline struct {
 	Dictionary  dictionary.Dictionary
 	Unihan      *unihan.Resolver      // optional: fills probable readings for single-char "?" words
 	Cedict      dictionary.Dictionary // optional: word-level pinyin fallback for multi-char "?" words
+	Wiktionary  dictionary.Dictionary // optional: Wiktionary English glosses (third dictionary tab)
 	Store       storage.MetadataStore
 	Logger      logging.Logger
 	OutputDir   string
@@ -771,6 +772,7 @@ func (p *Pipeline) processDownstream(segment *models.TranscriptSegment) {
 	segment.Words = wordEntries
 	p.fillProbableReadings(segment.Words)
 	p.attachCedictMeanings(segment.Words)
+	p.attachWiktionaryMeanings(segment.Words)
 	dictMs := time.Since(dictStart).Milliseconds()
 	segment.TextPinyin = buildPinyinText(wordEntries)
 	segment.TextEn = buildEnText(wordEntries)
@@ -1072,6 +1074,19 @@ func hasUnknownReading(charPinyin []string) bool {
 // so the result is treated as certain (no uncertainty marker). Words missing
 // from CEDICT — or whose pinyin does not align 1:1 with the characters — are
 // left untouched.
+// attachWiktionaryMeanings adds kaikki.org Wiktionary English glosses to each
+// word (as a third dictionary tab, independent of BKRS and CC-CEDICT).
+func (p *Pipeline) attachWiktionaryMeanings(words []models.WordEntry) {
+	if p.Wiktionary == nil {
+		return
+	}
+	for i := range words {
+		if entry, err := p.Wiktionary.Lookup(words[i].Text); err == nil {
+			words[i].WiktionaryMeanings = entry.Meanings
+		}
+	}
+}
+
 func (p *Pipeline) fillFromCedict(w *models.WordEntry, chars []rune) bool {
 	if p.Cedict == nil {
 		return false

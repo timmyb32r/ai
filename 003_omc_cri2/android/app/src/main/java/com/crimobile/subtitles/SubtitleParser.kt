@@ -68,6 +68,15 @@ object SubtitleParser {
                     if (m.isNotBlank()) cedictMeanings.add(m)
                 }
             }
+            // Parse Wiktionary glosses (third dictionary).
+            val wiktArray = w.optJSONArray("wiktionary_meanings")
+            val wiktMeanings = mutableListOf<String>()
+            if (wiktArray != null) {
+                for (j in 0 until wiktArray.length()) {
+                    val m = wiktArray.optString(j, "")
+                    if (m.isNotBlank()) wiktMeanings.add(m)
+                }
+            }
             words.add(
                 WordEntry(
                     text = w.optString("text", ""),
@@ -80,7 +89,8 @@ object SubtitleParser {
                     char_pinyin_uncertain = charUncertain,
                     translation = w.optString("translation", ""),
                     senses = senses,
-                    cedict_meanings = cedictMeanings
+                    cedict_meanings = cedictMeanings,
+                    wiktionary_meanings = wiktMeanings
                 )
             )
         }
@@ -134,6 +144,9 @@ object SubtitleParser {
                 }
                 if (w.cedict_meanings.isNotEmpty()) {
                     put("cedict_meanings", org.json.JSONArray(w.cedict_meanings))
+                }
+                if (w.wiktionary_meanings.isNotEmpty()) {
+                    put("wiktionary_meanings", org.json.JSONArray(w.wiktionary_meanings))
                 }
             }
             wordsArr.put(wj)
