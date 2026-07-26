@@ -352,7 +352,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             (playerSec - latestSegment.timeline_end_sec).coerceAtLeast(0.0)
                         } else 0.0
 
-                        // Don't wipe pre-lookup's activeSegment if sync can't find one
+                        // Preserve previous segment/word if sync can't find one
                         val finalSegment = activeSegment ?: _state.value.activeSegment
                         val finalSegmentId = activeSegmentMeta?.segment_id ?: _state.value.activeSegmentId
                         val finalWord = activeWord ?: _state.value.activeWord
@@ -502,26 +502,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                     Log.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
                                     DebugLogger.log(VM, "← fetchInitial ok | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
 
-                                    // --- PRE-LOOKUP: find active segment from loaded data ---
-                                    // Read from subtitleSource.segments.value directly —
-                                    // _state.value.segments is updated asynchronously
-                                    // via StateFlow collector and may still be empty here.
-                                    val loadedSegments = subtitleSource.segments.value
-                                    if (loadedSegments.isNotEmpty()) {
-                                        // Live edge = end of the newest completed segment
-                                        val newestSeg = loadedSegments.last()
-                                        val playerSec = newestSeg.timeline_end_sec - PLAYLIST_OFFSET_SEC
-
-                                        // Find the segment covering playerSec
-                                        val preSeg = loadedSegments.find { seg ->
-                                            playerSec >= seg.timeline_start_sec && playerSec < seg.timeline_end_sec
-                                        }
-                                        if (preSeg != null) {
-                                            _state.value = _state.value.copy(activeSegment = preSeg, activeSegmentId = preSeg.segment_id)
-                                            Log.i(TIMING, "event=prelookup_found segId=${preSeg.segment_id} playerSec=$playerSec")
-                                            DebugLogger.log(VM, "✓ prelookup applied segId=${preSeg.segment_id}")
-                                        }
-                                    }
+                                    // Pre-lookup removed: computing playerSec from metadata timeline
+                                    // is unreliable (30s+ mismatch with HLS playlist position on cold start
+                                    // where segments have gaps). The 10Hz sync loop finds the active
+                                    // segment within 1-2 frames (~100-200ms) — imperceptible.
 
                                     player.play(url)
                                     Log.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
@@ -999,9 +983,6 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         private const val TIMING = "CRIRadio:timing"
         /** Segments fetched in the cold-start batch (word timing + pinyin, no dict). */
         private const val INITIAL_BATCH = 40
-
-        /** Pre-lookup offset from live edge, in seconds. Must match ExoPlayer's LIVE_OFFSET_MS. */
-        private const val PLAYLIST_OFFSET_SEC = 20.0
     }
 
     override fun onCleared() {

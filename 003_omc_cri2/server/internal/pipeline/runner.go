@@ -346,13 +346,11 @@ func (p *Pipeline) splitBatchResult(
 	}
 
 	// Граница первого сегмента в секундах от начала stitched audio.
-	// guardSeconds исключает символы вблизи границы из kept-порции —
-	// они будут правильно распознаны в СЛЕДУЮЩЕМ батче, где у них
-	// есть полноценный левый контекст. Это предотвращает дубликаты
-	// (включая ситуацию, когда ASR выдаёт РАЗНЫЕ иероглифы для одного
-	// и того же слога на границе в соседних батчах).
-	const guardSeconds = 0.3
-	boundary := float64(p.HLSTime) - guardSeconds
+	// Используем полный HLSTime без guard zone:
+	//   - dedupBoundary защищает от дубликатов на стыке сегментов
+	//   - guard zone приводил к безвозвратной потере символов на границе
+	//     чанков (см. issue с "物" в "很多动植物")
+	boundary := float64(p.HLSTime)
 
 	// --- Определяем текст для первого сегмента ---
 	var keptText string
@@ -360,9 +358,8 @@ func (p *Pipeline) splitBatchResult(
 
 	if len(stitched.RawTimestamps) > 0 {
 		// === Sherpa-onnx path: character-level timestamps ===
-		// Оставляем только символы с timestamp строго до boundary.
-		// Символы в guard zone [boundary, HLSTime) отбрасываются —
-		// они попадут в следующий батч где будут правильно распознаны.
+		// Оставляем символы с timestamp строго до boundary.
+		// Возможные дубликаты на стыке сегментов убирает dedupBoundary.
 		splitIdx := 0
 		for splitIdx < len(stitched.RawTimestamps) && stitched.RawTimestamps[splitIdx] < boundary {
 			splitIdx++
@@ -471,13 +468,12 @@ func (p *Pipeline) trackEmptyStreak(segment *models.TranscriptSegment) {
 	}
 }
 
-// dedupBoundary выполняет текстовую дедупликацию на стыке сегментов.
-// Сравнивает первые до 5 рун текущего сегмента с последними до 5 рунами
-// предыдущего. При перекрытии >= 2 рун удаляет дубликат из начала сегмента.
-//
-// Это safety net поверх guard zone в splitBatchResult: guard zone
-// предотвращает большинство дубликатов на границе, а текстовая дедупликация
-// ловит оставшиеся (например, когда ASR всё же включил хвост в оба сегмента).
+// dedupBoundary removes duplicated characters at segment boundaries using
+// absolute timestamps. For each character at the start of the current segment,
+// it checks whether its absolute time overlaps with the last word of the
+// previous segment. If time ranges overlap AND the character matches → duplicate
+// → removed. This correctly distinguishes legit repeats (same character at
+// different times) from ASR boundary artifacts (same character at same time).
 func (p *Pipeline) dedupBoundary(seg *models.TranscriptSegment) {
 	// Сегмент 0: не с чем сравнивать, но запоминаем для следующего
 	if seg.SegmentID == 0 {
@@ -486,53 +482,61 @@ func (p *Pipeline) dedupBoundary(seg *models.TranscriptSegment) {
 	}
 
 	prevSeg := p.lastEmittedSeg
-	if prevSeg == nil || prevSeg.TextZh == "" || seg.TextZh == "" {
+	if prevSeg == nil || len(prevSeg.Words) == 0 || len(seg.RawTimestamps) == 0 {
 		p.lastEmittedSeg = seg
 		return
 	}
 
-	prevRunes := []rune(prevSeg.TextZh)
-	curRunes := []rune(seg.TextZh)
+	// Compute absolute time of the first character in the new segment.
+	segAbsStart := p.epochBase + float64(seg.SegmentID)*float64(p.HLSTime)
+	firstCharAbsTime := segAbsStart + seg.RawTimestamps[0]
 
-	const windowSize = 5
-	const minOverlap = 2
+	const toleranceSec = 0.5
 
-	prevTail := prevRunes
-	if len(prevTail) > windowSize {
-		prevTail = prevTail[len(prevTail)-windowSize:]
-	}
-	curHead := curRunes
-	if len(curHead) > windowSize {
-		curHead = curHead[:windowSize]
-	}
+	// Check each of the last few words of the previous segment.
+	// If the first char of seg falls within the time range of a prev word
+	// (or just after, within tolerance) → potential duplicate.
+	// Then verify by checking if seg text starts with that word's text
+	// (or a suffix — the part that was pushed into seg by ASR).
+	chars := []rune(seg.TextZh)
+	for wi := len(prevSeg.Words) - 1; wi >= 0; wi-- {
+		pw := prevSeg.Words[wi]
 
-	// Ищем максимальное перекрытие (от большего к меньшему)
-	overlap := 0
-	for l := min(len(prevTail), len(curHead)); l >= minOverlap; l-- {
-		if string(prevTail[len(prevTail)-l:]) == string(curHead[:l]) {
-			overlap = l
-			break
+		// Time check: does the first character of seg overlap with this word?
+		if firstCharAbsTime < pw.StartSec-toleranceSec {
+			continue // first char is before this word
 		}
-	}
-
-	if overlap > 0 {
-		seg.TextZh = string(curRunes[overlap:])
-
-		// Корректируем RawTimestamps
-		trimIdx := overlap
-		if trimIdx > len(seg.RawTimestamps) {
-			trimIdx = len(seg.RawTimestamps)
+		if firstCharAbsTime > pw.EndSec+toleranceSec {
+			break // first char is after this word → stop (words are time-ordered)
 		}
-		seg.RawTimestamps = seg.RawTimestamps[trimIdx:]
 
-		// Words НЕ корректируем — processDownstream перезаписывает их
-		// через токенизацию свежего TextZh.
+		// Time overlap confirmed (within tolerance).
+		// Check text: does seg start with pw.Text, or a suffix of pw.Text?
+		wordRunes := []rune(pw.Text)
+		for l := len(wordRunes); l >= 1; l-- {
+			suffix := string(wordRunes[len(wordRunes)-l:])
+			if strings.HasPrefix(seg.TextZh, suffix) {
+				// Time overlap + text match → duplicate confirmed.
+				// Remove the overlapping text from seg.
+				removed := string(chars[:l])
+				seg.TextZh = string(chars[l:])
 
-		p.Logger.Info("pipeline", "boundary_dedup",
-			"seg_id", seg.SegmentID,
-			"overlap", overlap,
-			"removed", string(curRunes[:overlap]),
-		)
+				if l <= len(seg.RawTimestamps) {
+					seg.RawTimestamps = seg.RawTimestamps[l:]
+				}
+
+				p.Logger.Info("pipeline", "boundary_dedup",
+					"seg_id", seg.SegmentID,
+					"prev_word", pw.Text,
+					"prev_word_end", fmt.Sprintf("%.3f", pw.EndSec),
+					"removed_chars", l,
+					"removed", removed,
+				)
+				p.lastEmittedSeg = seg
+				return
+			}
+		}
+		// No text match for this word — check the previous word
 	}
 
 	p.lastEmittedSeg = seg

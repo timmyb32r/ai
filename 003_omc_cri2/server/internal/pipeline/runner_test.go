@@ -896,19 +896,16 @@ func TestBatchSizeInvalid(t *testing.T) {
 	t.Skip("config validation for ASRBatchSize (0 and 9) is tested in config/config_test.go")
 }
 
-// TestGuardZonePreventsBoundaryDuplicates verifies that splitBatchResult
-// with guardSeconds=0.3 excludes characters in the guard zone from the kept
-// portion. This prevents duplicates at segment boundaries — including the case
-// where ASR produces DIFFERENT characters for the same syllable in adjacent
-// batches (e.g., "氣" in batch [N-1,N] vs "其" in batch [N,N+1] for the same "qi").
-func TestGuardZonePreventsBoundaryDuplicates(t *testing.T) {
+// TestSherpaSplitAtBoundary verifies that splitBatchResult with boundary=HLSTime
+// keeps all characters with timestamp < HLSTime. DedupBoundary handles overlaps.
+// Guard zone was removed because it permanently lost characters near chunk edges
+// (the character was at the END of its PCM chunk and didn't appear in the next chunk).
+func TestSherpaSplitAtBoundary(t *testing.T) {
 	const hlTime = 3
-	const guard = 0.3
 
 	p := &Pipeline{HLSTime: hlTime}
 
-	// Simulate batch [N-1, N]: character "氣" at 2.95s (inside old boundary,
-	// inside guard zone)
+	// Batch [N-1, N]: character "氣" at 2.95s — IS in chunk N-1, should be KEPT
 	stitched1 := &models.TranscriptSegment{
 		SegmentID:     10,
 		TextZh:        "陽氣",
@@ -917,16 +914,12 @@ func TestGuardZonePreventsBoundaryDuplicates(t *testing.T) {
 	job1 := batchJob{firstSegID: 10, batchSize: 2}
 	result1 := p.splitBatchResult(stitched1, job1)
 
-	// With guard zone: 2.95 > (3.0 - 0.3) = 2.7, so "氣" should be EXCLUDED
-	if result1.TextZh == "陽氣" {
-		t.Errorf("guard zone failed for batch [N-1,N]: '氣' at 2.95s should be "+
-			"excluded (2.95 > boundary-guard=%.1f), got %q", float64(hlTime)-guard, result1.TextZh)
-	}
-	if result1.TextZh != "陽" {
-		t.Errorf("expected only '陽' from batch [N-1,N], got %q", result1.TextZh)
+	// Without guard zone: 2.95 < 3.0 → KEPT
+	if result1.TextZh != "陽氣" {
+		t.Errorf("expected '陽氣' (2.95 < boundary=3.0), got %q", result1.TextZh)
 	}
 
-	// Simulate batch [N, N+1]: character "其" at 0.05s (different char, same "qi" syllable)
+	// Batch [N, N+1]: both chars at 0.05 and 1.2 — well within boundary
 	stitched2 := &models.TranscriptSegment{
 		SegmentID:     11,
 		TextZh:        "其始",
@@ -935,26 +928,21 @@ func TestGuardZonePreventsBoundaryDuplicates(t *testing.T) {
 	job2 := batchJob{firstSegID: 11, batchSize: 2}
 	result2 := p.splitBatchResult(stitched2, job2)
 
-	// With guard zone: 0.05 < 2.7 and 1.2 < 2.7, so both chars should be INCLUDED
 	if result2.TextZh != "其始" {
-		t.Errorf("expected '其始' from batch [N,N+1] (both chars before boundary-guard), got %q",
-			result2.TextZh)
+		t.Errorf("expected '其始' from batch [N,N+1], got %q", result2.TextZh)
 	}
 
-	// Verify NO duplicate: "氣" appears only in segment 11 (from batch [N,N+1]),
-	// not in segment 10 (from batch [N-1,N]).
-	// The guard zone ensures each syllable is recognized exactly once.
-	t.Logf("segment 10: %q, segment 11: %q — no duplicate 'qi' character", result1.TextZh, result2.TextZh)
+	// Both segments contain their full text. If ASR produces duplicates at the
+	// boundary, dedupBoundary (text-based) catches them downstream.
+	t.Logf("segment 10: %q, segment 11: %q", result1.TextZh, result2.TextZh)
 }
 
-// TestGuardZoneWhisperPath verifies guard zone works for whisper phrase-level timestamps.
-func TestGuardZoneWhisperPath(t *testing.T) {
+// TestWhisperSplitAtBoundary verifies whisper phrase-level split with boundary=HLSTime.
+func TestWhisperSplitAtBoundary(t *testing.T) {
 	const hlTime = 3
-	const guard = 0.3
 
 	p := &Pipeline{HLSTime: hlTime}
 
-	// Phrase "天气" spans [2.5, 3.2] — crosses the guard boundary
 	stitched := &models.TranscriptSegment{
 		SegmentID: 5,
 		TextZh:    "今天天气很好",
@@ -967,11 +955,169 @@ func TestGuardZoneWhisperPath(t *testing.T) {
 	job := batchJob{firstSegID: 5, batchSize: 2}
 	result := p.splitBatchResult(stitched, job)
 
-	// "今天" has StartSec=0.5 < 2.7 → kept
-	// "天气" has StartSec=2.5 < 2.7 → kept (starts before guard boundary)
-	// "很好" has StartSec=3.5 >= 2.7 → excluded
+	// "今天" StartSec=0.5 < 3.0 → kept
+	// "天气" StartSec=2.5 < 3.0 → kept (starts before boundary)
+	// "很好" StartSec=3.5 >= 3.0 → excluded
 	if result.TextZh != "今天天气" {
-		t.Errorf("expected '今天天气' (phrase with StartSec < boundary-guard=%.1f), got %q",
-			float64(hlTime)-guard, result.TextZh)
+		t.Errorf("expected '今天天气' (phrase with StartSec < boundary=3.0), got %q", result.TextZh)
 	}
 }
+
+// TestLastCharAtChunkBoundary reproduces the exact bug reported 2026-07-26:
+// character "物" at the end of chunk 66 (relTL ~2.9s) was lost because
+// guard zone (boundary=HLSTime-0.3=2.7) excluded it. The char was at the
+// END of its PCM chunk — not in the next chunk's PCM — so it was impossible
+// to recover from any subsequent batch. Permanently lost.
+//
+// After fix: boundary = HLSTime = 3.0s, so 2.9s < 3.0 → kept.
+// DedupBoundary handles any text overlap downstream.
+func TestLastCharAtChunkBoundary(t *testing.T) {
+	p := &Pipeline{HLSTime: 3}
+
+	// Simulate sherpa-onnx output for batch [66, 67]:
+	// Chunk 66 contains "...很多动植物" with per-char timestamps.
+	// The last char "物" is at 2.88s — near the chunk boundary.
+	// Chunk 67 starts with "是世界上..." — "物" is NOT in chunk 67.
+	stitched := &models.TranscriptSegment{
+		SegmentID: 66,
+		TextZh:    "沿着现实挑战，新西兰有很多动植物",
+		// Per-character timestamps from sherpa-onnx sense_voice.
+		// "物" at 2.88s is the last char of this chunk's audio.
+		RawTimestamps: []float64{
+			0.12, 0.24, // 沿着
+			0.42, 0.54, // 现实
+			0.72, 0.90, // 挑战
+			1.14, // ，
+			1.56, 1.86, 2.10, // 新西兰
+			2.10, // 有
+			2.22, // 很
+			2.34, 2.52, // 多动
+			2.70, 2.88, // 植物 ← "物" at 2.88s
+		},
+	}
+	job := batchJob{firstSegID: 66, batchSize: 2}
+	result := p.splitBatchResult(stitched, job)
+
+	// All chars have timestamp < 3.0 → ALL must be kept.
+	// "物" at 2.88s is the critical one — 2.88 < 3.0 → KEPT.
+	if result.TextZh != "沿着现实挑战，新西兰有很多动植物" {
+		t.Errorf("FULL text should be kept (all timestamps < 3.0), got %q", result.TextZh)
+	}
+
+	// Verify "物" is the last char
+	chars := []rune(result.TextZh)
+	lastChar := string(chars[len(chars)-1])
+	if lastChar != "物" {
+		t.Errorf("last char should be '物', got %q. Full text: %q", lastChar, result.TextZh)
+	}
+
+	// Verify RawTimestamps are preserved for kept chars
+	if len(result.RawTimestamps) != len(chars) {
+		t.Errorf("RawTimestamps count (%d) should match chars count (%d)",
+			len(result.RawTimestamps), len(chars))
+	}
+
+	t.Logf("segment 66: %q (all %d chars kept, last='物')", result.TextZh, len(chars))
+}
+
+// TestTimestampDedup_RemovesBoundaryDuplicate: seg66 ends with "动植物"
+// (last word EndSec at boundary). seg67 starts with same chars, RawTimestamps
+// ~0.05s from start → absolute times overlap → duplicate removed.
+func TestTimestampDedup_RemovesBoundaryDuplicate(t *testing.T) {
+	epochBase := 1_785_093_000.0
+	hlTime := 3
+
+	p := &Pipeline{
+		HLSTime:   hlTime,
+		epochBase: epochBase,
+		Logger:    logging.NewProductionLogger("warn"),
+	}
+
+	seg66 := &models.TranscriptSegment{
+		SegmentID: 66,
+		TextZh:    "沿着现实挑战，新西兰有很多动植物",
+		Words: []models.WordEntry{
+			{Text: "动植物", CharStart: 0, CharEnd: 3,
+				StartSec: epochBase + 66*3 + 2.52, EndSec: epochBase + 66*3 + 3.00},
+		},
+	}
+	p.lastEmittedSeg = seg66
+
+	seg67 := &models.TranscriptSegment{
+		SegmentID:     67,
+		TextZh:        "动植物是世界上独一无二的",
+		RawTimestamps: []float64{0.05, 0.18, 0.36, 0.54, 0.78, 0.96, 1.14, 1.32, 1.50, 1.74, 1.98, 2.16},
+	}
+
+	p.dedupBoundary(seg67)
+
+	if seg67.TextZh != "是世界上独一无二的" {
+		t.Errorf("Got %q, want %q", seg67.TextZh, "是世界上独一无二的")
+	}
+}
+
+// TestTimestampDedup_PreservesLegitRepeat: same char spoken twice
+// at DIFFERENT times → NOT a duplicate → preserved.
+func TestTimestampDedup_PreservesLegitRepeat(t *testing.T) {
+	epochBase := 1_785_093_000.0
+	hlTime := 3
+
+	p := &Pipeline{HLSTime: hlTime, epochBase: epochBase, Logger: logging.NewProductionLogger("warn")}
+
+	// Segment 93: "我" at time [281.5, 281.8]
+	prevSeg := &models.TranscriptSegment{
+		SegmentID: 93,
+		Words: []models.WordEntry{
+			{Text: "我", CharStart: 0, CharEnd: 1,
+				StartSec: epochBase + 93*3 + 2.5, EndSec: epochBase + 93*3 + 2.8},
+		},
+	}
+	p.lastEmittedSeg = prevSeg
+
+	// Segment 94: "我" at time [283.2, 283.5] — 0.4s AFTER prev "我"
+	// Timestamps: 1.2, 1.5 relative → absolute = epochBase + 94*3 + 1.2 = epochBase + 283.2
+	seg := &models.TranscriptSegment{
+		SegmentID:     94,
+		TextZh:        "我我就纳闷",
+		RawTimestamps: []float64{1.2, 1.5, 1.8, 2.1, 2.4},
+	}
+
+	p.dedupBoundary(seg)
+
+	if seg.TextZh != "我我就纳闷" {
+		t.Errorf("legit repeat removed! Got %q", seg.TextZh)
+	}
+}
+
+// TestTimestampDedup_SingleCharBoundary: seg93 ends with "我" at boundary,
+// seg94 starts with "我" at boundary → same absolute time → duplicate removed.
+func TestTimestampDedup_SingleCharBoundary(t *testing.T) {
+	epochBase := 1_785_093_000.0
+	hlTime := 3
+
+	p := &Pipeline{HLSTime: hlTime, epochBase: epochBase, Logger: logging.NewProductionLogger("warn")}
+
+	// Segment 93 last word "我" at [2.82, 3.00] relative → touches boundary
+	prevSeg := &models.TranscriptSegment{
+		SegmentID: 93,
+		Words: []models.WordEntry{
+			{Text: "我", CharStart: 0, CharEnd: 1,
+				StartSec: epochBase + 93*3 + 2.82, EndSec: epochBase + 93*3 + 3.00},
+		},
+	}
+	p.lastEmittedSeg = prevSeg
+
+	// Segment 94 first char "我" at 0.00 relative → absolute same as prev end
+	seg := &models.TranscriptSegment{
+		SegmentID:     94,
+		TextZh:        "我我就纳闷的很",
+		RawTimestamps: []float64{0.00, 0.12, 0.36, 0.54, 0.78, 0.96, 1.14, 1.32},
+	}
+
+	p.dedupBoundary(seg)
+
+	if seg.TextZh != "我就纳闷的很" {
+		t.Errorf("boundary '我' should be removed. Got %q", seg.TextZh)
+	}
+}
+
