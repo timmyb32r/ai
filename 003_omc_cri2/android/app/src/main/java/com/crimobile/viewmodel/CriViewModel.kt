@@ -258,12 +258,17 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             (playerSec - latestSegment.timeline_end_sec).coerceAtLeast(0.0)
                         } else 0.0
 
+                        // Don't wipe pre-lookup's active segment if sync can't find one
+                        val finalSeg = fullSeg ?: _state.value.activeSegment
+                        val finalSegId = activeSegmentMeta?.segment_id ?: _state.value.activeSegmentId
+                        val finalW = activeWord ?: _state.value.activeWord
+
                         _state.value = _state.value.copy(
-                            activeSegment = fullSeg,
-                            activeSegmentId = activeSegmentMeta?.segment_id,
-                            activeWord = activeWord,
+                            activeSegment = finalSeg,
+                            activeSegmentId = finalSegId,
+                            activeWord = finalW,
                             subtitleDelaySec = delay,
-                            lastActiveWord = if (activeWord != null) activeWord else _state.value.lastActiveWord,
+                            lastActiveWord = if (finalW != null) finalW else _state.value.lastActiveWord,
                             offlinePositionMs = {
                                 val firstSec = segmentsMeta.firstOrNull()?.timeline_start_sec ?: 0.0
                                 if (firstSec > 0 && playerMs > 0) {
@@ -347,21 +352,26 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             (playerSec - latestSegment.timeline_end_sec).coerceAtLeast(0.0)
                         } else 0.0
 
+                        // Don't wipe pre-lookup's activeSegment if sync can't find one
+                        val finalSegment = activeSegment ?: _state.value.activeSegment
+                        val finalSegmentId = activeSegmentMeta?.segment_id ?: _state.value.activeSegmentId
+                        val finalWord = activeWord ?: _state.value.activeWord
+
                         _state.value = _state.value.copy(
-                            activeSegment = activeSegment,
-                            activeSegmentId = activeSegmentMeta?.segment_id,
-                            activeWord = activeWord,
+                            activeSegment = finalSegment,
+                            activeSegmentId = finalSegmentId,
+                            activeWord = finalWord,
                             subtitleDelaySec = delay,
-                            lastActiveWord = if (activeWord != null) activeWord else _state.value.lastActiveWord,
+                            lastActiveWord = if (finalWord != null) finalWord else _state.value.lastActiveWord,
                             offlinePositionMs = _state.value.offlinePositionMs,
                             offlineDurationMs = _state.value.offlineDurationMs
                         )
 
-                        if (activeSegment != null && activeSegment.segment_id != lastActiveSegId) {
-                            lastActiveSegId = activeSegment.segment_id
-                            Log.i(VM, "▶seg id=${activeSegment.segment_id} " +
-                                "segTL=[${activeSegment.timeline_start_sec}-${activeSegment.timeline_end_sec}] " +
-                                "playerSec=${"%.1f".format(playerSec)} text=${activeSegment.text_zh.take(50)}")
+                        if (finalSegment != null && finalSegment.segment_id != lastActiveSegId) {
+                            lastActiveSegId = finalSegment.segment_id
+                            Log.i(VM, "▶seg id=${finalSegment.segment_id} " +
+                                "segTL=[${finalSegment.timeline_start_sec}-${finalSegment.timeline_end_sec}] " +
+                                "playerSec=${"%.1f".format(playerSec)} text=${finalSegment.text_zh.take(50)}")
                         }
 
                         if (activeWord != null && activeWord !== lastActiveWord) {
@@ -375,15 +385,15 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         }
 
                         val now = System.currentTimeMillis()
-                        if (activeSegment != null && now - lastSyncLog > 2000) {
+                        if (finalSegment != null && now - lastSyncLog > 2000) {
                             lastSyncLog = now
-                            Log.d(VM, "sync playerSec=%.1f segId=${activeSegment.segment_id} ".format(playerSec) +
-                                "segTL=[${activeSegment.timeline_start_sec}-${activeSegment.timeline_end_sec}] " +
-                                "word=${activeWord?.text} wTL=[${activeWord?.start_sec}-${activeWord?.end_sec}] " +
+                            Log.d(VM, "sync playerSec=%.1f segId=${finalSegment.segment_id} ".format(playerSec) +
+                                "segTL=[${finalSegment.timeline_start_sec}-${finalSegment.timeline_end_sec}] " +
+                                "word=${finalWord?.text} wTL=[${finalWord?.start_sec}-${finalWord?.end_sec}] " +
                                 "delay=${delay.toInt()}s")
                         }
 
-                        if (activeSegment == null && now - lastSyncLog > 2000) {
+                        if (finalSegment == null && now - lastSyncLog > 2000) {
                             lastSyncLog = now
                             val first = segments.firstOrNull()
                             val last = segments.lastOrNull()
@@ -455,10 +465,11 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                 _state.value = _state.value.copy(playbackState = PlaybackState.LOADING)
                                 viewModelScope.launch {
                                     val http = subtitleSource as com.crimobile.subtitles.HttpSubtitleSource
+
                                     Log.i(TIMING, "event=fetch_initial_start elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
                                     DebugLogger.log(VM, "→ fetchInitial(server=${action.serverUrl}, n=$INITIAL_BATCH, lite=true)")
 
-                                    // Retry up to 3 times for transient DNS/network failures.
+                                    // fetchInitial with retry (up to 3 attempts)
                                     var ok = false
                                     for (attempt in 1..3) {
                                         try {
@@ -490,6 +501,27 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
                                     Log.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
                                     DebugLogger.log(VM, "← fetchInitial ok | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
+
+                                    // --- PRE-LOOKUP: find active segment from loaded data ---
+                                    // Read from subtitleSource.segments.value directly —
+                                    // _state.value.segments is updated asynchronously
+                                    // via StateFlow collector and may still be empty here.
+                                    val loadedSegments = subtitleSource.segments.value
+                                    if (loadedSegments.isNotEmpty()) {
+                                        // Live edge = end of the newest completed segment
+                                        val newestSeg = loadedSegments.last()
+                                        val playerSec = newestSeg.timeline_end_sec - PLAYLIST_OFFSET_SEC
+
+                                        // Find the segment covering playerSec
+                                        val preSeg = loadedSegments.find { seg ->
+                                            playerSec >= seg.timeline_start_sec && playerSec < seg.timeline_end_sec
+                                        }
+                                        if (preSeg != null) {
+                                            _state.value = _state.value.copy(activeSegment = preSeg, activeSegmentId = preSeg.segment_id)
+                                            Log.i(TIMING, "event=prelookup_found segId=${preSeg.segment_id} playerSec=$playerSec")
+                                            DebugLogger.log(VM, "✓ prelookup applied segId=${preSeg.segment_id}")
+                                        }
+                                    }
 
                                     player.play(url)
                                     Log.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
@@ -967,6 +999,9 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         private const val TIMING = "CRIRadio:timing"
         /** Segments fetched in the cold-start batch (word timing + pinyin, no dict). */
         private const val INITIAL_BATCH = 40
+
+        /** Pre-lookup offset from live edge, in seconds. Must match ExoPlayer's LIVE_OFFSET_MS. */
+        private const val PLAYLIST_OFFSET_SEC = 20.0
     }
 
     override fun onCleared() {

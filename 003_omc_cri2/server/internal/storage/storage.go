@@ -47,6 +47,10 @@ type MetadataStore interface {
 	// Stats returns current storage statistics.
 	Stats() StorageStats
 
+	// FindByTime returns the segment covering the given Unix epoch second.
+	// Returns (nil, false) if no segment covers sec.
+	FindByTime(sec float64) (*models.TranscriptSegment, bool)
+
 	// Close releases resources (e.g., stops the watcher).
 	Close() error
 }

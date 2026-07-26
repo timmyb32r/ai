@@ -45,6 +45,9 @@ func (s *Server) NewRouter() http.Handler {
 	// Segment range — batch metadata query for offline sync
 	mux.HandleFunc("/api/segments/range", s.handleSegmentRange)
 
+	// Segment at time — lookup single segment by Unix epoch (instant cold-start)
+	mux.HandleFunc("/api/segments/at", s.handleSegmentAt)
+
 	// Batch latest segments — cold-start bulk endpoint (1 request vs N)
 	mux.HandleFunc("/api/segments/batch", s.handleBatchSegments)
 
@@ -259,6 +262,37 @@ func segmentIDFromPath(filename string) int {
 		}
 	}
 	return id
+}
+
+// handleSegmentAt returns the single segment covering the given Unix epoch second.
+// Query: ?sec=<unix_epoch_float>
+// Response: {"found":true,"segment":{...}} or {"found":false,"segment":null}
+func (s *Server) handleSegmentAt(w http.ResponseWriter, r *http.Request) {
+	secStr := r.URL.Query().Get("sec")
+	if secStr == "" {
+		WriteError(w, "missing sec query parameter", http.StatusBadRequest)
+		return
+	}
+	sec, err := strconv.ParseFloat(secStr, 64)
+	if err != nil {
+		WriteError(w, "invalid sec parameter: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	seg, found := s.Store.FindByTime(sec)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
+	resp := map[string]interface{}{
+		"found":   found,
+		"segment": (*models.TranscriptSegment)(nil),
+	}
+	if found {
+		resp["segment"] = seg
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // handleBatchSegments returns the last N full segments as a JSON array.

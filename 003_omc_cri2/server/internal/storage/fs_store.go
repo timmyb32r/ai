@@ -168,6 +168,28 @@ func (s *fsStore) ReadLatest(n int) ([]models.TranscriptSegment, error) {
 	return result, nil
 }
 
+// FindByTime returns the segment covering the given Unix epoch second.
+// Uses linear scan over the index (segments are sorted by ID, not timeline).
+func (s *fsStore) FindByTime(sec float64) (*models.TranscriptSegment, bool) {
+	idx, err := s.ReadIndex()
+	if err != nil {
+		return nil, false
+	}
+
+	for i := range idx.Segments {
+		ref := idx.Segments[i]
+		if sec >= ref.TimelineStartSec && sec < ref.TimelineEndSec {
+			seg, err := s.Read(ref.ID)
+			if err != nil {
+				return nil, false
+			}
+			return seg, true
+		}
+	}
+
+	return nil, false
+}
+
 func (s *fsStore) ReadIndex() (*models.SegmentIndex, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
