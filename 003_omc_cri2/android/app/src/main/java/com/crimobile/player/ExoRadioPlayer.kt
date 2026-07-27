@@ -69,19 +69,26 @@ class ExoRadioPlayer(
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
-                DebugLogger.e(TAG, "error code=${error.errorCode} msg=${error.message}")
+                // Log full error details for diagnostics.
+                val causeChain = buildString {
+                    var e: Throwable? = error
+                    while (e != null) {
+                        append("← ${e.javaClass.simpleName}: ${e.message}")
+                        e = e.cause
+                    }
+                }
+                DebugLogger.e(TAG, "error code=${error.errorCode} msg=${error.message} cause=$causeChain")
                 _lastErrorMessage.value = error.message ?: "Playback error (code ${error.errorCode})"
                 _playbackState.value = PlaybackState.ERROR
                 if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
                     DebugLogger.w(TAG, "behind live window → seeking to live edge")
                     _behindLiveWindow.value = true
                     seekToLiveEdge()
+                    return
                 }
-                // Auto-retry network errors with exponential backoff
-                if (error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
-                    || error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT) {
-                    scheduleRetry()
-                }
+                // Auto-retry ALL errors (not just network).  ERROR_CODE_UNSPECIFIED (1000)
+                // and other internal ExoPlayer failures often resolve on restart.
+                scheduleRetry()
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying && _playbackState.value != PlaybackState.PLAYING) {

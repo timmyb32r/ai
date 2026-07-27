@@ -139,8 +139,8 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         )
     )
 
-    // Apply persisted debug-log setting on startup.
-    init { DebugLogger.enabled = prefs.getBoolean("log_to_file_enabled", false) }
+    // DebugLogger.enabled is set unconditionally in CriApplication.onCreate().
+    // The toggle in settings (ToggleLogToFile) still works via dispatch().
 
     val state: StateFlow<CriViewState> = _state.asStateFlow()
 
@@ -193,11 +193,25 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
         // ── Wait for the player (owned by PlayerService) then start player-dependent flows ──
         viewModelScope.launch {
-            val obtained = RadioPlayerHolder.awaitPlayer()
+            var obtained = RadioPlayerHolder.awaitPlayer()
+            if (obtained == null) {
+                // Process was reused after swipe-away — PlayerService is dead.
+                // Restart it and wait again.
+                DebugLogger.w(VM, "player not ready — restarting PlayerService")
+                val app = getApplication<android.app.Application>()
+                try {
+                    app.startForegroundService(android.content.Intent(app, com.crimobile.PlayerService::class.java))
+                    DebugLogger.i(VM, "PlayerService restart sent, waiting again…")
+                    obtained = RadioPlayerHolder.awaitPlayer(15_000L)
+                } catch (e: Exception) {
+                    DebugLogger.e(VM, "failed to restart PlayerService: ${e.message}", e)
+                }
+            }
             if (obtained == null) {
                 DebugLogger.e(VM, "PlayerService did not start — player unavailable")
+                val logPath = com.crimobile.debug.DebugLogger.logFilePath.ifEmpty { "(unknown)" }
                 _state.value = _state.value.copy(
-                    error = "Media player service failed to start. Please restart the app."
+                    error = "Media player service failed to start.\n\nLog: $logPath\n\nPlease restart the app."
                 )
                 return@launch
             }
@@ -229,6 +243,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             // Forward error messages to the UI error screen
             launch {
                 player.lastErrorMessage.collect { msg ->
+                    DebugLogger.w(VM, "player error → UI: $msg")
                     if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING) {
                         _state.value = _state.value.copy(error = msg)
                     }

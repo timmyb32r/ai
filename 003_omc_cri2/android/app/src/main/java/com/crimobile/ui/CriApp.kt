@@ -287,7 +287,13 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                         onLoadArchiveInfo = { onAction(CriAction.LoadArchiveInfo) }
                     )
                 } else when {
-                    state.error != null -> ErrorScreen(state.error)
+                    state.error != null -> {
+                            val ctx = androidx.compose.ui.platform.LocalContext.current
+                            ErrorScreen(msg = state.error ?: "", onExportLog = {
+                                val result = com.crimobile.debug.DebugLogger.copyToDownloads(ctx)
+                                android.widget.Toast.makeText(ctx, result, android.widget.Toast.LENGTH_LONG).show()
+                            })
+                        }
                     state.playbackState == PlaybackState.IDLE && state.segments.isEmpty() ->
                         WelcomeScreen()
                     state.segments.isEmpty() && state.segmentsMeta.isEmpty()
@@ -848,7 +854,7 @@ private fun LoadingScreen() {
 }
 
 @Composable
-private fun ErrorScreen(msg: String) {
+private fun ErrorScreen(msg: String, onExportLog: (() -> Unit)? = null) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(Icons.Default.ErrorOutline, null, tint = Color.Red, modifier = Modifier.size(48.dp))
@@ -857,6 +863,14 @@ private fun ErrorScreen(msg: String) {
             Spacer(Modifier.height(8.dp))
             Text(msg, color = TextSecondary, fontSize = 14.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.padding(horizontal = 32.dp))
+            if (onExportLog != null) {
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = onExportLog) {
+                    Icon(Icons.Default.SaveAlt, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Copy log to Downloads", color = Amber)
+                }
+            }
         }
     }
 }

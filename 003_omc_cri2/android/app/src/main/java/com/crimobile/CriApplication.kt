@@ -2,6 +2,7 @@ package com.crimobile
 
 import android.app.Application
 import android.content.Intent
+import android.os.Build
 import com.crimobile.debug.DebugLogger
 
 /**
@@ -17,16 +18,26 @@ class CriApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // ── First: install global crash handler ──
+        // Log to LogCat BEFORE touching DebugLogger — so even if
+        // the file logger is completely broken, this line IS in LogCat.
+        android.util.Log.i(TAG, "onCreate BEGIN — about to init DebugLogger")
+
+        // ── Init file logger and enable it unconditionally ──
+        DebugLogger.init(this)
+        DebugLogger.enabled = true
+        DebugLogger.i(TAG, "========== APP START ==========")
+        DebugLogger.i(TAG, "device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT}")
+
+        // ── Install global crash handler ──
         CrashHandler.install(this)
 
-        // ── Then: start the foreground media service ──
+        // ── Start the foreground media service ──
         try {
+            DebugLogger.i(TAG, "starting PlayerService…")
             startForegroundService(Intent(this, PlayerService::class.java))
-        } catch (e: Exception) {
-            // Survive service start failures (e.g. app restarted in background
-            // after a crash). The ViewModel handles a missing player gracefully.
-            DebugLogger.e(TAG, "Failed to start PlayerService: ${e.message}")
+            DebugLogger.i(TAG, "PlayerService start command sent")
+        } catch (e: Throwable) {
+            DebugLogger.e(TAG, "Failed to start PlayerService: ${e.message}", e)
         }
     }
 

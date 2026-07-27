@@ -1,10 +1,6 @@
 package com.crimobile.debug
 
-import android.content.ContentValues
 import android.content.Context
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
@@ -16,11 +12,10 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Simple file-based debug logger. When enabled, writes every [log] call
- * to Downloads/cri_logs.txt in addition to Logcat. Thread-safe.
+ * File-based debug logger.  Writes to internal storage (always works):
+ *   /data/data/com.crimobile/files/cri_logs.txt
  *
- * On API 29+ uses MediaStore for scoped-storage compliance;
- * falls back to app-specific external storage if that fails.
+ * Access: adb pull, Android Studio Device Explorer, or Share button in UI.
  */
 object DebugLogger {
     private const val TAG = "CRIRadio:debuglog"
@@ -28,9 +23,8 @@ object DebugLogger {
 
     @Volatile var enabled: Boolean = false
 
-    // Output target — set by init().
     private var output: PrintWriter? = null
-    private var mediaStoreUri: android.net.Uri? = null
+    private var file: File? = null
     private val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
     private val lock = Any()
 
@@ -41,171 +35,117 @@ object DebugLogger {
 
     fun init(context: Context) {
         if (ready) return
+
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                initMediaStore(context)
-            } else {
-                initDirectFile()
-            }
+            // Internal filesDir — guaranteed writable, API 1+.
+            file = File(context.applicationContext.filesDir, FILENAME)
+            output = PrintWriter(
+                OutputStreamWriter(FileOutputStream(file, true), Charsets.UTF_8),
+                true /* autoFlush */
+            )
+            logFilePath = file!!.absolutePath
+            Log.i(TAG, "OK: $logFilePath")
         } catch (e: Exception) {
-            Log.w(TAG, "init failed, using cache fallback: ${e.message}")
-            initCacheFallback(context)
+            Log.e(TAG, "FATAL: ${e.message}", e)
+            logFilePath = "(error: ${e.message})"
         }
         ready = true
     }
 
-    private fun initMediaStore(context: Context) {
-        val resolver = context.contentResolver
-        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-            MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        else
-            MediaStore.Downloads.EXTERNAL_CONTENT_URI
+    /** Returns the log file for sharing (may be null if init failed). */
+    fun logFile(): File? = file
 
-        // Look for existing file to append to.
-        val existing = resolver.query(
-            collection,
-            arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME),
-            "${MediaStore.Downloads.DISPLAY_NAME} = ?",
-            arrayOf(FILENAME),
-            null
-        )
-        existing?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val id = cursor.getLong(0)
-                mediaStoreUri = android.content.ContentUris.withAppendedId(collection, id)
-            }
-        }
+    /**
+     * Copy the current log to Downloads/cri_logs.txt so the user can find it.
+     * Uses MediaStore on API 29+, direct file on older APIs.
+     */
+    fun copyToDownloads(context: Context): String {
+        val src = file ?: return "no log file"
+        if (!src.exists()) return "log file not found"
 
-        if (mediaStoreUri == null) {
-            // Create new file.
-            val cv = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, FILENAME)
-                put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-                put(MediaStore.Downloads.IS_PENDING, 1)
-            }
-            mediaStoreUri = resolver.insert(collection, cv)
-        }
+        val text = try { src.readText() } catch (e: Exception) { return "read error: ${e.message}" }
 
-        if (mediaStoreUri != null) {
-            // Open for append via content resolver.
-            val os = resolver.openOutputStream(mediaStoreUri!!, "wa")
-            if (os != null) {
-                // Mark non-pending for new files.
-                val cv = ContentValues().apply {
-                    put(MediaStore.Downloads.IS_PENDING, 0)
+        return try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val resolver = context.applicationContext.contentResolver
+                val collection = android.provider.MediaStore.Downloads
+                    .getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                val cv = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, "cri_logs.txt")
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain")
+                    put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
                 }
-                resolver.update(mediaStoreUri!!, cv, null, null)
-
-                output = PrintWriter(OutputStreamWriter(os, Charsets.UTF_8), true)
-                logFilePath = "Downloads/$FILENAME (MediaStore)"
-                Log.i(TAG, "log via MediaStore OK")
-                return
+                val uri = resolver.insert(collection, cv)
+                    ?: return "MediaStore insert failed"
+                resolver.openOutputStream(uri, "w")?.use { os ->
+                    os.write(text.toByteArray(Charsets.UTF_8))
+                } ?: return "cannot open output stream"
+                android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                }.also { resolver.update(uri, it, null, null) }
+            } else {
+                val dir = android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS
+                )
+                dir.mkdirs()
+                java.io.File(dir, "cri_logs.txt").writeText(text)
             }
+            "copied to Downloads/cri_logs.txt"
+        } catch (e: Exception) {
+            "copy error: ${e.message}"
         }
-        throw IllegalStateException("MediaStore insert failed")
     }
 
-    private fun initDirectFile() {
-        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        dir.mkdirs()
-        val file = File(dir, FILENAME)
-        output = PrintWriter(file.outputStream().writer().buffered(), true)
-        logFilePath = file.absolutePath
-        Log.i(TAG, "log file: $logFilePath")
+    fun log(tag: String, message: String) { i(tag, message) }
+    fun log(tag: String, message: String, throwable: Throwable) { i(tag, message, throwable) }
+
+    fun v(tag: String, msg: String) { Log.v(tag, msg); writeLine("V", tag, msg) }
+    fun d(tag: String, msg: String) { Log.d(tag, msg); writeLine("D", tag, msg) }
+    fun i(tag: String, msg: String) { Log.i(tag, msg); writeLine("I", tag, msg) }
+    fun w(tag: String, msg: String) { Log.w(tag, msg); writeLine("W", tag, msg) }
+    fun e(tag: String, msg: String) { Log.e(tag, msg); writeLine("E", tag, msg) }
+
+    fun i(tag: String, msg: String, tr: Throwable) { Log.i(tag, msg, tr); writeLine("I", tag, msg); writeThrowable(tr) }
+    fun w(tag: String, msg: String, tr: Throwable) { Log.w(tag, msg, tr); writeLine("W", tag, msg); writeThrowable(tr) }
+    fun e(tag: String, msg: String, tr: Throwable) { Log.e(tag, msg, tr); writeLine("E", tag, msg); writeThrowable(tr) }
+
+    fun close() {
+        synchronized(lock) {
+            try { output?.close() } catch (_: Exception) {}
+            output = null
+            ready = false
+        }
     }
-
-    private fun initCacheFallback(context: Context) {
-        val file = File(context.cacheDir, FILENAME)
-        output = PrintWriter(file.outputStream().writer().buffered(), true)
-        logFilePath = file.absolutePath
-        Log.i(TAG, "log file (cache): $logFilePath")
-    }
-
-    fun log(tag: String, message: String) {
-        i(tag, message)
-    }
-
-    fun log(tag: String, message: String, throwable: Throwable) {
-        i(tag, message, throwable)
-    }
-
-    // ── Level-specific methods — mirror android.util.Log API ──────────
-
-    fun v(tag: String, msg: String) {
-        Log.v(tag, msg)
-        writeLine("V", tag, msg)
-    }
-
-    fun d(tag: String, msg: String) {
-        Log.d(tag, msg)
-        writeLine("D", tag, msg)
-    }
-
-    fun i(tag: String, msg: String) {
-        Log.i(tag, msg)
-        writeLine("I", tag, msg)
-    }
-
-    fun w(tag: String, msg: String) {
-        Log.w(tag, msg)
-        writeLine("W", tag, msg)
-    }
-
-    fun e(tag: String, msg: String) {
-        Log.e(tag, msg)
-        writeLine("E", tag, msg)
-    }
-
-    fun i(tag: String, msg: String, tr: Throwable) {
-        Log.i(tag, msg, tr)
-        writeLine("I", tag, msg)
-        writeThrowable(tr)
-    }
-
-    fun w(tag: String, msg: String, tr: Throwable) {
-        Log.w(tag, msg, tr)
-        writeLine("W", tag, msg)
-        writeThrowable(tr)
-    }
-
-    fun e(tag: String, msg: String, tr: Throwable) {
-        Log.e(tag, msg, tr)
-        writeLine("E", tag, msg)
-        writeThrowable(tr)
-    }
-
-    // ── Internal file I/O ─────────────────────────────────────────────
 
     private fun writeLine(level: String, tag: String, msg: String) {
-        if (!enabled || !ready) return
-        val w = output ?: return
+        if (!ready) return
+        if (!enabled) return
+        var w = output ?: return
         synchronized(lock) {
+            // If the writer is dead, try to reopen.
+            if (w.checkError()) {
+                try {
+                    val f = file ?: return
+                    w = PrintWriter(OutputStreamWriter(FileOutputStream(f, true), Charsets.UTF_8), true)
+                    output = w
+                } catch (_: Exception) {
+                    return
+                }
+            }
             try {
-                val ts = dateFmt.format(Date())
-                w.println("$ts $level/$tag: $msg")
+                w.println("${dateFmt.format(Date())} $level/$tag: $msg")
                 w.flush()
-            } catch (_: Exception) { }
+            } catch (_: Exception) {}
         }
     }
 
     private fun writeThrowable(tr: Throwable) {
-        if (!enabled || !ready) return
         val w = output ?: return
         synchronized(lock) {
             try {
-                val sw = StringWriter()
-                tr.printStackTrace(PrintWriter(sw))
-                w.println(sw.toString())
+                tr.printStackTrace(PrintWriter(w))
                 w.flush()
-            } catch (_: Exception) { }
-        }
-    }
-
-    fun close() {
-        synchronized(lock) {
-            try { output?.close() } catch (_: Exception) { }
-            output = null
-            ready = false
+            } catch (_: Exception) {}
         }
     }
 }

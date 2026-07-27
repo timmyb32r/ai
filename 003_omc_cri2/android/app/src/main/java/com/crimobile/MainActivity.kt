@@ -34,13 +34,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Init file logger — writes to app-specific external storage (no permissions needed).
-        DebugLogger.init(this)
+        // File logger already initialised in CriApplication; re-init is harmless.
+        DebugLogger.i(TAG, "MainActivity.onCreate — UI starting")
 
         requestNotificationPermission()
 
         setContent {
             val state by viewModel.state.collectAsState()
+            DebugLogger.i(TAG, "MainActivity.setContent — Compose tree rendered")
             CriApp(
                 state = state,
                 segmentCache = viewModel.segmentCache,

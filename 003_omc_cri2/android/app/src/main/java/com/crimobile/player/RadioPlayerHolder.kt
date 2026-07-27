@@ -19,6 +19,7 @@ object RadioPlayerHolder {
     val current: RadioPlayer? get() = _player.value
 
     fun setPlayer(player: RadioPlayer) {
+        DebugLogger.i(TAG, "player registered — ViewModel can now proceed")
         _player.value = player
     }
 

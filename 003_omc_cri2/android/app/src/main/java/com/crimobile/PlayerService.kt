@@ -98,8 +98,10 @@ class PlayerService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        DebugLogger.i(TAG, "onTaskRemoved — stopping self")
-        stopSelf()
+        // Keep the service alive when the user swipes the app away.
+        // The foreground notification persists — audio continues in background.
+        // When the user reopens, the player is instantly available (no restart delay).
+        DebugLogger.i(TAG, "onTaskRemoved — keeping service alive (foreground notification)")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
