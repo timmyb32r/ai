@@ -1,3 +1,5 @@
+.claude/
+
 */.docker-cache-model/
 */.docker-cache/
 */.mcp.json
