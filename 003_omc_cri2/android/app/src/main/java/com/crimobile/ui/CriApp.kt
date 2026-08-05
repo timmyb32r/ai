@@ -649,7 +649,7 @@ private fun SettingsDialog(
         containerColor = CardBg,
         title = { Text("Settings", color = TextPrimary, fontWeight = FontWeight.Bold) },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("Font size", color = TextSecondary, fontSize = 14.sp)
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
