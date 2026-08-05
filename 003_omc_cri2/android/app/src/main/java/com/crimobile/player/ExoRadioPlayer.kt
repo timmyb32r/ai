@@ -110,7 +110,7 @@ class ExoRadioPlayer(
         }
         retryJob?.cancel()
         retryJob = scope.launch {
-            val delayMs = RETRY_BASE_DELAY_MS * (1L shl retryCount)
+            val delayMs = (RETRY_BASE_DELAY_MS * (1L shl retryCount)).coerceAtMost(RETRY_MAX_DELAY_MS)
             retryCount++
             DebugLogger.i(TAG, "auto-retry #$retryCount in ${delayMs}ms (url=$url)")
             delay(delayMs)
@@ -214,8 +214,9 @@ class ExoRadioPlayer(
     }
 
     companion object {
-        private const val MAX_RETRIES = 3
-        private const val RETRY_BASE_DELAY_MS = 1000L  // 1s, 2s, 4s
+        private const val MAX_RETRIES = 10
+        private const val RETRY_BASE_DELAY_MS = 1000L  // 1s base
+        private const val RETRY_MAX_DELAY_MS = 32_000L // cap at 32s
         /** Start playback this far behind the live edge (subtitles are in lockstep). */
         private const val LIVE_OFFSET_MS = 20_000L
     }

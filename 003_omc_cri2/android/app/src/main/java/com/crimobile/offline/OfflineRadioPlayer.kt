@@ -2,6 +2,7 @@ package com.crimobile.offline
 
 import android.content.Context
 import android.net.Uri
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -41,7 +42,9 @@ class OfflineRadioPlayer(
     context: Context
 ) : RadioPlayer {
 
-    private val player: ExoPlayer = ExoPlayer.Builder(context).build()
+    private val player: ExoPlayer = ExoPlayer.Builder(context).build().apply {
+        setWakeMode(C.WAKE_MODE_NETWORK) // keep CPU + Wi-Fi awake during offline playback
+    }
     private val scope = CoroutineScope(Dispatchers.Main)
 
     // ── Segment offset mapping ──────────────────────────────────────────

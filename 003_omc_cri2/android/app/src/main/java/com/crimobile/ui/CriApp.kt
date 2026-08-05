@@ -238,6 +238,7 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                     }
                 }
                 if (showSettings) {
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
                     SettingsDialog(
                         currentFontSize = state.fontSizeSp,
                         showPinyin = state.showPinyin,
@@ -256,7 +257,11 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                         metadataProtocol = state.metadataProtocol,
                         onMetadataProtocol = { onAction(CriAction.SetMetadataProtocol(it)) },
                         logToFileEnabled = state.logToFileEnabled,
-                        onToggleLogToFile = { onAction(CriAction.ToggleLogToFile) }
+                        onToggleLogToFile = { onAction(CriAction.ToggleLogToFile) },
+                        onCopyLogs = {
+                            val result = com.crimobile.debug.DebugLogger.copyToDownloads(ctx)
+                            android.widget.Toast.makeText(ctx, result, android.widget.Toast.LENGTH_LONG).show()
+                        }
                     )
                 }
             },
@@ -635,6 +640,7 @@ private fun SettingsDialog(
     onMetadataProtocol: (String) -> Unit = {},
     logToFileEnabled: Boolean = false,
     onToggleLogToFile: () -> Unit = {},
+    onCopyLogs: () -> Unit = {},
 ) {
     var editSize by remember { mutableStateOf(currentFontSize.toString()) }
     var editPinyinSize by remember { mutableStateOf(pinyinFontSizeSp.toString()) }
@@ -830,6 +836,12 @@ private fun SettingsDialog(
                     if (logToFileEnabled) {
                         Text(com.crimobile.debug.DebugLogger.logFilePath.ifEmpty { "(not ready)" },
                             color = TextSecondary, fontSize = 10.sp)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = onCopyLogs) {
+                        Icon(Icons.Default.SaveAlt, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Copy log to Downloads", color = Amber)
                     }
                 }
             }

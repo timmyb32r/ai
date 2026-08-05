@@ -1,9 +1,13 @@
 package com.crimobile
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,6 +42,7 @@ class MainActivity : ComponentActivity() {
         DebugLogger.i(TAG, "MainActivity.onCreate — UI starting")
 
         requestNotificationPermission()
+        requestBatteryOptimizationExemption()
 
         setContent {
             val state by viewModel.state.collectAsState()
@@ -60,6 +65,32 @@ class MainActivity : ComponentActivity() {
         }
         DebugLogger.i(TAG, "requesting POST_NOTIFICATIONS")
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    /**
+     * Ask the user to exempt CRI Radio from battery optimization.
+     * Without this, Doze mode ignores [android.os.PowerManager.WAKE_LOCK]
+     * and defers network access — the HLS stream stalls after a few
+     * minutes with the screen off.
+     *
+     * Only shows the system dialog once; if already exempt, does nothing.
+     */
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            DebugLogger.d(TAG, "already exempt from battery optimization")
+            return
+        }
+        DebugLogger.i(TAG, "requesting battery optimization exemption")
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            DebugLogger.e(TAG, "failed to open battery optimization settings: ${e.message}")
+        }
     }
 
     companion object {

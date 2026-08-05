@@ -202,9 +202,21 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 try {
                     app.startForegroundService(android.content.Intent(app, com.crimobile.PlayerService::class.java))
                     DebugLogger.i(VM, "PlayerService restart sent, waiting again…")
-                    obtained = RadioPlayerHolder.awaitPlayer(15_000L)
                 } catch (e: Exception) {
-                    DebugLogger.e(VM, "failed to restart PlayerService: ${e.message}", e)
+                    // On Android 12+ startForegroundService throws
+                    // BackgroundServiceStartNotAllowedException while in background.
+                    // Fall back to startService — PlayerService calls startForeground
+                    // in onCreate, so this is safe.
+                    DebugLogger.w(VM, "startForegroundService failed (${e.message}) — trying startService")
+                    try {
+                        app.startService(android.content.Intent(app, com.crimobile.PlayerService::class.java))
+                        DebugLogger.i(VM, "PlayerService startService sent, waiting…")
+                    } catch (e2: Exception) {
+                        DebugLogger.e(VM, "startService also failed: ${e2.message}", e2)
+                    }
+                }
+                if (obtained == null) {
+                    obtained = RadioPlayerHolder.awaitPlayer(15_000L)
                 }
             }
             if (obtained == null) {

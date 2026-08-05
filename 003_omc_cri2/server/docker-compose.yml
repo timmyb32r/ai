@@ -22,6 +22,10 @@ services:
       - criradio_data:/tmp/china_radio_international
       - hanlp_models:/root/.hanlp
     restart: unless-stopped
+    pids_limit: 4096
+    ulimits:
+      nproc: 65536
+      nofile: 65536
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/status"]
       interval: 30s

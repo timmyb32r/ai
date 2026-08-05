@@ -102,6 +102,7 @@ class PlayerService : MediaSessionService() {
         // The foreground notification persists — audio continues in background.
         // When the user reopens, the player is instantly available (no restart delay).
         DebugLogger.i(TAG, "onTaskRemoved — keeping service alive (foreground notification)")
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -115,7 +116,7 @@ class PlayerService : MediaSessionService() {
                 player.pause()
             }
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onDestroy() {

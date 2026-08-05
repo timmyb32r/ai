@@ -80,6 +80,10 @@ class SyncWorker(
                 ))
                 storageManager.pruneOldSessions(config.keepLastNSyncs)
                 DebugLogger.i(TAG, "Sync complete — ${storageManager.totalSegmentCount()} segments stored")
+
+                // Re-arm the exact alarm for tomorrow
+                SyncScheduler.rearmForTomorrow(applicationContext)
+
                 Result.success()
             } else {
                 DebugLogger.w(TAG, "Sync failed: ${result.exceptionOrNull()?.message}")
