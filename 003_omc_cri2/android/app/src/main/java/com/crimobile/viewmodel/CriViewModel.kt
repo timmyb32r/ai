@@ -152,6 +152,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingPlayUrl: String? = null  // deferred Play until player is ready
     private var coldStartT0: Long = 0  // timing: System.nanoTime() when Play was tapped
     private val pendingDictFetches = mutableSetOf<Int>()  // segment IDs being lazy-fetched
+    @Volatile private var isFetchingInitial = false  // guard against concurrent fetchInitial
 
     // ── Offline mode ───────────────────────────────────────────────────
     private val offlineStorageManager by lazy { OfflineStorageManager(getApplication()) }
@@ -255,7 +256,13 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             // Forward error messages to the UI error screen
             launch {
                 player.lastErrorMessage.collect { msg ->
-                    DebugLogger.w(VM, "player error → UI: $msg")
+                    // null = "no error" (normal after successful playback or on fresh start).
+                    // Only log as WARNING when there is an actual error string.
+                    if (msg != null) {
+                        DebugLogger.w(VM, "player error → UI: $msg")
+                    } else {
+                        DebugLogger.d(VM, "player error cleared (null)")
+                    }
                     if (_state.value.playbackMode == PlaybackMode.LIVE_STREAMING) {
                         _state.value = _state.value.copy(error = msg)
                     }
@@ -283,7 +290,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
                         val latestSegment = segmentsMeta.lastOrNull()
                         val delay = if (latestSegment != null && playerMs > 0 && latestSegment.timeline_end_sec > 0) {
-                            (playerSec - latestSegment.timeline_end_sec).coerceAtLeast(0.0)
+                            (latestSegment.timeline_end_sec - playerSec).coerceAtLeast(0.0)
                         } else 0.0
 
                         // Don't wipe pre-lookup's active segment if sync can't find one
@@ -377,7 +384,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
                         val latestSegment = segments.lastOrNull()
                         val delay = if (latestSegment != null && playerMs > 0 && latestSegment.timeline_end_sec > 0) {
-                            (playerSec - latestSegment.timeline_end_sec).coerceAtLeast(0.0)
+                            (latestSegment.timeline_end_sec - playerSec).coerceAtLeast(0.0)
                         } else 0.0
 
                         // Preserve previous segment/word if sync can't find one
@@ -504,59 +511,72 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             }
 
                             if (subtitleSource is com.crimobile.subtitles.HttpSubtitleSource) {
+                                // Prevent duplicate fetchInitial — a second Play tap (or
+                                // deferred play executing while a manual tap already launched
+                                // fetchInitial) would race and double-prepare the player,
+                                // causing state LOADING→IDLE and a stale playlist reference.
+                                if (isFetchingInitial) {
+                                    DebugLogger.log(VM, "⏭ fetchInitial already in progress — skipping duplicate")
+                                    return
+                                }
+                                isFetchingInitial = true
                                 _state.value = _state.value.copy(playbackState = PlaybackState.LOADING)
                                 viewModelScope.launch {
-                                    val http = subtitleSource as com.crimobile.subtitles.HttpSubtitleSource
-
-                                    DebugLogger.i(TIMING, "event=fetch_initial_start elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
-                                    DebugLogger.log(VM, "→ fetchInitial(server=${action.serverUrl}, n=$INITIAL_BATCH, lite=true)")
-
-                                    // fetchInitial with retry (up to 3 attempts)
-                                    var ok = false
-                                    for (attempt in 1..3) {
-                                        try {
-                                            ok = http.fetchInitial(action.serverUrl, INITIAL_BATCH, lite = true)
-                                            if (ok) break
-                                            DebugLogger.log(VM, "← fetchInitial attempt $attempt returned false")
-                                            if (attempt < 3) delay(2000)
-                                        } catch (e: Exception) {
-                                            DebugLogger.log(VM, "✗ fetchInitial attempt $attempt FAILED", e)
-                                            if (attempt == 3) {
-                                                _state.value = _state.value.copy(
-                                                    error = "Cannot reach server.\n${e.message}",
-                                                    playbackState = PlaybackState.IDLE
-                                                )
-                                                return@launch
-                                            }
-                                            delay(2000)
-                                        }
-                                    }
-
-                                    if (!ok) {
-                                        DebugLogger.log(VM, "✗ fetchInitial failed after 3 attempts")
-                                        _state.value = _state.value.copy(
-                                            error = "Cannot reach server.\nCheck your connection and try again.",
-                                            playbackState = PlaybackState.IDLE
-                                        )
-                                        return@launch
-                                    }
-
-                                    DebugLogger.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
-                                    DebugLogger.log(VM, "← fetchInitial ok | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
-
-                                    // Pre-lookup removed: computing playerSec from metadata timeline
-                                    // is unreliable (30s+ mismatch with HLS playlist position on cold start
-                                    // where segments have gaps). The 10Hz sync loop finds the active
-                                    // segment within 1-2 frames (~100-200ms) — imperceptible.
-
-                                    player.play(url)
-                                    DebugLogger.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
-                                    DebugLogger.log(VM, "→ player.play(url) called | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
                                     try {
-                                        http.connect(action.serverUrl)
-                                        DebugLogger.log(VM, "→ http.connect() OK")
-                                    } catch (e: Exception) {
-                                        DebugLogger.log(VM, "✗ http.connect() FAILED", e)
+                                        val http = subtitleSource as com.crimobile.subtitles.HttpSubtitleSource
+
+                                        DebugLogger.i(TIMING, "event=fetch_initial_start elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                        DebugLogger.log(VM, "→ fetchInitial(server=${action.serverUrl}, n=$INITIAL_BATCH, lite=true)")
+
+                                        // fetchInitial with retry (up to 3 attempts)
+                                        var ok = false
+                                        for (attempt in 1..3) {
+                                            try {
+                                                ok = http.fetchInitial(action.serverUrl, INITIAL_BATCH, lite = true)
+                                                if (ok) break
+                                                DebugLogger.log(VM, "← fetchInitial attempt $attempt returned false")
+                                                if (attempt < 3) delay(2000)
+                                            } catch (e: Exception) {
+                                                DebugLogger.log(VM, "✗ fetchInitial attempt $attempt FAILED", e)
+                                                if (attempt == 3) {
+                                                    _state.value = _state.value.copy(
+                                                        error = "Cannot reach server.\n${e.message}",
+                                                        playbackState = PlaybackState.IDLE
+                                                    )
+                                                    return@launch
+                                                }
+                                                delay(2000)
+                                            }
+                                        }
+
+                                        if (!ok) {
+                                            DebugLogger.log(VM, "✗ fetchInitial failed after 3 attempts")
+                                            _state.value = _state.value.copy(
+                                                error = "Cannot reach server.\nCheck your connection and try again.",
+                                                playbackState = PlaybackState.IDLE
+                                            )
+                                            return@launch
+                                        }
+
+                                        DebugLogger.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                        DebugLogger.log(VM, "← fetchInitial ok | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
+
+                                        // Pre-lookup removed: computing playerSec from metadata timeline
+                                        // is unreliable (30s+ mismatch with HLS playlist position on cold start
+                                        // where segments have gaps). The 10Hz sync loop finds the active
+                                        // segment within 1-2 frames (~100-200ms) — imperceptible.
+
+                                        player.play(url)
+                                        DebugLogger.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                        DebugLogger.log(VM, "→ player.play(url) called | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
+                                        try {
+                                            http.connect(action.serverUrl)
+                                            DebugLogger.log(VM, "→ http.connect() OK")
+                                        } catch (e: Exception) {
+                                            DebugLogger.log(VM, "✗ http.connect() FAILED", e)
+                                        }
+                                    } finally {
+                                        isFetchingInitial = false
                                     }
                                 }
                             } else {

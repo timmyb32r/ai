@@ -124,7 +124,15 @@ class ExoRadioPlayer(
         val timeline = player.currentTimeline
         if (timeline.isEmpty) return
         val window = Timeline.Window()
-        timeline.getWindow(player.currentMediaItemIndex, window)
+        val idx = player.currentMediaItemIndex
+        if (idx < 0 || idx >= timeline.windowCount) {
+            // HLS playlist was replaced with a shorter one while we held an old index.
+            // Reset to the default position so the next update picks up the live edge.
+            DebugLogger.w(TAG, "updateTimeline: currentMediaItemIndex=$idx out of bounds (windowCount=${timeline.windowCount}) — playlist likely shrunk")
+            player.seekToDefaultPosition()
+            return
+        }
+        timeline.getWindow(idx, window)
         if (window.windowStartTimeMs != C.TIME_UNSET) {
             _currentTimelineMs.value = window.windowStartTimeMs + player.currentPosition
         }
@@ -176,7 +184,14 @@ class ExoRadioPlayer(
         val window = Timeline.Window()
         val timeline = player.currentTimeline
         if (timeline.isEmpty) { player.play(); return }
-        timeline.getWindow(player.currentMediaItemIndex, window)
+        val idx = player.currentMediaItemIndex
+        if (idx < 0 || idx >= timeline.windowCount) {
+            DebugLogger.w(TAG, "resume: currentMediaItemIndex=$idx out of bounds (windowCount=${timeline.windowCount}) — seeking to default")
+            player.seekToDefaultPosition()
+            player.play()
+            return
+        }
+        timeline.getWindow(idx, window)
         if (pausedAtTimelineMs > 0 && window.windowStartTimeMs != C.TIME_UNSET) {
             if (pausedAtTimelineMs < window.windowStartTimeMs) {
                 DebugLogger.w(TAG, "paused position fell behind DVR window")
@@ -195,7 +210,13 @@ class ExoRadioPlayer(
         val window = Timeline.Window()
         val timeline = player.currentTimeline
         if (timeline.isEmpty) return
-        timeline.getWindow(player.currentMediaItemIndex, window)
+        val idx = player.currentMediaItemIndex
+        if (idx < 0 || idx >= timeline.windowCount) {
+            DebugLogger.w(TAG, "seekTo: currentMediaItemIndex=$idx out of bounds (windowCount=${timeline.windowCount})")
+            player.seekToDefaultPosition()
+            return
+        }
+        timeline.getWindow(idx, window)
         if (window.windowStartTimeMs != C.TIME_UNSET) {
             player.seekTo((timelineMs - window.windowStartTimeMs).coerceAtLeast(0))
         }

@@ -75,12 +75,14 @@ class HttpSubtitleSource(
         pollJob = scope.launch {
             var consecutiveFailures = 0
             val maxConsecutiveFailures = 5
+            var circuitOpen = false
 
             while (isActive) {
                 try {
                     val success = pollOnce(serverUrl)
                     if (success) {
                         consecutiveFailures = 0
+                        circuitOpen = false
                         if (_connected.value != ConnectionStatus.CONNECTED) {
                             _connected.value = ConnectionStatus.CONNECTED
                         }
@@ -88,6 +90,10 @@ class HttpSubtitleSource(
                         consecutiveFailures++
                         if (consecutiveFailures >= maxConsecutiveFailures) {
                             _connected.value = ConnectionStatus.DISCONNECTED
+                            if (!circuitOpen) {
+                                circuitOpen = true
+                                DebugLogger.w(HTTP_TAG, "circuit breaker OPEN after $consecutiveFailures consecutive failures — backing off")
+                            }
                         }
                         DebugLogger.w(HTTP_TAG, "poll failed ($consecutiveFailures/$maxConsecutiveFailures)")
                     }
@@ -95,10 +101,25 @@ class HttpSubtitleSource(
                     consecutiveFailures++
                     if (consecutiveFailures >= maxConsecutiveFailures) {
                         _connected.value = ConnectionStatus.DISCONNECTED
+                        if (!circuitOpen) {
+                            circuitOpen = true
+                            DebugLogger.w(HTTP_TAG, "circuit breaker OPEN after $consecutiveFailures consecutive failures — backing off")
+                        }
                     }
                     DebugLogger.w(HTTP_TAG, "poll error: ${e.message} ($consecutiveFailures/$maxConsecutiveFailures)")
                 }
-                delay(pollIntervalMs)
+
+                // Exponential backoff when circuit is open: 1.5s → 3s → 6s → 12s → … → cap 60s.
+                // When circuit is closed, use the normal poll interval.
+                val sleepMs = if (circuitOpen) {
+                    val exp = (RETRY_BACKOFF_BASE_MS * (1L shl (consecutiveFailures - maxConsecutiveFailures).coerceAtLeast(0)))
+                        .coerceAtMost(RETRY_BACKOFF_MAX_MS)
+                    // Jitter: ±20 % to desynchronise retry storms across devices.
+                    (exp * (0.8 + Math.random() * 0.4)).toLong()
+                } else {
+                    pollIntervalMs
+                }
+                delay(sleepMs)
             }
         }
     }
@@ -390,6 +411,12 @@ class HttpSubtitleSource(
 
         /** Delay between backfill batch emissions — prevents GC storms. */
         private const val BACKFILL_DELAY_MS = 80L
+
+        /** Base delay for exponential backoff after circuit breaker opens (1.5 s). */
+        private const val RETRY_BACKOFF_BASE_MS = 1_500L
+
+        /** Maximum backoff delay (60 s) — never sleep longer than this between retries. */
+        private const val RETRY_BACKOFF_MAX_MS = 60_000L
 
         /** Zero-padded 9-digit filename, e.g. segment ID 123 → "000000123.json". */
         fun segmentIdToFilename(id: Int): String {
