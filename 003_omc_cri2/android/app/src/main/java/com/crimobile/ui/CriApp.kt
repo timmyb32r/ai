@@ -171,10 +171,11 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                             modifier = Modifier.align(Alignment.CenterEnd),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val isActive = state.playbackState == PlaybackState.PLAYING
-                                || state.playbackState == PlaybackState.LOADING
-                                || state.playbackState == PlaybackState.PAUSED
-                            if (isActive && state.connectionStatus == ConnectionStatus.DISCONNECTED
+                            // Only show "No subtitles" while actively PLAYING with a dead
+                            // connection — not during the cold-start LOADING phase, where it
+                            // briefly flashed red before subtitles arrived.
+                            if (state.playbackState == PlaybackState.PLAYING
+                                && state.connectionStatus == ConnectionStatus.DISCONNECTED
                                 && state.playbackMode == PlaybackMode.LIVE_STREAMING) {
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
@@ -214,7 +215,7 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                                     )
                                 }
                             }
-                            if (state.playbackMode == PlaybackMode.LIVE_STREAMING) {
+                            if (state.showLagCounter && state.playbackMode == PlaybackMode.LIVE_STREAMING) {
                                 val delay = state.subtitleDelaySec
                                 if (delay in 1.0..3600.0 && state.segments.isNotEmpty()) {
                                     Surface(
@@ -259,6 +260,8 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                         onMetadataProtocol = { onAction(CriAction.SetMetadataProtocol(it)) },
                         logToFileEnabled = state.logToFileEnabled,
                         onToggleLogToFile = { onAction(CriAction.ToggleLogToFile) },
+                        showLagCounter = state.showLagCounter,
+                        onToggleLagCounter = { onAction(CriAction.ToggleLagCounter) },
                         onCopyLogs = {
                             val result = com.crimobile.debug.DebugLogger.copyToDownloads(ctx)
                             android.widget.Toast.makeText(ctx, result, android.widget.Toast.LENGTH_LONG).show()
@@ -622,6 +625,13 @@ private fun WelcomeScreen() {
 }
 
 @Composable
+private fun formatLogSize(bytes: Long): String = when {
+    bytes >= 1_048_576L -> "${"%.1f".format(bytes / 1_048_576.0)}mb"
+    bytes >= 1024L -> "${bytes / 1024L}kb"
+    else -> "${bytes}b"
+}
+
+@Composable
 private fun SettingsDialog(
     currentFontSize: Int,
     showPinyin: Boolean,
@@ -642,6 +652,8 @@ private fun SettingsDialog(
     logToFileEnabled: Boolean = false,
     onToggleLogToFile: () -> Unit = {},
     onCopyLogs: () -> Unit = {},
+    showLagCounter: Boolean = false,
+    onToggleLagCounter: () -> Unit = {},
 ) {
     var editSize by remember { mutableStateOf(currentFontSize.toString()) }
     var editPinyinSize by remember { mutableStateOf(pinyinFontSizeSp.toString()) }
@@ -786,6 +798,15 @@ private fun SettingsDialog(
                         colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
                     )
                 }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Show lag counter", color = TextPrimary, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = showLagCounter,
+                        onCheckedChange = { onToggleLagCounter() },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
+                    )
+                }
                 if (debugEnabled) {
                     Spacer(Modifier.height(8.dp))
                     HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f))
@@ -845,10 +866,11 @@ private fun SettingsDialog(
                         Spacer(Modifier.width(6.dp))
                         Text("Copy log to Downloads", color = Amber)
                     }
+                    val logSizeBytes = com.crimobile.debug.DebugLogger.logFile()?.length() ?: 0L
                     TextButton(onClick = { showRotateConfirm = true }) {
                         Icon(Icons.Default.Delete, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Rotate log (clear)", color = Amber)
+                        Text("Rotate log (clear) (${formatLogSize(logSizeBytes)})", color = Amber)
                     }
                     if (showRotateConfirm) {
                         AlertDialog(

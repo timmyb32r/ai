@@ -50,6 +50,7 @@ data class CriViewState(
     val dictFontSizeSp: Int = 14,  // dictionary bottom sheet font size in sp
     val debugEnabled: Boolean = false,  // true when .cri_debug file exists
     val logToFileEnabled: Boolean = false,  // redirect logs to file
+    val showLagCounter: Boolean = false,  // show the live "lag" badge top-right
     val metadataProtocol: String = "HTTP",  // "HTTP" or "SSE"
     val dictionary: String = "bkrs",  // server's primary dictionary codename ("bkrs", "cedict", "wiktionary")
     val wordPopup: WordPopupState? = null,
@@ -105,6 +106,7 @@ sealed class CriAction {
     data class SelectOfflineSegment(val segmentId: Int) : CriAction()
     data class SetMetadataProtocol(val protocol: String) : CriAction() // "HTTP" or "SSE"
     object ToggleLogToFile : CriAction()  // debug: redirect logs to file
+    object ToggleLagCounter : CriAction()  // show/hide the live lag badge
 }
 
 class CriViewModel(application: Application) : AndroidViewModel(application) {
@@ -143,6 +145,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             dictFontSizeSp = prefs.getInt("dict_font_size_sp", 14),
             debugEnabled = prefs.getBoolean("debug_enabled", false),
             logToFileEnabled = prefs.getBoolean("log_to_file_enabled", true),
+            showLagCounter = prefs.getBoolean("show_lag_counter", false),
             metadataProtocol = prefs.getString("metadata_protocol", "HTTP") ?: "HTTP",
         )
     )
@@ -799,6 +802,12 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(logToFileEnabled = newVal)
                 prefs.edit().putBoolean("log_to_file_enabled", newVal).apply()
                 DebugLogger.i(VM, "logToFile = $newVal")
+            }
+            CriAction.ToggleLagCounter -> {
+                val newVal = !_state.value.showLagCounter
+                _state.value = _state.value.copy(showLagCounter = newVal)
+                prefs.edit().putBoolean("show_lag_counter", newVal).apply()
+                DebugLogger.i(VM, "showLagCounter = $newVal")
             }
             is CriAction.SetPlaybackMode -> {
                 switchPlaybackMode(action.mode)
