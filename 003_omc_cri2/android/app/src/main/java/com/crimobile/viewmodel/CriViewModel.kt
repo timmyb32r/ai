@@ -51,6 +51,7 @@ data class CriViewState(
     val debugEnabled: Boolean = false,  // true when .cri_debug file exists
     val logToFileEnabled: Boolean = false,  // redirect logs to file
     val showLagCounter: Boolean = false,  // show the live "lag" badge top-right
+    val autoScroll: Boolean = true,  // karaoke auto-scroll of the subtitle list
     val metadataProtocol: String = "HTTP",  // "HTTP" or "SSE"
     val dictionary: String = "bkrs",  // server's primary dictionary codename ("bkrs", "cedict", "wiktionary")
     val wordPopup: WordPopupState? = null,
@@ -107,6 +108,7 @@ sealed class CriAction {
     data class SetMetadataProtocol(val protocol: String) : CriAction() // "HTTP" or "SSE"
     object ToggleLogToFile : CriAction()  // debug: redirect logs to file
     object ToggleLagCounter : CriAction()  // show/hide the live lag badge
+    object ToggleAutoScroll : CriAction()  // enable/disable karaoke auto-scroll
 }
 
 class CriViewModel(application: Application) : AndroidViewModel(application) {
@@ -146,6 +148,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             debugEnabled = prefs.getBoolean("debug_enabled", false),
             logToFileEnabled = prefs.getBoolean("log_to_file_enabled", true),
             showLagCounter = prefs.getBoolean("show_lag_counter", false),
+            autoScroll = prefs.getBoolean("auto_scroll", true),
             metadataProtocol = prefs.getString("metadata_protocol", "HTTP") ?: "HTTP",
         )
     )
@@ -174,6 +177,9 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingPlayUrl: String? = null  // deferred Play until player is ready
     private var coldStartT0: Long = 0  // timing: System.nanoTime() when Play was tapped
     private val pendingDictFetches = mutableSetOf<Int>()  // segment IDs being lazy-fetched
+    // Segment IDs whose full (non-lite) data has been fetched once — avoids
+    // re-fetching segments whose words genuinely have no CEDICT/Wiktionary entry.
+    private val fullyFetchedSegmentIds = mutableSetOf<Int>()
     @Volatile private var isFetchingInitial = false  // guard against concurrent fetchInitial
 
     // ── Offline mode ───────────────────────────────────────────────────
@@ -216,7 +222,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
         // ── Wait for the player (owned by PlayerService) then start player-dependent flows ──
         viewModelScope.launch {
-            var obtained = RadioPlayerHolder.awaitPlayer()
+            var obtained = RadioPlayerHolder.awaitPlayer(4_000L)
             if (obtained == null) {
                 // Process was reused after swipe-away — PlayerService is dead.
                 // Restart it and wait again.
@@ -239,7 +245,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 if (obtained == null) {
-                    obtained = RadioPlayerHolder.awaitPlayer(15_000L)
+                    obtained = RadioPlayerHolder.awaitPlayer(6_000L)
                 }
             }
             if (obtained == null) {
@@ -509,6 +515,15 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(error = null)
                 when (_state.value.playbackMode) {
                     PlaybackMode.LIVE_STREAMING -> {
+                        // Debounce double-taps: if already loading the same stream,
+                        // ignore. A second tap previously launched a second fetchInitial
+                        // + player.play that interrupted the first PLAYING state
+                        // ("loader → play → loader again").
+                        if (_state.value.playbackState == PlaybackState.LOADING
+                            && currentServerUrl == action.serverUrl) {
+                            DebugLogger.log(VM, "⏭ Play ignored — already loading this stream")
+                            return
+                        }
                         if (!requirePlayer()) {
                             // PlayerService hasn't bound yet — defer Play until it arrives.
                             DebugLogger.log(VM, "⏳ Play deferred — player not ready, will auto-play when available")
@@ -689,9 +704,14 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 // its translation/senses/cedict_meanings are empty. Fetch the full
                 // segment once and update the popup + cache so subsequent taps on
                 // any word in this segment use the cached full data.
-                val needsDict = action.word.translation.isEmpty() &&
+                // Fetch the full segment when dictionary glosses are missing.
+                // Lite segments include translation but skip CEDICT/Wiktionary/senses,
+                // so check those (not translation) and skip segments already fetched.
+                val needsDict = segment != null &&
+                    segment.segment_id !in fullyFetchedSegmentIds &&
                     action.word.senses.isEmpty() &&
-                    action.word.cedict_meanings.isEmpty()
+                    action.word.cedict_meanings.isEmpty() &&
+                    action.word.wiktionary_meanings.isEmpty()
                 if (needsDict && segment != null && segment.segment_id !in pendingDictFetches) {
                     pendingDictFetches.add(segment.segment_id)
                     viewModelScope.launch {
@@ -702,6 +722,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             if (fullSeg != null) {
                                 // Cache the full segment so subsequent taps skip the network.
                                 subtitleSource.upsertSegment(fullSeg)
+                                fullyFetchedSegmentIds.add(segment.segment_id)
 
                                 // Find the matching word in the full segment.
                                 val fullWord = fullSeg.words.find { w ->
@@ -808,6 +829,12 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(showLagCounter = newVal)
                 prefs.edit().putBoolean("show_lag_counter", newVal).apply()
                 DebugLogger.i(VM, "showLagCounter = $newVal")
+            }
+            CriAction.ToggleAutoScroll -> {
+                val newVal = !_state.value.autoScroll
+                _state.value = _state.value.copy(autoScroll = newVal)
+                prefs.edit().putBoolean("auto_scroll", newVal).apply()
+                DebugLogger.i(VM, "autoScroll = $newVal")
             }
             is CriAction.SetPlaybackMode -> {
                 switchPlaybackMode(action.mode)
@@ -1173,7 +1200,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
         private const val VM = "CRIRadio:vm"
         private const val TIMING = "CRIRadio:timing"
         /** Segments fetched in the cold-start batch (word timing + pinyin, no dict). */
-        private const val INITIAL_BATCH = 40
+        private const val INITIAL_BATCH = 10
     }
 
     override fun onCleared() {

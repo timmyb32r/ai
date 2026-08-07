@@ -45,25 +45,32 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
         requestBatteryOptimizationExemption()
 
-        // Start the foreground media service from the Activity (foreground), not
-        // from Application.onCreate — on Android 12+ the latter can be deferred
-        // by the system, which caused a 10s "player not ready" timeout on cold
-        // start. From the Activity the start is honoured immediately.
-        try {
-            startForegroundService(Intent(this, PlayerService::class.java))
-            DebugLogger.i(TAG, "PlayerService start sent from MainActivity")
-        } catch (e: Exception) {
-            DebugLogger.e(TAG, "Failed to start PlayerService: ${e.message}", e)
-        }
-
         setContent {
             val state by viewModel.state.collectAsState()
+            val view = androidx.compose.ui.platform.LocalView.current
             DebugLogger.i(TAG, "MainActivity.setContent — Compose tree rendered")
             CriApp(
                 state = state,
                 segmentCache = viewModel.segmentCache,
-                onAction = viewModel::dispatch
+                onAction = { action ->
+                    // Haptic tick on every UI action so the user feels button presses.
+                    view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                    viewModel.dispatch(action)
+                }
             )
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Start the foreground media service from onStart (activity is foreground
+        // here, so the start is honoured immediately). From onCreate/Application
+        // the system can defer it → 5-10s "player not ready" timeout.
+        try {
+            startForegroundService(Intent(this, PlayerService::class.java))
+            DebugLogger.i(TAG, "PlayerService start sent from MainActivity.onStart")
+        } catch (e: Exception) {
+            DebugLogger.e(TAG, "Failed to start PlayerService: ${e.message}", e)
         }
     }
 

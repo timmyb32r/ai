@@ -262,6 +262,8 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                         onToggleLogToFile = { onAction(CriAction.ToggleLogToFile) },
                         showLagCounter = state.showLagCounter,
                         onToggleLagCounter = { onAction(CriAction.ToggleLagCounter) },
+                        autoScroll = state.autoScroll,
+                        onToggleAutoScroll = { onAction(CriAction.ToggleAutoScroll) },
                         onCopyLogs = {
                             val result = com.crimobile.debug.DebugLogger.copyToDownloads(ctx)
                             android.widget.Toast.makeText(ctx, result, android.widget.Toast.LENGTH_LONG).show()
@@ -340,6 +342,7 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                                 showWordBoundaries = state.showWordBoundaries,
                                 showAudioBoundaries = state.showAudioBoundaries,
                                 pinyinFontSizeSp = state.pinyinFontSizeSp,
+                                autoScroll = state.autoScroll,
                                 recenterChannel = recenterChannel,
                                 onWordTapped = { word, segmentId ->
                                     onAction(CriAction.WordTapped(word, segmentId))
@@ -654,6 +657,8 @@ private fun SettingsDialog(
     onCopyLogs: () -> Unit = {},
     showLagCounter: Boolean = false,
     onToggleLagCounter: () -> Unit = {},
+    autoScroll: Boolean = true,
+    onToggleAutoScroll: () -> Unit = {},
 ) {
     var editSize by remember { mutableStateOf(currentFontSize.toString()) }
     var editPinyinSize by remember { mutableStateOf(pinyinFontSizeSp.toString()) }
@@ -807,6 +812,15 @@ private fun SettingsDialog(
                         colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
                     )
                 }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Auto-scroll subtitles", color = TextPrimary, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = autoScroll,
+                        onCheckedChange = { onToggleAutoScroll() },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
+                    )
+                }
                 if (debugEnabled) {
                     Spacer(Modifier.height(8.dp))
                     HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f))
@@ -955,6 +969,7 @@ private fun SubtitleList(
     showWordBoundaries: Boolean,
     showAudioBoundaries: Boolean = false,
     pinyinFontSizeSp: Int = 9,
+    autoScroll: Boolean = true,
     recenterChannel: Channel<Unit>,
     onWordTapped: (WordEntry, Int) -> Unit
 ) {
@@ -972,6 +987,7 @@ private fun SubtitleList(
     val currentActiveSegmentId by rememberUpdatedState(activeSegmentId)
     val currentPlaybackState by rememberUpdatedState(playbackState)
     val currentIsPronouncing by rememberUpdatedState(isPronouncing)
+    val currentAutoScroll by rememberUpdatedState(autoScroll)
 
     // ── Single scroll owner ───────────────────────────────────────────────
     // Exactly one coroutine ever calls listState.scroll*.  Recenter requests
@@ -1038,6 +1054,11 @@ private fun SubtitleList(
             val playing = currentPlaybackState == PlaybackState.PLAYING
             val pronouncing = currentIsPronouncing
             val mode = scrollMode.value
+            // If auto-scroll is disabled, force MANUAL — no karaoke follow, no
+            // jitter when new segments arrive. The user can still drag manually.
+            if (!currentAutoScroll && scrollMode.value != ScrollMode.MANUAL) {
+                scrollMode.value = ScrollMode.MANUAL
+            }
 
             // ── PAUSED check ──
             val shouldPause = !playing || pronouncing
@@ -2020,9 +2041,32 @@ private fun OfflineSetupScreen(
             }
         }
 
-        // Validation
-        if (archiveInfo != null && archiveInfo.oldestStartSec > 0.0) {
-            item {
+        // Validation — always reserve space so the Download button doesn't jump
+        // when the archive info arrives (was: block appeared after ~5s, shifting
+        // everything below it).
+        item {
+            if (archiveInfo == null) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = TextSecondary.copy(alpha = 0.05f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = TextSecondary,
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            "Loading server archive…",
+                            color = TextSecondary, fontSize = 12.sp
+                        )
+                    }
+                }
+            } else if (archiveInfo.oldestStartSec > 0.0) {
                 val archiveHours = (archiveInfo.newestEndSec - archiveInfo.oldestStartSec) / 3600.0
                 val isValid = editDurationH <= archiveHours
                 Surface(
@@ -2045,6 +2089,17 @@ private fun OfflineSetupScreen(
                             fontWeight = FontWeight.Bold
                         )
                     }
+                }
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color.Red.copy(alpha = 0.1f)
+                ) {
+                    Text(
+                        "Could not load server archive info.",
+                        color = Color.Red.copy(alpha = 0.8f), fontSize = 12.sp,
+                        modifier = Modifier.padding(12.dp)
+                    )
                 }
             }
         }
@@ -2106,21 +2161,38 @@ private fun OfflineSetupScreen(
             }
         }
 
-        // Save now button
+        // Save now button — shows a spinner immediately on tap so the user sees
+        // a response (the actual download start takes a few seconds while
+        // fetchArchiveInfo + createSession run).
         item {
+            var starting by remember { mutableStateOf(false) }
+            LaunchedEffect(downloadProgress) {
+                // Download phase started (or finished) — clear the local "starting" flag.
+                if (downloadProgress != null) starting = false
+            }
+            val isWorking = starting || downloadProgress?.isRunning == true
             Button(
-                onClick = onSaveNow,
+                onClick = { starting = true; onSaveNow() },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
-                enabled = downloadProgress?.isRunning != true
+                enabled = !isWorking
             ) {
-                Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (syncConfig.initialSyncDone) "Download Now"
-                    else "Save First Batch Now",
-                    color = Color.White
-                )
+                if (isWorking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = Color.White, strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Starting…", color = Color.White)
+                } else {
+                    Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (syncConfig.initialSyncDone) "Download Now"
+                        else "Save First Batch Now",
+                        color = Color.White
+                    )
+                }
             }
         }
 
