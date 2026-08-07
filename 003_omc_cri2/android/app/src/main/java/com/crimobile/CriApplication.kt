@@ -21,9 +21,14 @@ class CriApplication : Application() {
         // the file logger is completely broken, this line IS in LogCat.
         android.util.Log.i(TAG, "onCreate BEGIN — about to init DebugLogger")
 
-        // ── Init file logger and enable it unconditionally ──
+        // ── Init file logger ──
         DebugLogger.init(this)
-        DebugLogger.enabled = true
+        // Sync the enable flag with the persisted prefs value so the Settings
+        // switch ("Write logs to file") reflects reality. Default ON so logs are
+        // captured for diagnostics on a fresh install (was unconditionally true,
+        // which left the switch showing OFF while logs were actually written).
+        val prefs = getSharedPreferences("cri_prefs", MODE_PRIVATE)
+        DebugLogger.enabled = prefs.getBoolean("log_to_file_enabled", true)
         DebugLogger.i(TAG, "========== APP START ==========")
         DebugLogger.i(TAG, "device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT}")
 

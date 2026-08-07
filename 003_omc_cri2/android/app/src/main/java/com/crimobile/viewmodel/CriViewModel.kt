@@ -142,7 +142,7 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             pinyinFontSizeSp = prefs.getInt("pinyin_font_size_sp", 9),
             dictFontSizeSp = prefs.getInt("dict_font_size_sp", 14),
             debugEnabled = prefs.getBoolean("debug_enabled", false),
-            logToFileEnabled = prefs.getBoolean("log_to_file_enabled", false),
+            logToFileEnabled = prefs.getBoolean("log_to_file_enabled", true),
             metadataProtocol = prefs.getString("metadata_protocol", "HTTP") ?: "HTTP",
         )
     )
