@@ -66,7 +66,11 @@ class HttpSubtitleSource(
     override fun connect(serverUrl: String) {
         DebugLogger.i(HTTP_TAG, "connecting to $serverUrl (poll=${pollIntervalMs}ms)")
         DebugLogger.log(HTTP_TAG, "connect → $serverUrl | pollInterval=${pollIntervalMs}ms")
-        _connected.value = ConnectionStatus.CONNECTING
+        // Don't regress CONNECTED → CONNECTING when fetchInitial already connected;
+        // the flip previously caused a brief status flicker in the UI.
+        if (_connected.value != ConnectionStatus.CONNECTED) {
+            _connected.value = ConnectionStatus.CONNECTING
+        }
         // NOTE: do NOT clear seenIds here — fetchInitial() has already seeded it
         // with the newest segments. Clearing would make the first poll treat the
         // whole tail as "new" and re-fetch ~100 segments, flooding the cold-start
@@ -184,7 +188,9 @@ class HttpSubtitleSource(
                 DebugLogger.i(HTTP_TAG, "fetchInitial: ${segments.size} segments via bulk (lite=$lite), total=${segmentMap.size}")
                 DebugLogger.log(HTTP_TAG, "fetchInitial: ${segments.size} segments, ids=${segments.map { it.segment_id }}")
             } else {
-                DebugLogger.log(HTTP_TAG, "fetchInitial: 0 segments in response")
+                // 0 segments — likely an empty/just-started archive, but surface
+                // it as a warning (not info) so it isn't silently treated as success.
+                DebugLogger.w(HTTP_TAG, "fetchInitial: 0 segments in response")
             }
             true
         } catch (e: Exception) {

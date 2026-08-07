@@ -1762,6 +1762,14 @@ private fun OfflineSetupScreen(
     var editMinute by remember { mutableStateOf(syncConfig.syncMinute) }
     var editEnabled by remember { mutableStateOf(syncConfig.enabled) }
     var editWifiOnly by remember { mutableStateOf(syncConfig.wifiOnly) }
+    // Re-sync local edits when the underlying config changes externally
+    // (the local `remember` otherwise keeps stale values forever).
+    LaunchedEffect(syncConfig) {
+        editHour = syncConfig.syncHourOfDay
+        editMinute = syncConfig.syncMinute
+        editEnabled = syncConfig.enabled
+        editWifiOnly = syncConfig.wifiOnly
+    }
     val editDurationSec = syncConfig.syncDurationSec
     val editDurationH = editDurationSec / 3600.0
 
@@ -2268,6 +2276,14 @@ private fun SyncSettingsDialog(
     var editMinute by remember { mutableStateOf(syncConfig.syncMinute) }
     var editEnabled by remember { mutableStateOf(syncConfig.enabled) }
     var editWifiOnly by remember { mutableStateOf(syncConfig.wifiOnly) }
+    // Re-sync local edits when the underlying config changes externally
+    // (the local `remember` otherwise keeps stale values forever).
+    LaunchedEffect(syncConfig) {
+        editHour = syncConfig.syncHourOfDay
+        editMinute = syncConfig.syncMinute
+        editEnabled = syncConfig.enabled
+        editWifiOnly = syncConfig.wifiOnly
+    }
     val editDurationSec = syncConfig.syncDurationSec
     val editDurationH = editDurationSec / 3600.0
 

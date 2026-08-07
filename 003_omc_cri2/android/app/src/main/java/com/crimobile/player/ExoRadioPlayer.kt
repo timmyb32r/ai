@@ -57,10 +57,12 @@ class ExoRadioPlayer(
                 Player.STATE_ENDED -> PlaybackState.IDLE
                 else -> PlaybackState.IDLE
             }
-            // ExoPlayer always transitions to STATE_IDLE after an error.
-            // Don't overwrite ERROR — the error screen must stay visible
-            // until the user retries or auto-retry succeeds.
-            if (newState == PlaybackState.IDLE && _playbackState.value == PlaybackState.ERROR) return
+            // ExoPlayer always transitions to STATE_IDLE after an error, and also
+            // publishes a transient STATE_IDLE after player.stop() during play().
+            // Don't let that IDLE overwrite ERROR or the fresh LOADING screen
+            // (the IDLE→LOADING flicker was visible as a one-frame blank state).
+            if (newState == PlaybackState.IDLE &&
+                (_playbackState.value == PlaybackState.ERROR || _playbackState.value == PlaybackState.LOADING)) return
             if (newState != _playbackState.value) {
                 DebugLogger.i(TAG, "state ${_playbackState.value} → $newState")
                 _playbackState.value = newState
