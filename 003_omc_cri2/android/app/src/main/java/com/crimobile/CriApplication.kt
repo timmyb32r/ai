@@ -1,18 +1,17 @@
 package com.crimobile
 
 import android.app.Application
-import android.content.Intent
 import android.os.Build
 import com.crimobile.debug.DebugLogger
 
 /**
- * Bootstraps crash handler, then starts PlayerService so the player
- * is ready before the ViewModel needs it.
+ * Bootstraps the file logger and the global crash handler.
  *
- * Uses [startForegroundService] because [PlayerService] calls
- * [startForeground] within the 5-second window — this is the
- * correct API on Android 8+ and avoids [android.app.BackgroundServiceStartNotAllowedException]
- * on Android 12+ when the process restarts.
+ * PlayerService is NOT started here — on Android 12+ a foreground-service start
+ * from Application.onCreate can be deferred by the system, which left the
+ * ViewModel waiting 10s for the player on every cold start. The service is now
+ * started from MainActivity.onCreate (foreground), where the start is honoured
+ * immediately.
  */
 class CriApplication : Application() {
     override fun onCreate() {
@@ -34,15 +33,6 @@ class CriApplication : Application() {
             CrashHandler.install(this)
         } catch (t: Throwable) {
             android.util.Log.e(TAG, "CrashHandler.install failed: ${t.message}", t)
-        }
-
-        // ── Start the foreground media service ──
-        try {
-            DebugLogger.i(TAG, "starting PlayerService…")
-            startForegroundService(Intent(this, PlayerService::class.java))
-            DebugLogger.i(TAG, "PlayerService start command sent")
-        } catch (e: Throwable) {
-            DebugLogger.e(TAG, "Failed to start PlayerService: ${e.message}", e)
         }
     }
 

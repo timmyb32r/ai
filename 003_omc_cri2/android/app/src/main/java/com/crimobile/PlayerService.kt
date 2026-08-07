@@ -110,17 +110,12 @@ class PlayerService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // On Android 14 (targetSdk=34) a mediaPlayback foreground service must be
-        // actively playing to stay in the foreground; a paused media service can be
-        // flagged as FGS abuse. Stop when paused, keep alive only while playing.
-        if (!lastIsPlaying) {
-            DebugLogger.i(TAG, "onTaskRemoved — paused, stopping service")
-            stopSelf()
-            return
-        }
-        // Audio is playing — keep the service alive when the user swipes the app away.
-        // The foreground notification persists — audio continues in background.
-        DebugLogger.i(TAG, "onTaskRemoved — playing, keeping service alive")
+        // Keep the service alive when the user swipes the app away so the next
+        // launch reuses the already-running player (instant Play). Killing it on
+        // swipe previously forced a 10s PlayerService restart timeout on reopen
+        // because startForegroundService from Application.onCreate was deferred.
+        // FGS-policy trade-off: accepted in favour of cold-start speed.
+        DebugLogger.i(TAG, "onTaskRemoved — keeping service alive (foreground notification)")
         super.onTaskRemoved(rootIntent)
     }
 

@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import com.crimobile.debug.DebugLogger
 import com.crimobile.ui.CriApp
 import com.crimobile.viewmodel.CriViewModel
+import com.crimobile.PlayerService
 
 class MainActivity : ComponentActivity() {
 
@@ -43,6 +44,17 @@ class MainActivity : ComponentActivity() {
 
         requestNotificationPermission()
         requestBatteryOptimizationExemption()
+
+        // Start the foreground media service from the Activity (foreground), not
+        // from Application.onCreate — on Android 12+ the latter can be deferred
+        // by the system, which caused a 10s "player not ready" timeout on cold
+        // start. From the Activity the start is honoured immediately.
+        try {
+            startForegroundService(Intent(this, PlayerService::class.java))
+            DebugLogger.i(TAG, "PlayerService start sent from MainActivity")
+        } catch (e: Exception) {
+            DebugLogger.e(TAG, "Failed to start PlayerService: ${e.message}", e)
+        }
 
         setContent {
             val state by viewModel.state.collectAsState()
