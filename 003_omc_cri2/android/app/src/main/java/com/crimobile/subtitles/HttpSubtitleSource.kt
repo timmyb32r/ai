@@ -71,19 +71,9 @@ class HttpSubtitleSource(
         if (_connected.value != ConnectionStatus.CONNECTED) {
             _connected.value = ConnectionStatus.CONNECTING
         }
-        // NOTE: do NOT clear seenIds here — fetchInitial() has already seeded it
-        // with the newest segments. Clearing would make the first poll treat the
-        // whole tail as "new" and re-fetch ~100 segments, flooding the cold-start
-        // window with recompositions and list churn (the old "jumping" bug).
-
-        // Cold-start guard: when connect() is called WITHOUT a preceding
-        // fetchInitial() (e.g. protocol switch, offline→live), seed the newest
-        // few segments here so the first poll does not fetch the whole 100-segment
-        // tail in one burst.
-        val needSeed = synchronized(lock) { segmentMap.isEmpty() }
-        if (needSeed) {
-            scope.launch { runCatching { fetchInitial(serverUrl, FIRST_CHUNK_SIZE, lite = true) } }
-        }
+        // NOTE: do NOT clear seenIds here — fetchRange()/pollOnce seed them.
+        // Anti-flood is handled in pollOnce (first poll fetches only the live-edge
+        // chunk, not the whole 100-segment tail) — no slow batch fetchInitial here.
 
         pollJob?.cancel()
         pollJob = scope.launch {
@@ -201,6 +191,48 @@ class HttpSubtitleSource(
     }
 
     /**
+     * Fetch segments whose timeline overlaps [startSec, endSec] via
+     * `/api/segments/range`. Used to load the segments around the player's
+     * current position (the player starts at live−20s, but the poll loop only
+     * loads the live edge). The range endpoint is fast (~19ms per request on
+     * this server, unlike the bulk batch endpoint which took ~5s), so text
+     * appears right after audio.
+     */
+    suspend fun fetchRange(serverUrl: String, startSec: Double, endSec: Double, lite: Boolean = true): Boolean {
+        val liteParam = if (lite) "&lite=true" else ""
+        val rangeUrl = "$serverUrl/api/segments/range?start_sec=$startSec&end_sec=$endSec&limit=500&offset=0$liteParam"
+        DebugLogger.log(HTTP_TAG, "GET $rangeUrl")
+        val jsonBody = withContext(Dispatchers.IO) { fetchUrl(rangeUrl) } ?: run {
+            DebugLogger.w(HTTP_TAG, "fetchRange: fetchUrl returned null")
+            return false
+        }
+        return try {
+            val root = org.json.JSONObject(jsonBody)
+            val arr = root.getJSONArray("segments")
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                // The segment object may be wrapped ("segment" key) or direct.
+                val segmentObj = if (item.has("segment")) item.getJSONObject("segment") else item
+                val segment = SubtitleParser.parseSegment(segmentObj)
+                synchronized(lock) {
+                    segmentMap[segment.segment_id] = segment
+                    seenIds.add(segment.segment_id)
+                }
+            }
+            synchronized(lock) {
+                val sorted = segmentMap.values.sortedBy { it.timeline_start_sec }
+                _segments.value = sorted
+                _segmentsMeta.value = sorted.map { it.toMeta() }
+            }
+            DebugLogger.i(HTTP_TAG, "fetchRange: ${arr.length()} segments around [$startSec..$endSec], total=${segmentMap.size}")
+            true
+        } catch (e: Exception) {
+            DebugLogger.w(HTTP_TAG, "fetchRange parse error: ${e.message}")
+            false
+        }
+    }
+
+    /**
      * One poll cycle: fetch playlist → extract unseen .ts IDs → fetch metadata for each.
      * Returns true if the playlist fetch succeeded (even if no new segments).
      */
@@ -236,7 +268,10 @@ class HttpSubtitleSource(
         //    (seenIds empty ⇒ oldest = MIN) this reduces to "take the whole tail".
         val newIds = synchronized(lock) {
             val oldestSeen = seenIds.minOrNull() ?: Int.MIN_VALUE
-            tail.filter { it >= oldestSeen && it !in seenIds }
+            val raw = tail.filter { it >= oldestSeen && it !in seenIds }
+            // Cold-start anti-flood: with no segments seeded yet, fetch only the
+            // live-edge chunk on the first poll instead of the whole 100-segment tail.
+            if (segmentMap.isEmpty()) raw.takeLast(FIRST_CHUNK_SIZE) else raw
         }
 
         if (newIds.isEmpty()) return true

@@ -558,12 +558,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             }
 
                             if (subtitleSource is com.crimobile.subtitles.HttpSubtitleSource) {
-                                // Prevent duplicate fetchInitial — a second Play tap (or
-                                // deferred play executing while a manual tap already launched
-                                // fetchInitial) would race and double-prepare the player,
-                                // causing state LOADING→IDLE and a stale playlist reference.
+                                // Debounce double-taps: a second Play while one is in flight
+                                // would race and double-prepare the player.
                                 if (isFetchingInitial) {
-                                    DebugLogger.log(VM, "⏭ fetchInitial already in progress — skipping duplicate")
+                                    DebugLogger.log(VM, "⏭ play already in progress — skipping duplicate")
                                     return
                                 }
                                 isFetchingInitial = true
@@ -571,58 +569,44 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                                 viewModelScope.launch {
                                     try {
                                         val http = subtitleSource as com.crimobile.subtitles.HttpSubtitleSource
-
-                                        DebugLogger.i(TIMING, "event=fetch_initial_start elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
-                                        DebugLogger.log(VM, "→ fetchInitial(server=${action.serverUrl}, n=$INITIAL_BATCH, lite=true) (parallel with player.play)")
-
-                                        // Run fetchInitial concurrently with player.play so the 3-4s
-                                        // server round-trip overlaps ExoPlayer's buffering instead of
-                                        // blocking it (was sequential → cold start paid fetchInitial +
-                                        // buffering back-to-back).
-                                        coroutineScope {
-                                            val fetchJob = async {
-                                                var ok = false
-                                                for (attempt in 1..3) {
-                                                    try {
-                                                        ok = http.fetchInitial(action.serverUrl, INITIAL_BATCH, lite = true)
-                                                        if (ok) break
-                                                        DebugLogger.log(VM, "← fetchInitial attempt $attempt returned false")
-                                                        if (attempt < 3) delay(2000)
-                                                    } catch (e: Exception) {
-                                                        DebugLogger.log(VM, "✗ fetchInitial attempt $attempt FAILED", e)
-                                                        if (attempt == 3) throw e
-                                                        delay(2000)
-                                                    }
+                                        // Start player buffering AND the subtitle poll loop
+                                        // immediately — do NOT wait for a bulk batch fetch
+                                        // (the batch endpoint took ~5s on this server, leaving
+                                        // audio playing with no text). Subtitles arrive via the
+                                        // poll loop (playlist + per-segment metadata, ~40ms).
+                                        player.play(url)
+                                        DebugLogger.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
+                                        DebugLogger.log(VM, "→ player.play(url) called | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
+                                        try {
+                                            http.connect(action.serverUrl)
+                                            DebugLogger.log(VM, "→ http.connect() OK")
+                                        } catch (e: Exception) {
+                                            DebugLogger.log(VM, "✗ http.connect() FAILED", e)
+                                        }
+                                        // After the player has a real timeline position, fetch
+                                        // the segments covering that position. The player starts
+                                        // at live−20s (targetLiveOffset), but the poll loop only
+                                        // loads the live edge — without this the active segment
+                                        // is never found ("player BEHIND window") and there's no
+                                        // text for ~5s. The range endpoint is fast (~19ms).
+                                        viewModelScope.launch {
+                                            try {
+                                                var waitMs = 0L
+                                                while (player.currentTimelineMs.value <= 0L && isActive && waitMs < 10_000L) {
+                                                    delay(100); waitMs += 100
                                                 }
-                                                ok
-                                            }
-
-                                            // Start player buffering NOW — don't wait for subtitles.
-                                            player.play(url)
-                                            DebugLogger.i(TIMING, "event=player_play_called elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
-                                            DebugLogger.log(VM, "→ player.play(url) called (parallel) | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
-
-                                            val ok = fetchJob.await()
-                                            DebugLogger.i(TIMING, "event=fetch_initial_done ok=$ok elapsed_ms=${(System.nanoTime() - coldStartT0) / 1_000_000}")
-                                            DebugLogger.log(VM, "← fetchInitial ok=$ok | elapsed=${(System.nanoTime() - coldStartT0) / 1_000_000}ms")
-
-                                            if (!ok) {
-                                                _state.value = _state.value.copy(
-                                                    error = "Cannot reach server.\nCheck your connection and try again.",
-                                                    playbackState = PlaybackState.IDLE
-                                                )
-                                                player.pause()
-                                            } else {
-                                                try {
-                                                    http.connect(action.serverUrl)
-                                                    DebugLogger.log(VM, "→ http.connect() OK")
-                                                } catch (e: Exception) {
-                                                    DebugLogger.log(VM, "✗ http.connect() FAILED", e)
+                                                val playerSec = player.currentTimelineMs.value / 1000.0
+                                                if (playerSec > 0) {
+                                                    DebugLogger.i(VM, "→ fetchRange around player sec=$playerSec")
+                                                    http.fetchRange(action.serverUrl, playerSec - 10.0, playerSec + 25.0, lite = true)
+                                                    DebugLogger.i(VM, "← fetchRange done")
                                                 }
+                                            } catch (e: Exception) {
+                                                DebugLogger.w(VM, "fetchRange failed: ${e.message}")
                                             }
                                         }
                                     } catch (e: Exception) {
-                                        DebugLogger.log(VM, "✗ fetchInitial failed", e)
+                                        DebugLogger.log(VM, "✗ play failed", e)
                                         _state.value = _state.value.copy(
                                             error = "Cannot reach server.\n${e.message}",
                                             playbackState = PlaybackState.IDLE
