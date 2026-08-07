@@ -262,8 +262,6 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                         onToggleLogToFile = { onAction(CriAction.ToggleLogToFile) },
                         showLagCounter = state.showLagCounter,
                         onToggleLagCounter = { onAction(CriAction.ToggleLagCounter) },
-                        autoScroll = state.autoScroll,
-                        onToggleAutoScroll = { onAction(CriAction.ToggleAutoScroll) },
                         onCopyLogs = {
                             val result = com.crimobile.debug.DebugLogger.copyToDownloads(ctx)
                             android.widget.Toast.makeText(ctx, result, android.widget.Toast.LENGTH_LONG).show()
@@ -342,7 +340,7 @@ fun CriApp(state: CriViewState, segmentCache: SegmentCache?, onAction: (CriActio
                                 showWordBoundaries = state.showWordBoundaries,
                                 showAudioBoundaries = state.showAudioBoundaries,
                                 pinyinFontSizeSp = state.pinyinFontSizeSp,
-                                autoScroll = state.autoScroll,
+                                showThumb = state.playbackMode != PlaybackMode.LIVE_STREAMING,
                                 recenterChannel = recenterChannel,
                                 onWordTapped = { word, segmentId ->
                                     onAction(CriAction.WordTapped(word, segmentId))
@@ -657,8 +655,6 @@ private fun SettingsDialog(
     onCopyLogs: () -> Unit = {},
     showLagCounter: Boolean = false,
     onToggleLagCounter: () -> Unit = {},
-    autoScroll: Boolean = true,
-    onToggleAutoScroll: () -> Unit = {},
 ) {
     var editSize by remember { mutableStateOf(currentFontSize.toString()) }
     var editPinyinSize by remember { mutableStateOf(pinyinFontSizeSp.toString()) }
@@ -812,15 +808,6 @@ private fun SettingsDialog(
                         colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
                     )
                 }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Auto-scroll subtitles", color = TextPrimary, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                    Switch(
-                        checked = autoScroll,
-                        onCheckedChange = { onToggleAutoScroll() },
-                        colors = SwitchDefaults.colors(checkedThumbColor = Amber, checkedTrackColor = Amber.copy(alpha = 0.4f))
-                    )
-                }
                 if (debugEnabled) {
                     Spacer(Modifier.height(8.dp))
                     HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f))
@@ -969,7 +956,7 @@ private fun SubtitleList(
     showWordBoundaries: Boolean,
     showAudioBoundaries: Boolean = false,
     pinyinFontSizeSp: Int = 9,
-    autoScroll: Boolean = true,
+    showThumb: Boolean = true,
     recenterChannel: Channel<Unit>,
     onWordTapped: (WordEntry, Int) -> Unit
 ) {
@@ -987,7 +974,6 @@ private fun SubtitleList(
     val currentActiveSegmentId by rememberUpdatedState(activeSegmentId)
     val currentPlaybackState by rememberUpdatedState(playbackState)
     val currentIsPronouncing by rememberUpdatedState(isPronouncing)
-    val currentAutoScroll by rememberUpdatedState(autoScroll)
 
     // ── Single scroll owner ───────────────────────────────────────────────
     // Exactly one coroutine ever calls listState.scroll*.  Recenter requests
@@ -1054,11 +1040,6 @@ private fun SubtitleList(
             val playing = currentPlaybackState == PlaybackState.PLAYING
             val pronouncing = currentIsPronouncing
             val mode = scrollMode.value
-            // If auto-scroll is disabled, force MANUAL — no karaoke follow, no
-            // jitter when new segments arrive. The user can still drag manually.
-            if (!currentAutoScroll && scrollMode.value != ScrollMode.MANUAL) {
-                scrollMode.value = ScrollMode.MANUAL
-            }
 
             // ── PAUSED check ──
             val shouldPause = !playing || pronouncing
@@ -1315,18 +1296,21 @@ private fun SubtitleList(
             }
         }
 
-        // Draggable amber scroll thumb. The cold start is now deterministic
-        // (no backfill/seek settling), so the thumb is shown from the start.
-        Box(modifier = Modifier
-            .align(Alignment.TopEnd)
-            .padding(end = 4.dp)
-        ) {
-            ScrollThumb(
-                listState,
-                modifier = Modifier,
-                onThumbDragStart = { scrollMode.value = ScrollMode.MANUAL },
-                onThumbDragEnd = { scrollMode.value = ScrollMode.AUTO }
-            )
+        // Draggable amber scroll thumb — hidden in live mode (the karaoke
+        // auto-scroll already tracks the active word; the thumb only helps in
+        // offline navigation where there is no auto-scroll).
+        if (showThumb) {
+            Box(modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(end = 4.dp)
+            ) {
+                ScrollThumb(
+                    listState,
+                    modifier = Modifier,
+                    onThumbDragStart = { scrollMode.value = ScrollMode.MANUAL },
+                    onThumbDragEnd = { scrollMode.value = ScrollMode.AUTO }
+                )
+            }
         }
     }
 }
