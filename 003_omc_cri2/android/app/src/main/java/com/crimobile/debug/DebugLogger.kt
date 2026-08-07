@@ -20,8 +20,8 @@ import java.util.Locale
 object DebugLogger {
     private const val TAG = "CRIRadio:debuglog"
     private const val FILENAME = "cri_logs.txt"
-    /** Rotate the log file once it reaches this size (5 MB). */
-    private const val MAX_LOG_BYTES = 5L * 1024 * 1024
+    /** Rotate the log file once it reaches this size (25 MB). */
+    private const val MAX_LOG_BYTES = 25L * 1024 * 1024
 
     @Volatile var enabled: Boolean = false
 
@@ -95,6 +95,32 @@ object DebugLogger {
             "copied to Downloads/cri_logs.txt"
         } catch (e: Exception) {
             "copy error: ${e.message}"
+        }
+    }
+
+    /**
+     * Erase the current log file (and any rotated archive) and reopen a fresh
+     * empty log. Called from the UI "Rotate log" action (with user confirmation).
+     * Safe to call before [init] / when no file is open (no-op).
+     */
+    fun clearLog() {
+        synchronized(lock) {
+            try { output?.close() } catch (_: Exception) {}
+            output = null
+            val f = file
+            if (f != null) {
+                File(f.parentFile, "$FILENAME.1").delete()
+                f.delete()
+                try {
+                    output = PrintWriter(
+                        OutputStreamWriter(FileOutputStream(f, true), Charsets.UTF_8),
+                        true /* autoFlush */
+                    )
+                    Log.i(TAG, "log cleared and reopened: $logFilePath")
+                } catch (e: Exception) {
+                    Log.e(TAG, "clearLog reopen failed: ${e.message}")
+                }
+            }
         }
     }
 

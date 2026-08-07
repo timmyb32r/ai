@@ -645,6 +645,7 @@ private fun SettingsDialog(
 ) {
     var editSize by remember { mutableStateOf(currentFontSize.toString()) }
     var editPinyinSize by remember { mutableStateOf(pinyinFontSizeSp.toString()) }
+    var showRotateConfirm by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = CardBg,
@@ -843,6 +844,35 @@ private fun SettingsDialog(
                         Icon(Icons.Default.SaveAlt, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("Copy log to Downloads", color = Amber)
+                    }
+                    TextButton(onClick = { showRotateConfirm = true }) {
+                        Icon(Icons.Default.Delete, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Rotate log (clear)", color = Amber)
+                    }
+                    if (showRotateConfirm) {
+                        AlertDialog(
+                            onDismissRequest = { showRotateConfirm = false },
+                            containerColor = CardBg,
+                            title = { Text("Clear log?", color = TextPrimary) },
+                            text = {
+                                Text(
+                                    "This erases the current log file and cannot be undone.",
+                                    color = TextSecondary, fontSize = 14.sp
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    com.crimobile.debug.DebugLogger.clearLog()
+                                    showRotateConfirm = false
+                                }) { Text("Clear", color = Color.Red) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showRotateConfirm = false }) {
+                                    Text("Cancel", color = Amber)
+                                }
+                            }
+                        )
                     }
                 }
             }
