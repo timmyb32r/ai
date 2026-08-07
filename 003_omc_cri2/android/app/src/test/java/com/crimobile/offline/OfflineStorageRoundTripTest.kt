@@ -73,4 +73,35 @@ class OfflineStorageRoundTripTest {
         // One real segment file; the index file must NOT be counted.
         assertEquals(1, store.countSegmentsInSession(sid))
     }
+
+    @Test
+    fun `computeLocalRange returns actual min start and max end, not first_last`() {
+        val store = newStore()
+        val startSec = 1000L
+        val sid = store.createSession(startSec, 60)
+        // seg1 has a LATER timeline than seg2 — saved/indexed in that order so
+        // first()/last() would return the wrong range; min/max must be used.
+        val seg1 = SubtitleSegment(
+            segment_id = 1, timeline_start_sec = 200.0, timeline_end_sec = 203.0,
+            ts_file = "1.ts", text_zh = "a", text_pinyin = "p", text_en = "e",
+            words = listOf(WordEntry(
+                text = "a", char_start = 0, char_end = 1,
+                start_sec = 0.0, end_sec = 1.0, pinyin = "a", translation = "a"
+            ))
+        )
+        val seg2 = SubtitleSegment(
+            segment_id = 2, timeline_start_sec = 103.0, timeline_end_sec = 106.0,
+            ts_file = "2.ts", text_zh = "b", text_pinyin = "p", text_en = "e",
+            words = emptyList()
+        )
+        store.saveSegment(seg1, ByteArray(188) { 0x47 }, sid)
+        store.saveSegment(seg2, ByteArray(188) { 0x47 }, sid)
+        store.writeSegmentIndex(sid, listOf(seg1, seg2))
+        store.writeSessionsIndex(listOf(OfflineStorageManager.SessionMeta(startSec, 60, 2, 0L)))
+
+        val range = store.computeLocalRange()
+        assertNotNull(range)
+        assertEquals(103.0, range!!.first, 0.001)  // min start = seg2
+        assertEquals(203.0, range.second, 0.001)   // max end = seg1
+    }
 }

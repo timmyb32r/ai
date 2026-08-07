@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -221,33 +222,38 @@ class DownloadEngine(
     }
 
     /**
-     * Downloads a single .ts audio file.
+     * Downloads a single .ts audio file. Retries transient failures so a single
+     * HTTP blip does not leave a segment without audio until the next daily sync.
      */
     private suspend fun downloadTsFile(segment: SubtitleSegment): ByteArray? {
-        return try {
-            val tsFile = segment.ts_file
-            val url = "$serverUrl/hls/$tsFile"
+        val tsFile = segment.ts_file
+        val url = "$serverUrl/hls/$tsFile"
+        for (attempt in 1..TS_DOWNLOAD_ATTEMPTS) {
             val request = Request.Builder().url(url).build()
-            // `use` closes the Response on every path — including HTTP errors,
-            // which previously leaked a connection per failed download.
-            client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    response.body?.bytes()
-                } else {
-                    DebugLogger.w(TAG, "HTTP ${response.code} for $tsFile")
-                    null
+            try {
+                // `use` closes the Response on every path — including HTTP errors,
+                // which previously leaked a connection per failed download.
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        return response.body?.bytes()
+                    } else {
+                        DebugLogger.w(TAG, "HTTP ${response.code} for $tsFile (attempt $attempt)")
+                    }
                 }
+            } catch (e: Exception) {
+                DebugLogger.w(TAG, "Failed to download $tsFile (attempt $attempt): ${e.message}")
             }
-        } catch (e: Exception) {
-            DebugLogger.w(TAG, "Failed to download ${segment.ts_file}: ${e.message}")
-            null
+            if (attempt < TS_DOWNLOAD_ATTEMPTS) delay(TS_DOWNLOAD_RETRY_MS)
         }
+        return null
     }
 
     companion object {
         private const val TAG = "CRIRadio:download"
         private const val PAGE_SIZE = 500
         private const val CONCURRENT_DOWNLOADS = 10
+        private const val TS_DOWNLOAD_ATTEMPTS = 3
+        private const val TS_DOWNLOAD_RETRY_MS = 1000L
 
         // Process-wide shared client — one dispatcher pool + one connection pool
         // instead of one per DownloadEngine instance (each download / sync retry

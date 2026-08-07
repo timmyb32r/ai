@@ -18,8 +18,10 @@ data class SyncConfig(
 
         fun fromPrefs(prefs: SharedPreferences): SyncConfig = SyncConfig(
             enabled = prefs.getBoolean("${PREF_PREFIX}enabled", false),
-            syncHourOfDay = prefs.getInt("${PREF_PREFIX}sync_hour", 0),
-            syncMinute = prefs.getInt("${PREF_PREFIX}sync_minute", 0),
+            // Clamp so a bogus prefs value (25, -1, …) cannot silently shift the
+            // sync time via Calendar normalization.
+            syncHourOfDay = prefs.getInt("${PREF_PREFIX}sync_hour", 0).coerceIn(0, 23),
+            syncMinute = prefs.getInt("${PREF_PREFIX}sync_minute", 0).coerceIn(0, 59),
             syncDurationSec = prefs.getInt("${PREF_PREFIX}sync_duration_sec", 10800),
             wifiOnly = prefs.getBoolean("${PREF_PREFIX}wifi_only", true),
             keepLastNSyncs = prefs.getInt("${PREF_PREFIX}keep_last_n_syncs", 2),

@@ -101,7 +101,8 @@ object CrashHandler : Thread.UncaughtExceptionHandler {
         val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         dir.mkdirs()
         val file = File(dir, FILE_NAME)
-        FileOutputStream(file).use { it.write(dump.toByteArray(Charsets.UTF_8)) }
+        // Append so a series of crashes preserves all dumps (not just the last).
+        FileOutputStream(file, true).use { it.write(dump.toByteArray(Charsets.UTF_8)) }
         DebugLogger.i(TAG, "crash dump written to ${file.absolutePath}")
     }
 

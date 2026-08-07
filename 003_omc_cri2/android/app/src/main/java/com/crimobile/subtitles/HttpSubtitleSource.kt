@@ -59,8 +59,9 @@ class HttpSubtitleSource(
     private val lock = Any()
     private val seenIds = mutableSetOf<Int>()
 
-    // Regex: matches filenames like "000000123.ts" and captures the numeric ID
-    private val tsFilePattern = Regex("^(\\d{9})\\.ts$")
+    // Regex: matches filenames like "000000123.ts" and captures the numeric ID.
+    // Use \d+ (not \d{9}) so segment IDs ≥ 10 digits still parse.
+    private val tsFilePattern = Regex("^(\\d+)\\.ts$")
 
     override fun connect(serverUrl: String) {
         DebugLogger.i(HTTP_TAG, "connecting to $serverUrl (poll=${pollIntervalMs}ms)")

@@ -61,6 +61,11 @@ class SyncWorker(
                     DebugLogger.w(TAG, "No new content in archive for configured window")
                     return Result.success()
                 }
+            } else {
+                // Archive status did not report a valid oldest_start_sec — skip
+                // clamping but warn: a missing field previously let the request
+                // window fall far outside the archive → "No segments" failure.
+                DebugLogger.w(TAG, "Archive oldestStartSec not reported ($archive); skipping clamp")
             }
 
             val result = engine.downloadRange(startSec, endSec) { progress ->

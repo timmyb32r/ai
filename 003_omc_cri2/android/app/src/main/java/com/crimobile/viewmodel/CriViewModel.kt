@@ -159,6 +159,12 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private var currentServerUrl: String = ""
     private var lastSyncLog = 0L
     private var lastActiveSegId = -1
+    // Cached sync engines — rebuilt only when the backing list reference changes
+    // (avoids per-tick reconstruction + map allocation at the 10 Hz sync rate).
+    private var offlineSyncEngine: SubtitleSyncEngine? = null
+    private var offlineSyncKey: List<SegmentMeta>? = null
+    private var liveSyncEngine: SubtitleSyncEngine? = null
+    private var liveSyncKey: List<SubtitleSegment>? = null
     private var lastActiveWord: WordEntry? = null
     private var pendingPlayUrl: String? = null  // deferred Play until player is ready
     private var coldStartT0: Long = 0  // timing: System.nanoTime() when Play was tapped
@@ -289,7 +295,13 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     val segmentsMeta = _state.value.segmentsMeta
                     if (segmentsMeta.isNotEmpty()
                         && _state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
-                        val engine = SubtitleSyncEngine(segmentsMeta)
+                        // Reuse the engine across iterations unless the segment
+                        // list changed — recreating it (and its index) every tick
+                        // was a steady GC pressure source at 10 Hz.
+                        val engine = offlineSyncEngine?.takeIf { segmentsMeta === offlineSyncKey }
+                            ?: SubtitleSyncEngine(segmentsMeta).also {
+                                offlineSyncEngine = it; offlineSyncKey = segmentsMeta
+                            }
                         val activePlayer = offlinePlayer
                         if (activePlayer == null) { delay(100); continue }
                         val playerMs = activePlayer.currentTimelineMs.value
@@ -369,16 +381,23 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                     // ── Live mode: full SubtitleSegment list ──
                     val segments = _state.value.segments
                     if (segments.isNotEmpty()) {
-                        val engine = SubtitleSyncEngine(segments.map { seg ->
-                            SegmentMeta(
-                                segment_id = seg.segment_id,
-                                timeline_start_sec = seg.timeline_start_sec,
-                                timeline_end_sec = seg.timeline_end_sec,
-                                ts_file = seg.ts_file,
-                                text_zh = seg.text_zh,
-                                text_pinyin = seg.text_pinyin
-                            )
-                        })
+                        // Reuse the engine + mapped meta across iterations unless the
+                        // segment list changed — the per-tick map{SegmentMeta} was a
+                        // major GC pressure source at 10 Hz.
+                        val engine = liveSyncEngine?.takeIf { segments === liveSyncKey }
+                            ?: SubtitleSyncEngine(segments.map { seg ->
+                                SegmentMeta(
+                                    segment_id = seg.segment_id,
+                                    timeline_start_sec = seg.timeline_start_sec,
+                                    timeline_end_sec = seg.timeline_end_sec,
+                                    ts_file = seg.ts_file,
+                                    text_zh = seg.text_zh,
+                                    text_pinyin = seg.text_pinyin
+                                )
+                            }).also {
+                                liveSyncEngine = it
+                                liveSyncKey = segments
+                            }
                         val activePlayer = if (::player.isInitialized) player else null
                         if (activePlayer == null) { delay(100); continue }
                         val playerMs = activePlayer.currentTimelineMs.value
@@ -837,18 +856,24 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                         if (segs.isNotEmpty()) {
                             offlineStateJob?.cancel()
                             offlinePlayer?.release()
-                            offlinePlayer = OfflineRadioPlayer(
-                                segs,
-                                offlineStorageManager,
-                                action.sessionId,
-                                getApplication()
-                            )
-                            offlinePlayer?.pause()
+                            val newPlayer = try {
+                                OfflineRadioPlayer(
+                                    segs,
+                                    offlineStorageManager,
+                                    action.sessionId,
+                                    getApplication()
+                                )
+                            } catch (e: Exception) {
+                                DebugLogger.e(VM, "Failed to build offline player: ${e.message}", e)
+                                _state.value = _state.value.copy(error = "Cannot play this session offline")
+                                return@withContext
+                            }
+                            offlinePlayer = newPlayer
+                            newPlayer.pause()
                             segmentCache?.clear()
                             segmentCache = SegmentCache(offlineStorageManager, action.sessionId)
-                            val op = offlinePlayer!!
                             offlineStateJob = viewModelScope.launch {
-                                op.playbackState.collect { ps ->
+                                newPlayer.playbackState.collect { ps ->
                                     if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
                                         _state.value = _state.value.copy(playbackState = ps)
                                     }
@@ -868,8 +893,15 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             is CriAction.SelectOfflineSegment -> {
                 val seg = _state.value.offlineSessionSegments.find { it.segment_id == action.segmentId }
                     ?: return
-                offlinePlayer?.seekTo((seg.timeline_start_sec * 1000).toLong())
-                offlinePlayer?.resume()
+                val player = offlinePlayer
+                if (player == null) {
+                    // No audio for this session — tell the user instead of silently
+                    // closing the dialog with no playback.
+                    _state.value = _state.value.copy(error = "No audio for this session")
+                    return
+                }
+                player.seekTo((seg.timeline_start_sec * 1000).toLong())
+                player.resume()
                 _state.value = _state.value.copy(
                     showOfflineNavDialog = false,
                     error = null

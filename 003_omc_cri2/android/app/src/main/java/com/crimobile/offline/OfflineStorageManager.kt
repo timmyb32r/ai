@@ -37,16 +37,20 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
     private val sessionsIndexFile: File = File(sessionsDir, "index.json")
 
     init {
-        // Clean break: delete old flat directories if they still exist
-        val oldMeta = File(rootDir, "metadata")
-        val oldAudio = File(rootDir, "audio")
-        val oldIndex = File(rootDir, "index.json")
-        if (oldMeta.exists() || oldAudio.exists()) {
-            DebugLogger.i(TAG, "Deleting old flat storage structure")
-            rootDir.deleteRecursively()
+        // Migration / dir creation under the shared lock — a concurrent
+        // OfflineStorageManager (CriViewModel + SyncWorker) could otherwise
+        // delete rootDir while another instance writes into sessionsDir.
+        synchronized(lock) {
+            val oldMeta = File(rootDir, "metadata")
+            val oldAudio = File(rootDir, "audio")
+            val oldIndex = File(rootDir, "index.json")
+            if (oldMeta.exists() || oldAudio.exists()) {
+                DebugLogger.i(TAG, "Deleting old flat storage structure")
+                rootDir.deleteRecursively()
+            }
+            oldIndex.delete()  // safety: remove stale root-level index
+            sessionsDir.mkdirs()
         }
-        oldIndex.delete()  // safety: remove stale root-level index
-        sessionsDir.mkdirs()
     }
 
     // ── Session metadata ────────────────────────────────────────────────
@@ -105,15 +109,6 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
 
     // ── Read ───────────────────────────────────────────────────────────
 
-    fun loadSegment(sessionId: String, segmentId: Int): SubtitleSegment? {
-        synchronized(lock) {
-            val file = File(sessionMetaDir(sessionId), fileName(segmentId, "json"))
-            if (!file.exists()) return null
-            val obj = org.json.JSONObject(file.readText())
-            return com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
-        }
-    }
-
     fun loadFullSegment(sessionId: String, segmentId: Int): SubtitleSegment? {
         synchronized(lock) {
             val file = File(sessionMetaDir(sessionId), fileName(segmentId, "json"))
@@ -129,60 +124,62 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
     }
 
     fun loadSegmentsForSession(sessionId: String): List<SegmentMeta> {
-        synchronized(lock) {
-            val metaDir = sessionMetaDir(sessionId)
+        val metaDir = sessionMetaDir(sessionId)
+        // Collect the file list under the lock; parse OUTSIDE it so the shared
+        // lock is not held for the duration of parallel JSON parsing (which
+        // previously blocked every other OfflineStorageManager operation on
+        // large sessions).
+        val segmentFiles = synchronized(lock) {
             if (!metaDir.exists()) return emptyList()
-
             // First try the lightweight SegmentIndex.
             val fromIndex = SegmentIndex.read(metaDir)
             if (fromIndex.isNotEmpty()) return fromIndex
-
-            // Build from individual JSON files, write SegmentIndex for next time.
-            val segmentFiles = metaDir.listFiles { f ->
+            metaDir.listFiles { f ->
                 f.name.endsWith(".json") &&
                     f.name != "_segments_cache.json" &&
                     f.name != SegmentIndex.INDEX_FILE_NAME
             } ?: return emptyList()
-            if (segmentFiles.isEmpty()) return emptyList()
+        }
+        if (segmentFiles.isEmpty()) return emptyList()
 
-            val fullSegments = segmentFiles.toList().parallelStream()
-                .map { f ->
-                    try {
-                        val obj = org.json.JSONObject(f.readText())
-                        com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
-                    } catch (e: Exception) {
-                        DebugLogger.w(TAG, "parse segment ${f.name}: ${e.message}")
-                        null
-                    }
+        val fullSegments = segmentFiles.toList().parallelStream()
+            .map { f ->
+                try {
+                    val obj = org.json.JSONObject(f.readText())
+                    com.crimobile.subtitles.SubtitleParser.parseSegment(obj)
+                } catch (e: Exception) {
+                    DebugLogger.w(TAG, "parse segment ${f.name}: ${e.message}")
+                    null
                 }
-                .filter { it != null }
-                .sorted(Comparator.comparingInt { s -> s!!.segment_id })
-                .toList()
-                .filterNotNull()
-
-            if (fullSegments.isNotEmpty()) {
-                SegmentIndex.write(metaDir, fullSegments)
             }
+            .filter { it != null }
+            .sorted(Comparator.comparingInt { s -> s!!.segment_id })
+            .toList()
+            .filterNotNull()
 
-            // Clean up legacy _segments_cache.json if present
-            File(metaDir, "_segments_cache.json").delete()
+        if (fullSegments.isNotEmpty()) {
+            synchronized(lock) { SegmentIndex.write(metaDir, fullSegments) }
+        }
+        // Clean up legacy _segments_cache.json if present
+        synchronized(lock) { File(metaDir, "_segments_cache.json").delete() }
 
-            return fullSegments.map { seg ->
-                SegmentMeta(
-                    segment_id = seg.segment_id,
-                    timeline_start_sec = seg.timeline_start_sec,
-                    timeline_end_sec = seg.timeline_end_sec,
-                    ts_file = seg.ts_file,
-                    text_zh = seg.text_zh,
-                    text_pinyin = seg.text_pinyin
-                )
-            }
+        return fullSegments.map { seg ->
+            SegmentMeta(
+                segment_id = seg.segment_id,
+                timeline_start_sec = seg.timeline_start_sec,
+                timeline_end_sec = seg.timeline_end_sec,
+                ts_file = seg.ts_file,
+                text_zh = seg.text_zh,
+                text_pinyin = seg.text_pinyin
+            )
         }
     }
 
     fun getAudioFile(sessionId: String, segmentId: Int): File? {
-        val file = File(sessionAudioDir(sessionId), fileName(segmentId, "ts"))
-        return if (file.exists() && file.length() > 0) file else null
+        synchronized(lock) {
+            val file = File(sessionAudioDir(sessionId), fileName(segmentId, "ts"))
+            return if (file.exists() && file.length() > 0) file else null
+        }
     }
 
     fun hasSegment(sessionId: String, segmentId: Int): Boolean {
@@ -193,7 +190,9 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
     }
 
     fun invalidateCache(sessionId: String) {
-        File(sessionMetaDir(sessionId), "_segments_cache.json").delete()
+        synchronized(lock) {
+            File(sessionMetaDir(sessionId), "_segments_cache.json").delete()
+        }
     }
 
     fun countSegmentsInSession(sessionId: String): Int {
@@ -218,8 +217,10 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
                 val sid = sessionId(s.startSec, s.durationSec)
                 val segs = SegmentIndex.read(sessionMetaDir(sid))
                 if (segs.isNotEmpty()) {
-                    minStart = minOf(minStart, segs.first().timeline_start_sec)
-                    maxEnd = maxOf(maxEnd, segs.last().timeline_end_sec)
+                    // Don't assume SegmentIndex returns sorted order — compute
+                    // actual min/max so the offline timeline range is correct.
+                    minStart = minOf(minStart, segs.minOf { it.timeline_start_sec })
+                    maxEnd = maxOf(maxEnd, segs.maxOf { it.timeline_end_sec })
                 }
             }
             return if (minStart < Double.MAX_VALUE) minStart to maxEnd else null
@@ -364,7 +365,7 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
             if (!audioDir.exists()) return null
 
             val tsFiles = audioDir.listFiles { f -> f.name.endsWith(".ts") }
-                ?.sortedBy { it.name } ?: return null
+                ?.sortedBy { it.name.substringBefore('.').toIntOrNull() ?: Int.MAX_VALUE } ?: return null
             if (tsFiles.isEmpty()) return null
 
             val outFile = File(audioDir, "continuous.ts")
@@ -398,8 +399,10 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
 
     /** Returns the concatenated audio file for a session, or null. */
     fun getConcatenatedAudioFile(sessionId: String): File? {
-        val file = File(sessionAudioDir(sessionId), "continuous.ts")
-        return if (file.exists() && file.length() > 0) file else null
+        synchronized(lock) {
+            val file = File(sessionAudioDir(sessionId), "continuous.ts")
+            return if (file.exists() && file.length() > 0) file else null
+        }
     }
 
     // ── Internal ───────────────────────────────────────────────────────

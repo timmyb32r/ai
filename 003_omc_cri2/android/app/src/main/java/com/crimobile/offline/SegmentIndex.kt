@@ -35,9 +35,20 @@ object SegmentIndex {
                 writer.write("]")
             }
             val target = File(sessionMetaDir, INDEX_FILE_NAME)
-            if (!tmpFile.renameTo(target)) {
-                target.writeText(tmpFile.readText())
-                tmpFile.delete()
+            try {
+                // Atomic move so a crash mid-write cannot corrupt the index.
+                java.nio.file.Files.move(
+                    tmpFile.toPath(),
+                    target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (e: Exception) {
+                // Fallback (cross-filesystem etc.) — non-atomic, but better than none.
+                if (!tmpFile.renameTo(target)) {
+                    target.writeText(tmpFile.readText())
+                    tmpFile.delete()
+                }
             }
             DebugLogger.i(TAG, "wrote ${segments.size} entries to $INDEX_FILE_NAME")
         } catch (e: Exception) {

@@ -1179,23 +1179,34 @@ private fun SubtitleList(
         ) {
             itemsIndexed(segmentsMeta, key = { _, m -> m.segment_id }) { index, meta ->
                 val isTsBoundary = index > 0 && segmentsMeta[index - 1].ts_file != meta.ts_file
-                // Try cache first (offline), then live fullSegments, then placeholder.
-                val seg = segmentCache?.getOrLoad(meta.segment_id)
-                    ?: fullSegmentsById[meta.segment_id]
-                if (seg != null && seg.words.isNotEmpty()) {
+                // Read in-memory state only (no disk I/O) during composition; load
+                // any miss asynchronously off the main thread via produceState.
+                // Previously getOrLoad() was called synchronously here, blocking the
+                // main thread for every visible cache-miss after a session switch.
+                val liveSeg = fullSegmentsById[meta.segment_id]
+                val seg by produceState<SubtitleSegment?>(
+                    initialValue = segmentCache?.getIfCached(meta.segment_id) ?: liveSeg,
+                    meta.segment_id,
+                    segmentCache,
+                    liveSeg
+                ) {
+                    val cached = segmentCache?.getIfCached(meta.segment_id) ?: fullSegmentsById[meta.segment_id]
+                    if (cached == null || cached.words.isEmpty()) {
+                        value = segmentCache?.getOrLoadAsync(meta.segment_id) ?: fullSegmentsById[meta.segment_id]
+                    } else {
+                        value = cached
+                    }
+                }
+                val s = seg  // local val so the null check smart-casts (produceState delegate can't)
+                if (s != null && s.words.isNotEmpty()) {
                     // Full segment with dictionary data → full SegmentCard.
-                    SegmentCard(seg, activeWord, showPinyin, fontSizeSp, showWordBoundaries, isTsBoundary, showAudioBoundaries, pinyinFontSizeSp, lastActiveWord) { word ->
+                    SegmentCard(s, activeWord, showPinyin, fontSizeSp, showWordBoundaries, isTsBoundary, showAudioBoundaries, pinyinFontSizeSp, lastActiveWord) { word ->
                         onWordTapped(word, meta.segment_id)
                     }
                 } else {
                     // Lite segment or cache miss — render FlowRow placeholder
                     // visually identical to SegmentCard so the lite→full
                     // upgrade is invisible to the user.
-                    if (seg == null) {
-                        LaunchedEffect(meta.segment_id) {
-                            segmentCache?.getOrLoad(meta.segment_id)
-                        }
-                    }
                     Card(
                         colors = CardDefaults.cardColors(containerColor = CardBg),
                         shape = RoundedCornerShape(8.dp),
@@ -1267,8 +1278,12 @@ private fun SegmentCard(
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
             // FlowRow: each character in its own Column, pinyin centered above.
-            val cells = buildCharCells(segment.words, showPinyin)
-                .filter { !isPunctuationOnly(it.text) }
+            // Remembered so buildCharCells (which iterates all words/chars and
+            // allocates CharCell objects) is NOT re-run on every 10 Hz recomposition.
+            val cells = remember(segment, showPinyin) {
+                buildCharCells(segment.words, showPinyin)
+                    .filter { !isPunctuationOnly(it.text) }
+            }
 
             // Group cells by word so the underline is drawn ONCE per word
             // (continuous dash pattern, uniform segment lengths).

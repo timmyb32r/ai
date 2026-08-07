@@ -1,6 +1,8 @@
 package com.crimobile.offline
 
 import com.crimobile.model.SubtitleSegment
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * LRU cache of fully-loaded [SubtitleSegment] objects.
@@ -10,6 +12,10 @@ import com.crimobile.model.SubtitleSegment
  *
  * Public methods are [Synchronized] so the cache is safe to call
  * from both the UI thread (preload) and the sync loop (getOrLoad).
+ *
+ * Use [getIfCached] for main-thread composition reads (no disk I/O) and
+ * [getOrLoadAsync] to fetch a miss off the main thread. [getOrLoad] stays
+ * for the sync-loop path that already runs on a background dispatcher.
  *
  * @param storageManager  used to load a single segment from disk on cache miss
  * @param sessionId       the session whose per-segment JSON files to read
@@ -51,6 +57,21 @@ class SegmentCache(
         return seg
     }
 
+    /**
+     * Return the segment only if it is already in memory — NO disk I/O.
+     * Safe to call from composition on the main thread.
+     */
+    @Synchronized
+    fun getIfCached(segmentId: Int): SubtitleSegment? = cache[segmentId]
+
+    /**
+     * Load the segment on a background dispatcher (cache miss → disk read + JSON
+     * parse). Use from a coroutine/`LaunchedEffect` so the main thread is never
+     * blocked by a cache miss during composition.
+     */
+    suspend fun getOrLoadAsync(segmentId: Int): SubtitleSegment? =
+        withContext(Dispatchers.IO) { getOrLoad(segmentId) }
+
     /** Pre-load all given segment IDs — best-effort, failures are silent. */
     @Synchronized
     fun preloadVisible(visibleIds: Set<Int>) {
@@ -72,3 +93,4 @@ class SegmentCache(
         cache.clear()
     }
 }
+

@@ -35,21 +35,27 @@ class OfflineSubtitleSource(
     var lastLoadedSessionId: String? = null
         private set
 
+    // Guards the load/disconnect path so a concurrent switchPlaybackMode and
+    // startDownload cannot interleave and clobber segmentCache / flows.
+    private val lock = Any()
+
     /** Load segments from the most recent session. Call on main thread. */
     fun load() {
-        val latestSession = storageManager.loadAllSessions().maxByOrNull { it.createdAt }
-        val sessionId = latestSession?.let {
-            storageManager.sessionId(it.startSec, it.durationSec)
+        synchronized(lock) {
+            val latestSession = storageManager.loadAllSessions().maxByOrNull { it.createdAt }
+            val sessionId = latestSession?.let {
+                storageManager.sessionId(it.startSec, it.durationSec)
+            }
+            val meta = if (sessionId != null) {
+                storageManager.loadSegmentsForSession(sessionId)
+            } else emptyList()
+            lastLoadedSessionId = sessionId
+            _segmentsMeta.value = meta
+            segmentCache = if (sessionId != null) SegmentCache(storageManager, sessionId) else null
+            _segments.value = emptyList()
+            _connected.value = if (meta.isNotEmpty()) ConnectionStatus.CONNECTED
+            else ConnectionStatus.DISCONNECTED
         }
-        val meta = if (sessionId != null) {
-            storageManager.loadSegmentsForSession(sessionId)
-        } else emptyList()
-        lastLoadedSessionId = sessionId
-        _segmentsMeta.value = meta
-        segmentCache = if (sessionId != null) SegmentCache(storageManager, sessionId) else null
-        _segments.value = emptyList()
-        _connected.value = if (meta.isNotEmpty()) ConnectionStatus.CONNECTED
-        else ConnectionStatus.DISCONNECTED
     }
 
     /** Load a single full segment on demand (e.g. when user taps a timeline position). */
@@ -65,8 +71,12 @@ class OfflineSubtitleSource(
     }
 
     override fun disconnect() {
-        // no-op: no server connection to tear down
-        segmentCache?.clear()
-        segmentCache = null
+        synchronized(lock) {
+            segmentCache?.clear()
+            segmentCache = null
+            _segments.value = emptyList()
+            _segmentsMeta.value = emptyList()
+            _connected.value = ConnectionStatus.DISCONNECTED
+        }
     }
 }

@@ -82,12 +82,20 @@ class MainActivity : ComponentActivity() {
             DebugLogger.d(TAG, "already exempt from battery optimization")
             return
         }
+        // Ask at most once — repeatedly showing the system dialog on every cold
+        // start is intrusive and a Play Store policy concern for this permission.
+        val prefs = getSharedPreferences("cri_prefs", MODE_PRIVATE)
+        if (prefs.getBoolean("battery_exempt_asked", false)) {
+            DebugLogger.d(TAG, "battery optimization prompt already shown — not asking again")
+            return
+        }
         DebugLogger.i(TAG, "requesting battery optimization exemption")
         try {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                 data = Uri.parse("package:$packageName")
             }
             startActivity(intent)
+            prefs.edit().putBoolean("battery_exempt_asked", true).apply()
         } catch (e: Exception) {
             DebugLogger.e(TAG, "failed to open battery optimization settings: ${e.message}")
         }
