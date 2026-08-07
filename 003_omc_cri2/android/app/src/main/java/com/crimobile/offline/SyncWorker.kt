@@ -87,11 +87,11 @@ class SyncWorker(
                 Result.success()
             } else {
                 DebugLogger.w(TAG, "Sync failed: ${result.exceptionOrNull()?.message}")
-                Result.retry()
+                if (SyncRetryPolicy.shouldRetry(runAttemptCount)) Result.retry() else Result.failure()
             }
         } catch (e: Exception) {
             DebugLogger.e(TAG, "Sync error: ${e.message}", e)
-            Result.retry()
+            if (SyncRetryPolicy.shouldRetry(runAttemptCount)) Result.retry() else Result.failure()
         }
     }
 

@@ -15,6 +15,7 @@ import com.crimobile.player.RadioPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,8 +29,10 @@ import com.crimobile.debug.DebugLogger
  * ExoPlayer's [ConcatenatingMediaSource].
  *
  * Timeline mapping between absolute epoch-milliseconds (used by
- * SubtitleSyncEngine) and local ExoPlayer positions is handled by
- * maintaining a segment→offset lookup table built during init.
+ * SubtitleSyncEngine) and local ExoPlayer positions is delegated to
+ * [OfflineTimelineMapper] — a pure, tested component that keeps the
+ * ordered-segment list and the prefix-sum offset table in sync and sorted
+ * chronologically by `timeline_start_sec`.
  *
  * Non-contiguous segments (gaps in the archive) are handled
  * naturally — each segment is a separate MediaItem with its
@@ -43,34 +46,36 @@ class OfflineRadioPlayer(
 ) : RadioPlayer {
 
     private val player: ExoPlayer = ExoPlayer.Builder(context).build().apply {
-        setWakeMode(C.WAKE_MODE_NETWORK) // keep CPU + Wi-Fi awake during offline playback
+        // Offline playback reads local files — keep the CPU awake but do NOT hold
+        // Wi-Fi awake (WAKE_MODE_NETWORK would waste power on a local-only stream).
+        setWakeMode(C.WAKE_MODE_LOCAL)
     }
     private val scope = CoroutineScope(Dispatchers.Main)
 
-    // ── Segment offset mapping ──────────────────────────────────────────
-    // Maintain two parallel arrays indexed by the order segments are added
-    // to the concatenated source.
+    // ── Segment offset mapping (delegated to OfflineTimelineMapper) ──────
+    private val mapper: OfflineTimelineMapper
     private val orderedSegments: List<SegmentMeta>
-    private val segmentOffsetsMs: LongArray   // prefix sum: offsetMs[i] = total duration before segment i
+    private val segmentOffsetsMs: LongArray
     private var builtCount = 0
     private val isContinuous: Boolean         // true → single concatenated file, no multi-window API
 
     init {
-        // Build ordered list: only segments whose audio file exists
-        val available = mutableListOf<SegmentMeta>()
-        val offsets = mutableListOf(0L)
+        // Discover available audio in ONE directory listing (avoids N per-segment
+        // File.exists()/length() calls on the main thread).
+        val audioDir = storageManager.sessionAudioDir(sessionId)
+        val audioFiles = (audioDir.listFiles { f ->
+            f.name.endsWith(".ts") && f.name != "continuous.ts" && f.length() > 0
+        } ?: emptyArray())
+        val audioFileById = audioFiles.mapNotNull { f ->
+            val id = f.name.substringBefore('.').toIntOrNull() ?: return@mapNotNull null
+            id to f
+        }.toMap()
 
-        for (seg in segments) {
-            val audioFile = storageManager.getAudioFile(sessionId, seg.segment_id)
-            if (audioFile != null) {
-                available.add(seg)
-                val durMs = ((seg.timeline_end_sec - seg.timeline_start_sec) * 1000).toLong().coerceAtLeast(1)
-                offsets.add(offsets.last() + durMs)
-            }
-        }
+        val available = segments.filter { it.segment_id in audioFileById }
 
-        orderedSegments = available.sortedBy { it.segment_id }
-        segmentOffsetsMs = offsets.toLongArray()
+        mapper = OfflineTimelineMapper(available)
+        orderedSegments = mapper.orderedSegments
+        segmentOffsetsMs = mapper.segmentOffsetsMs
 
         DebugLogger.i(TAG, "init ${orderedSegments.size} segments (${segments.size} total, " +
             "${segments.size - orderedSegments.size} missing audio)")
@@ -92,7 +97,7 @@ class OfflineRadioPlayer(
                 val concat = ConcatenatingMediaSource(/* isGapless = */ true)
                 val factory = DefaultMediaSourceFactory(context)
                 for (seg in orderedSegments) {
-                    val file = storageManager.getAudioFile(sessionId, seg.segment_id)!!
+                    val file = audioFileById[seg.segment_id] ?: continue
                     val mediaSource = factory.createMediaSource(MediaItem.fromUri(Uri.fromFile(file)))
                     concat.addMediaSource(mediaSource)
                     builtCount++
@@ -121,34 +126,36 @@ class OfflineRadioPlayer(
 
     private var timelineJob: Job? = null
 
+    private val listener = object : Player.Listener {
+        override fun onPlaybackStateChanged(state: Int) {
+            val newState = when (state) {
+                Player.STATE_IDLE -> PlaybackState.IDLE
+                Player.STATE_BUFFERING -> PlaybackState.LOADING
+                Player.STATE_READY -> if (player.playWhenReady) PlaybackState.PLAYING else PlaybackState.PAUSED
+                Player.STATE_ENDED -> PlaybackState.IDLE
+                else -> PlaybackState.IDLE
+            }
+            if (newState != _playbackState.value) {
+                DebugLogger.d(TAG, "state ${_playbackState.value} → $newState")
+                _playbackState.value = newState
+            }
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            DebugLogger.e(TAG, "error code=${error.errorCode} msg=${error.message}")
+            _lastErrorMessage.value = error.message ?: "Offline playback error"
+            _playbackState.value = PlaybackState.ERROR
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (_playbackState.value == PlaybackState.PAUSED && isPlaying) {
+                _playbackState.value = PlaybackState.PLAYING
+            }
+        }
+    }
+
     init {
-        player.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                val newState = when (state) {
-                    Player.STATE_IDLE -> PlaybackState.IDLE
-                    Player.STATE_BUFFERING -> PlaybackState.LOADING
-                    Player.STATE_READY -> if (player.playWhenReady) PlaybackState.PLAYING else PlaybackState.PAUSED
-                    Player.STATE_ENDED -> PlaybackState.IDLE
-                    else -> PlaybackState.IDLE
-                }
-                if (newState != _playbackState.value) {
-                    DebugLogger.d(TAG, "state ${_playbackState.value} → $newState")
-                    _playbackState.value = newState
-                }
-            }
-
-            override fun onPlayerError(error: PlaybackException) {
-                DebugLogger.e(TAG, "error code=${error.errorCode} msg=${error.message}")
-                _lastErrorMessage.value = error.message ?: "Offline playback error"
-                _playbackState.value = PlaybackState.ERROR
-            }
-
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (_playbackState.value == PlaybackState.PAUSED && isPlaying) {
-                    _playbackState.value = PlaybackState.PLAYING
-                }
-            }
-        })
+        player.addListener(listener)
 
         // Poll timeline at ~10 Hz
         timelineJob = scope.launch {
@@ -186,20 +193,18 @@ class OfflineRadioPlayer(
 
     override fun seekTo(timelineMs: Long) {
         DebugLogger.d(TAG, "seekTo $timelineMs")
-        val idx = findSegmentForTimelineMs(timelineMs)
-        if (idx < 0) {
+        if (orderedSegments.isEmpty()) return
+        val target = mapper.seekTarget(timelineMs)
+        if (target.segmentIndex < 0) {
             player.seekTo(0L)
             return
         }
-        val seg = orderedSegments[idx]
-        val offsetInSeg = (timelineMs - (seg.timeline_start_sec * 1000).toLong())
-            .coerceIn(0, ((seg.timeline_end_sec - seg.timeline_start_sec) * 1000).toLong())
         if (isContinuous) {
             // Single window → absolute position = prefix sum + offset.
-            player.seekTo((segmentOffsetsMs[idx] + offsetInSeg).coerceAtLeast(0))
+            player.seekTo(target.absolutePositionMs.coerceAtLeast(0))
         } else {
             // Multi-window → decompose into (windowIndex, positionInWindow).
-            player.seekTo(idx, offsetInSeg.coerceAtLeast(0))
+            player.seekTo(target.segmentIndex, target.offsetInSegmentMs.coerceAtLeast(0))
         }
     }
 
@@ -207,7 +212,9 @@ class OfflineRadioPlayer(
         DebugLogger.i(TAG, "seekToLiveEdge → last segment")
         if (orderedSegments.isNotEmpty()) {
             if (isContinuous) {
-                player.seekTo(segmentOffsetsMs.last())
+                // Start of the LAST segment — NOT segmentOffsetsMs.last() (which is
+                // the total duration = a position past the end → STATE_ENDED).
+                player.seekTo(mapper.liveEdgePositionMs())
             } else {
                 val lastIdx = orderedSegments.size - 1
                 player.seekTo(lastIdx, 0L)
@@ -218,6 +225,8 @@ class OfflineRadioPlayer(
     override fun release() {
         DebugLogger.i(TAG, "release")
         timelineJob?.cancel()
+        scope.cancel()
+        player.removeListener(listener)
         player.release()
     }
 
@@ -227,69 +236,19 @@ class OfflineRadioPlayer(
         if (orderedSegments.isEmpty()) return
         if (player.playbackState != Player.STATE_READY && player.playbackState != Player.STATE_BUFFERING) return
 
-        val totalPos: Long
-        if (isContinuous) {
+        val totalPos: Long = if (isContinuous) {
             // Single file → single window → currentPosition is absolute.
-            totalPos = player.currentPosition
+            player.currentPosition
         } else {
             // Multi-window ConcatenatingMediaSource: prefix sum + per-window position.
             val windowIdx = player.currentMediaItemIndex
-            totalPos = if (windowIdx in 0 until orderedSegments.size) {
+            if (windowIdx in 0 until orderedSegments.size) {
                 segmentOffsetsMs[windowIdx] + player.currentPosition
             } else {
                 player.currentPosition
             }
         }
-        val idx = findSegmentForPosition(totalPos)
-        if (idx < 0) {
-            _currentTimelineMs.value = 0L
-            return
-        }
-        val seg = orderedSegments[idx]
-        val offsetInSeg = totalPos - segmentOffsetsMs[idx]
-        _currentTimelineMs.value = (seg.timeline_start_sec * 1000 + offsetInSeg).toLong().coerceAtLeast(0)
-    }
-
-    /** Binary search: which segment contains [timelineMs] (absolute epoch ms). */
-    private fun findSegmentForTimelineMs(timelineMs: Long): Int {
-        var lo = 0
-        var hi = orderedSegments.size - 1
-        while (lo <= hi) {
-            val mid = (lo + hi) / 2
-            val seg = orderedSegments[mid]
-            val segStart = (seg.timeline_start_sec * 1000).toLong()
-            val segEnd = (seg.timeline_end_sec * 1000).toLong()
-            when {
-                timelineMs < segStart -> hi = mid - 1
-                timelineMs >= segEnd -> lo = mid + 1
-                else -> return mid
-            }
-        }
-        // timelineMs is after all segments
-        if (lo >= orderedSegments.size) return orderedSegments.size - 1
-        // timelineMs is before all segments
-        if (hi < 0) return -1
-        return hi
-    }
-
-    /** Binary search: which segment contains [positionMs] (local concat position). */
-    private fun findSegmentForPosition(positionMs: Long): Int {
-        // segmentOffsetsMs has size = orderedSegments.size + 1
-        // segmentOffsetsMs[i] = start offset of segment i
-        // segmentOffsetsMs[last] = total duration
-        var lo = 0
-        var hi = orderedSegments.size - 1
-        while (lo <= hi) {
-            val mid = (lo + hi) / 2
-            val segStart = segmentOffsetsMs[mid]
-            val segEnd = segmentOffsetsMs[mid + 1]
-            when {
-                positionMs < segStart -> hi = mid - 1
-                positionMs >= segEnd -> lo = mid + 1
-                else -> return mid
-            }
-        }
-        return -1
+        _currentTimelineMs.value = mapper.timelineMsForPosition(totalPos).coerceAtLeast(0)
     }
 
     companion object {

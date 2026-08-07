@@ -29,7 +29,12 @@ class CriApplication : Application() {
         DebugLogger.i(TAG, "device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT}")
 
         // ── Install global crash handler ──
-        CrashHandler.install(this)
+        // Logging/crash infrastructure must never take down the app at startup.
+        try {
+            CrashHandler.install(this)
+        } catch (t: Throwable) {
+            android.util.Log.e(TAG, "CrashHandler.install failed: ${t.message}", t)
+        }
 
         // ── Start the foreground media service ──
         try {

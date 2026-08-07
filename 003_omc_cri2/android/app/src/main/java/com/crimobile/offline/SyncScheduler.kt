@@ -130,6 +130,12 @@ object SyncScheduler {
             am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, fireAtMs, pending)
             DebugLogger.i(TAG, "Re-armed exact alarm for tomorrow at " +
                 "${"%02d".format(config.syncHourOfDay)}:${"%02d".format(config.syncMinute)}")
+        } else {
+            // SCHEDULE_EXACT_ALARM may be revoked between syncs (Android 14+).
+            // Without this fallback the daily sync would stop forever until the
+            // app is restarted or the device reboots.
+            DebugLogger.w(TAG, "SCHEDULE_EXACT_ALARM revoked — falling back to periodic WorkManager")
+            schedulePeriodicFallback(context, config)
         }
     }
 

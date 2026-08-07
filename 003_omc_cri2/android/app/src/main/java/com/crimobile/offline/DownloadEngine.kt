@@ -2,11 +2,9 @@ package com.crimobile.offline
 
 import android.content.Context
 import com.crimobile.model.SubtitleSegment
-import com.crimobile.offline.SegmentIndex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -39,17 +37,17 @@ data class DownloadProgress(
  *  2. downloadRange()   → /api/segments/range + /hls/{ts_file}
  *
  * Cancellation is cooperative via coroutine isActive checks.
+ *
+ * Uses a process-wide shared [OkHttpClient] (companion object) so the
+ * dispatcher thread pool and connection pool are not leaked per instance —
+ * DownloadEngine is created fresh for each download / SyncWorker retry.
  */
 class DownloadEngine(
     private val context: Context,
     private val serverUrl: String,
     private val storageManager: OfflineStorageManager
 ) {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
+    private val client: OkHttpClient = sharedClient
 
     /** Fetch the server's archive time bounds. */
     suspend fun fetchArchiveInfo(): ArchiveInfo = withContext(Dispatchers.IO) {
@@ -58,15 +56,16 @@ class DownloadEngine(
             .header("Accept", "application/json")
             .build()
 
-        val response = client.newCall(request).execute()
-        val body = response.body?.string() ?: throw IOException("Empty status response")
-        val json = JSONObject(body)
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string() ?: throw IOException("Empty status response")
+            val json = JSONObject(body)
 
-        ArchiveInfo(
-            oldestStartSec = json.optDouble("oldest_segment_start_sec", 0.0),
-            newestEndSec = json.optDouble("newest_segment_end_sec", 0.0),
-            segmentsTotal = json.optLong("segments_total", 0)
-        )
+            ArchiveInfo(
+                oldestStartSec = json.optDouble("oldest_segment_start_sec", 0.0),
+                newestEndSec = json.optDouble("newest_segment_end_sec", 0.0),
+                segmentsTotal = json.optLong("segments_total", 0)
+            )
+        }
     }
 
     /**
@@ -107,6 +106,9 @@ class DownloadEngine(
             // 2. Download .ts files in parallel batches (10 concurrent)
             val totalSize = allSegments.size
             var downloadedCount = 0
+            // Only segments whose audio was actually saved make it into the index,
+            // so the index never advertises segments with no audio (silent seek targets).
+            val savedSegments = mutableListOf<SubtitleSegment>()
 
             allSegments.chunked(CONCURRENT_DOWNLOADS).forEach { batch ->
                 if (!isActive) return@withContext Result.failure(Exception("Cancelled"))
@@ -119,6 +121,7 @@ class DownloadEngine(
                     if (result != null) {
                         val segment = batch[i]
                         storageManager.saveSegment(segment, result, sessionId)
+                        savedSegments.add(segment)
                         downloadedCount++
                     }
                 }
@@ -138,8 +141,9 @@ class DownloadEngine(
                 isRunning = false
             ))
 
-            // Invalidate cache so next load picks up fresh data.
-            SegmentIndex.write(storageManager.sessionMetaDir(sessionId), allSegments)
+            // Write the index under the shared storage lock (concurrent reads safe)
+            // and only for segments we actually saved audio for.
+            storageManager.writeSegmentIndex(sessionId, savedSegments)
             storageManager.invalidateCache(sessionId) // still delete old cache
             storageManager.concatAudioFiles(sessionId) // → continuous.ts for gapless offline playback
 
@@ -187,26 +191,30 @@ class DownloadEngine(
                 "&limit=$PAGE_SIZE&offset=$offset"
 
             val request = Request.Builder().url(url).header("Accept", "application/json").build()
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: break
-            val json = JSONObject(body)
+            // `use` guarantees the Response (and its connection) is released even
+            // when the body is null or an exception is thrown mid-parse.
+            val done = client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: return@use true // stop on empty body
+                val json = JSONObject(body)
 
-            val segmentsArr = json.getJSONArray("segments")
-            val total = json.optInt("total", 0)
+                val segmentsArr = json.getJSONArray("segments")
+                val total = json.optInt("total", 0)
 
-            for (i in 0 until segmentsArr.length()) {
-                // The segment object may be wrapped or direct — handle both
-                val item = segmentsArr.optJSONObject(i) ?: continue
-                // If the server returns the segment directly (not wrapped in a "segment" key),
-                // parse it directly. Otherwise look for a "segment" key (SSE-like wrapper).
-                val segmentObj = if (item.has("segment")) item.getJSONObject("segment") else item
-                allSegments.add(com.crimobile.subtitles.SubtitleParser.parseSegment(segmentObj))
+                for (i in 0 until segmentsArr.length()) {
+                    // The segment object may be wrapped or direct — handle both
+                    val item = segmentsArr.optJSONObject(i) ?: continue
+                    // If the server returns the segment directly (not wrapped in a "segment" key),
+                    // parse it directly. Otherwise look for a "segment" key (SSE-like wrapper).
+                    val segmentObj = if (item.has("segment")) item.getJSONObject("segment") else item
+                    allSegments.add(com.crimobile.subtitles.SubtitleParser.parseSegment(segmentObj))
+                }
+
+                onPage(allSegments.size, total)
+
+                offset += PAGE_SIZE
+                offset >= total
             }
-
-            onPage(allSegments.size, total)
-
-            offset += PAGE_SIZE
-            if (offset >= total) break
+            if (done) break
         }
 
         return allSegments
@@ -220,12 +228,15 @@ class DownloadEngine(
             val tsFile = segment.ts_file
             val url = "$serverUrl/hls/$tsFile"
             val request = Request.Builder().url(url).build()
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful) {
-                response.body?.bytes()
-            } else {
-                DebugLogger.w(TAG, "HTTP ${response.code} for $tsFile")
-                null
+            // `use` closes the Response on every path — including HTTP errors,
+            // which previously leaked a connection per failed download.
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    response.body?.bytes()
+                } else {
+                    DebugLogger.w(TAG, "HTTP ${response.code} for $tsFile")
+                    null
+                }
             }
         } catch (e: Exception) {
             DebugLogger.w(TAG, "Failed to download ${segment.ts_file}: ${e.message}")
@@ -237,5 +248,14 @@ class DownloadEngine(
         private const val TAG = "CRIRadio:download"
         private const val PAGE_SIZE = 500
         private const val CONCURRENT_DOWNLOADS = 10
+
+        // Process-wide shared client — one dispatcher pool + one connection pool
+        // instead of one per DownloadEngine instance (each download / sync retry
+        // previously constructed its own and never shut it down → thread/conn leak).
+        private val sharedClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
     }
 }

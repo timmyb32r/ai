@@ -20,6 +20,8 @@ import java.util.Locale
 object DebugLogger {
     private const val TAG = "CRIRadio:debuglog"
     private const val FILENAME = "cri_logs.txt"
+    /** Rotate the log file once it reaches this size (5 MB). */
+    private const val MAX_LOG_BYTES = 5L * 1024 * 1024
 
     @Volatile var enabled: Boolean = false
 
@@ -120,13 +122,26 @@ object DebugLogger {
     private fun writeLine(level: String, tag: String, msg: String) {
         if (!ready) return
         if (!enabled) return
-        var w = output ?: return
         synchronized(lock) {
+            var w = output ?: return
+            // Rotate when the file has grown past the cap. Without this the log
+            // grew without bound in internal storage and could eventually take
+            // down CrashHandler / OfflineStorageManager / VocabularyStore.
+            val f = file
+            if (f != null && LogRotation.shouldRotate(f.length(), MAX_LOG_BYTES)) {
+                try {
+                    w.close()
+                    val archive = File(f.parentFile, "$FILENAME.1")
+                    LogRotation.rotate(f, archive)
+                    w = PrintWriter(OutputStreamWriter(FileOutputStream(f, true), Charsets.UTF_8), true)
+                    output = w
+                } catch (_: Exception) { /* keep going with the existing writer */ }
+            }
             // If the writer is dead, try to reopen.
             if (w.checkError()) {
                 try {
-                    val f = file ?: return
-                    w = PrintWriter(OutputStreamWriter(FileOutputStream(f, true), Charsets.UTF_8), true)
+                    val ff = file ?: return
+                    w = PrintWriter(OutputStreamWriter(FileOutputStream(ff, true), Charsets.UTF_8), true)
                     output = w
                 } catch (_: Exception) {
                     return
@@ -140,8 +155,8 @@ object DebugLogger {
     }
 
     private fun writeThrowable(tr: Throwable) {
-        val w = output ?: return
         synchronized(lock) {
+            val w = output ?: return
             try {
                 tr.printStackTrace(PrintWriter(w))
                 w.flush()

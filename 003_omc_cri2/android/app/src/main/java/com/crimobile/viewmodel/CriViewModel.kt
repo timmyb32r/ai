@@ -117,7 +117,13 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private val _subtitleSource = MutableStateFlow<SubtitleSource>(createSubtitleSource())
     private val subtitleSource: SubtitleSource get() = _subtitleSource.value
     private val vocabularyStore = VocabularyStore(application)
-    private val pronunciationPlayer by lazy { PronunciationPlayer({ activePlayerOrNull() }, viewModelScope) }
+    private val pronunciationPlayer by lazy {
+        PronunciationPlayer(
+            playerProvider = { activePlayerOrNull() },
+            scope = viewModelScope,
+            onComplete = { onPronunciationComplete() }
+        )
+    }
 
     /** Build a [SubtitleSource] based on the stored metadata_protocol preference. */
     private fun createSubtitleSource(): SubtitleSource {
@@ -138,6 +144,11 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
             metadataProtocol = prefs.getString("metadata_protocol", "HTTP") ?: "HTTP",
         )
     )
+
+    /** Called when a pronunciation finishes naturally — clears the UI flag. */
+    private fun onPronunciationComplete() {
+        _state.value = _state.value.copy(isPronouncing = false)
+    }
 
     // DebugLogger.enabled is set unconditionally in CriApplication.onCreate().
     // The toggle in settings (ToggleLogToFile) still works via dispatch().
@@ -719,7 +730,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                 DebugLogger.i(VM, "save_word")
                 val word = savedWord.value ?: return
                 val context = _state.value.activeSegment?.text_zh ?: ""
-                vocabularyStore.appendWord(word, context)
+                // File I/O off the main thread to avoid ANR on slow flash / large files.
+                viewModelScope.launch(Dispatchers.IO) {
+                    vocabularyStore.appendWord(word, context)
+                }
             }
             CriAction.TogglePinyin -> {
                 val newVal = !_state.value.showPinyin
@@ -842,7 +856,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             _state.value = _state.value.copy(
                                 segmentsMeta = segs,
-                                segments = emptyList()
+                                segments = emptyList(),
+                                // Reset so the sync loop recomputes duration from the
+                                // new session's segments (it only recomputes when 0).
+                                offlineDurationMs = 0L
                             )
                         }
                     }
@@ -889,6 +906,10 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
     private fun switchPlaybackMode(mode: PlaybackMode) {
         if (mode == _state.value.playbackMode) return
         DebugLogger.i(VM, "switchPlaybackMode → $mode")
+        // Reset the active-segment tracker so the new mode's first matching
+        // segment is pinned in the SegmentCache (a stale id from the previous
+        // mode previously skipped the pin and caused a redundant disk read).
+        lastActiveSegId = -1
 
         when (mode) {
             PlaybackMode.LIVE_STREAMING -> {
@@ -1065,7 +1086,11 @@ class CriViewModel(application: Application) : AndroidViewModel(application) {
 
                 // If in offline mode, reload segments
                 if (_state.value.playbackMode == PlaybackMode.OFFLINE_SAVED) {
-                    offlineSubtitleSource.load()
+                    // Disk read + JSON parse of every segment — off the main thread
+                    // to avoid ANR when the download finishes while in offline mode.
+                    withContext(Dispatchers.IO) {
+                        offlineSubtitleSource.load()
+                    }
                     val meta = offlineSubtitleSource.segmentsMeta.value
                     segmentCache = offlineSubtitleSource.segmentCache
                     _state.value = _state.value.copy(segmentsMeta = meta, segments = emptyList())

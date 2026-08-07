@@ -11,6 +11,7 @@ import com.crimobile.model.PlaybackState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,61 +42,71 @@ class ExoRadioPlayer(
 
     private var pausedAtTimelineMs: Long = 0L
     private var currentHlsUrl: String? = null
-    private var retryCount = 0
+    private val retry = RetryController(MAX_RETRIES, RETRY_BASE_DELAY_MS, RETRY_MAX_DELAY_MS)
     private var retryJob: Job? = null
 
+    // Stored as a field so release() can remove it (defensive — ExoPlayer.release
+    // also clears listeners, but explicit removal is correct hygiene and safe if
+    // the player is ever reused).
+    private val listener = object : Player.Listener {
+        override fun onPlaybackStateChanged(state: Int) {
+            val newState = when (state) {
+                Player.STATE_IDLE -> PlaybackState.IDLE
+                Player.STATE_BUFFERING -> PlaybackState.LOADING
+                Player.STATE_READY -> if (player.playWhenReady) PlaybackState.PLAYING else PlaybackState.PAUSED
+                Player.STATE_ENDED -> PlaybackState.IDLE
+                else -> PlaybackState.IDLE
+            }
+            // ExoPlayer always transitions to STATE_IDLE after an error.
+            // Don't overwrite ERROR — the error screen must stay visible
+            // until the user retries or auto-retry succeeds.
+            if (newState == PlaybackState.IDLE && _playbackState.value == PlaybackState.ERROR) return
+            if (newState != _playbackState.value) {
+                DebugLogger.i(TAG, "state ${_playbackState.value} → $newState")
+                _playbackState.value = newState
+                if (newState == PlaybackState.PLAYING) {
+                    // Success — clear error and reset retry counter.
+                    _lastErrorMessage.value = null
+                    retry.reset()
+                }
+            }
+        }
+        override fun onPlayerError(error: PlaybackException) {
+            // Log full error details for diagnostics.
+            val causeChain = buildString {
+                var e: Throwable? = error
+                while (e != null) {
+                    append("← ${e.javaClass.simpleName}: ${e.message}")
+                    e = e.cause
+                }
+            }
+            DebugLogger.e(TAG, "error code=${error.errorCode} msg=${error.message} cause=$causeChain")
+            _lastErrorMessage.value = error.message ?: "Playback error (code ${error.errorCode})"
+            _playbackState.value = PlaybackState.ERROR
+            if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                DebugLogger.w(TAG, "behind live window → seeking to live edge and re-preparing")
+                _behindLiveWindow.value = true
+                // After an error ExoPlayer is in STATE_IDLE; seekToDefaultPosition
+                // alone does NOT resume — prepare() is required to leave IDLE.
+                player.seekToDefaultPosition()
+                player.prepare()
+                player.play()
+                _playbackState.value = PlaybackState.LOADING
+                return
+            }
+            // Auto-retry ALL errors (not just network).  ERROR_CODE_UNSPECIFIED (1000)
+            // and other internal ExoPlayer failures often resolve on restart.
+            scheduleRetry()
+        }
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying && _playbackState.value != PlaybackState.PLAYING) {
+                _playbackState.value = PlaybackState.PLAYING
+            }
+        }
+    }
+
     init {
-        player.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                val newState = when (state) {
-                    Player.STATE_IDLE -> PlaybackState.IDLE
-                    Player.STATE_BUFFERING -> PlaybackState.LOADING
-                    Player.STATE_READY -> if (player.playWhenReady) PlaybackState.PLAYING else PlaybackState.PAUSED
-                    Player.STATE_ENDED -> PlaybackState.IDLE
-                    else -> PlaybackState.IDLE
-                }
-                // ExoPlayer always transitions to STATE_IDLE after an error.
-                // Don't overwrite ERROR — the error screen must stay visible
-                // until the user retries or auto-retry succeeds.
-                if (newState == PlaybackState.IDLE && _playbackState.value == PlaybackState.ERROR) return
-                if (newState != _playbackState.value) {
-                    DebugLogger.i(TAG, "state ${_playbackState.value} → $newState")
-                    _playbackState.value = newState
-                    if (newState == PlaybackState.PLAYING) {
-                        // Success — clear error and reset retry counter
-                        _lastErrorMessage.value = null
-                        retryCount = 0
-                    }
-                }
-            }
-            override fun onPlayerError(error: PlaybackException) {
-                // Log full error details for diagnostics.
-                val causeChain = buildString {
-                    var e: Throwable? = error
-                    while (e != null) {
-                        append("← ${e.javaClass.simpleName}: ${e.message}")
-                        e = e.cause
-                    }
-                }
-                DebugLogger.e(TAG, "error code=${error.errorCode} msg=${error.message} cause=$causeChain")
-                _lastErrorMessage.value = error.message ?: "Playback error (code ${error.errorCode})"
-                _playbackState.value = PlaybackState.ERROR
-                if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
-                    DebugLogger.w(TAG, "behind live window → seeking to live edge")
-                    _behindLiveWindow.value = true
-                    seekToLiveEdge()
-                    return
-                }
-                // Auto-retry ALL errors (not just network).  ERROR_CODE_UNSPECIFIED (1000)
-                // and other internal ExoPlayer failures often resolve on restart.
-                scheduleRetry()
-            }
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (isPlaying && _playbackState.value != PlaybackState.PLAYING) {
-                    _playbackState.value = PlaybackState.PLAYING
-                }
-            }
-        })
+        player.addListener(listener)
 
         scope.launch {
             while (isActive) { updateTimeline(); delay(100) }
@@ -104,18 +115,20 @@ class ExoRadioPlayer(
 
     private fun scheduleRetry() {
         val url = currentHlsUrl ?: return
-        if (retryCount >= MAX_RETRIES) {
+        if (!retry.canRetry()) {
             DebugLogger.w(TAG, "max retries ($MAX_RETRIES) reached — giving up")
             return
         }
         retryJob?.cancel()
         retryJob = scope.launch {
-            val delayMs = (RETRY_BASE_DELAY_MS * (1L shl retryCount)).coerceAtMost(RETRY_MAX_DELAY_MS)
-            retryCount++
-            DebugLogger.i(TAG, "auto-retry #$retryCount in ${delayMs}ms (url=$url)")
+            // nextDelayMs() advances the counter; the auto-retry path MUST NOT
+            // reset it (reconnect() does not call retry.reset()), so the backoff
+            // actually escalates and MAX_RETRIES is eventually reached.
+            val delayMs = retry.nextDelayMs() ?: return@launch
+            DebugLogger.i(TAG, "auto-retry #${retry.retryCount} in ${delayMs}ms (url=$url)")
             delay(delayMs)
-            DebugLogger.i(TAG, "auto-retry #$retryCount — attempting reconnect")
-            play(url)
+            DebugLogger.i(TAG, "auto-retry #${retry.retryCount} — attempting reconnect")
+            reconnect(url)
         }
     }
 
@@ -138,10 +151,27 @@ class ExoRadioPlayer(
         }
     }
 
+    /**
+     * Manual (user-initiated) play: resets the retry counter so a fresh
+     * reconnect attempt after an error starts the backoff from scratch.
+     */
     override fun play(hlsUrl: String) {
         DebugLogger.i(TAG, "play url=$hlsUrl")
+        retry.reset()
+        prepareAndPlay(hlsUrl)
+    }
+
+    /**
+     * Auto-retry reconnect: same media setup as [play] but does NOT reset the
+     * retry counter (so backoff escalates and MAX_RETRIES is reachable).
+     */
+    private fun reconnect(hlsUrl: String) {
+        DebugLogger.i(TAG, "reconnect url=$hlsUrl")
+        prepareAndPlay(hlsUrl)
+    }
+
+    private fun prepareAndPlay(hlsUrl: String) {
         currentHlsUrl = hlsUrl
-        retryCount = 0  // reset on manual play
         retryJob?.cancel()
         retryJob = null
         _lastErrorMessage.value = null
@@ -181,6 +211,19 @@ class ExoRadioPlayer(
 
     override fun resume() {
         DebugLogger.i(TAG, "resume pausedAt=${pausedAtTimelineMs}ms")
+        // After an error ExoPlayer sits in STATE_IDLE: player.play() only flips
+        // playWhenReady and does not resume. prepare() is required to restart.
+        if (player.playbackState == Player.STATE_IDLE) {
+            val url = currentHlsUrl
+            if (url != null) {
+                DebugLogger.w(TAG, "resume: player IDLE — re-preparing $url")
+                prepareAndPlay(url)
+                return
+            }
+            player.prepare()
+            player.play()
+            return
+        }
         val window = Timeline.Window()
         val timeline = player.currentTimeline
         if (timeline.isEmpty) { player.play(); return }
@@ -231,6 +274,8 @@ class ExoRadioPlayer(
     override fun release() {
         DebugLogger.i(TAG, "release")
         retryJob?.cancel()
+        scope.cancel()
+        player.removeListener(listener)
         player.release()
     }
 

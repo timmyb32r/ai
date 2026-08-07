@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -20,6 +21,7 @@ import com.crimobile.player.RadioPlayerHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import com.crimobile.debug.DebugLogger
@@ -54,10 +56,20 @@ class PlayerService : MediaSessionService() {
         DebugLogger.i(TAG, "onCreate — creating ExoPlayer and MediaSession")
 
         // 1. Single ExoPlayer — used for both audio playback and MediaSession.
+        //    Audio focus + becoming-noisy handling so the stream pauses (not plays
+        //    over) incoming calls, other media apps, and headphone disconnects.
         exoPlayer = ExoPlayer.Builder(this)
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(this).setLiveTargetOffsetMs(3000)
             )
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .build(),
+                /* handleAudioFocus = */ true
+            )
+            .setHandleAudioBecomingNoisy(true)
             .build()
             .apply {
                 setWakeMode(C.WAKE_MODE_NETWORK) // keep CPU + Wi-Fi awake
@@ -98,10 +110,17 @@ class PlayerService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Keep the service alive when the user swipes the app away.
+        // On Android 14 (targetSdk=34) a mediaPlayback foreground service must be
+        // actively playing to stay in the foreground; a paused media service can be
+        // flagged as FGS abuse. Stop when paused, keep alive only while playing.
+        if (!lastIsPlaying) {
+            DebugLogger.i(TAG, "onTaskRemoved — paused, stopping service")
+            stopSelf()
+            return
+        }
+        // Audio is playing — keep the service alive when the user swipes the app away.
         // The foreground notification persists — audio continues in background.
-        // When the user reopens, the player is instantly available (no restart delay).
-        DebugLogger.i(TAG, "onTaskRemoved — keeping service alive (foreground notification)")
+        DebugLogger.i(TAG, "onTaskRemoved — playing, keeping service alive")
         super.onTaskRemoved(rootIntent)
     }
 
@@ -115,6 +134,12 @@ class PlayerService : MediaSessionService() {
                 DebugLogger.i(TAG, "onStartCommand ACTION_PAUSE")
                 player.pause()
             }
+            else -> {
+                // MediaSessionService handles ACTION_MEDIA_BUTTON (headset, Bluetooth,
+                // Android Auto) in its own onStartCommand — delegate so media keys
+                // reach the session.
+                return super.onStartCommand(intent, flags, startId)
+            }
         }
         return START_STICKY
     }
@@ -122,9 +147,12 @@ class PlayerService : MediaSessionService() {
     override fun onDestroy() {
         DebugLogger.i(TAG, "onDestroy — releasing player")
         stateCollectJob?.cancel()
+        scope.cancel()
+        // Media3 requires the MediaSession to be released BEFORE the ExoPlayer it
+        // references; otherwise the session may touch a released player during cleanup.
+        mediaSession.release()
         player.release()
         RadioPlayerHolder.clearPlayer()
-        mediaSession.release()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

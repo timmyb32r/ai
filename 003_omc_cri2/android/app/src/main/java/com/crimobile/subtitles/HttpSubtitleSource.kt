@@ -71,6 +71,15 @@ class HttpSubtitleSource(
         // whole tail as "new" and re-fetch ~100 segments, flooding the cold-start
         // window with recompositions and list churn (the old "jumping" bug).
 
+        // Cold-start guard: when connect() is called WITHOUT a preceding
+        // fetchInitial() (e.g. protocol switch, offline→live), seed the newest
+        // few segments here so the first poll does not fetch the whole 100-segment
+        // tail in one burst.
+        val needSeed = synchronized(lock) { segmentMap.isEmpty() }
+        if (needSeed) {
+            scope.launch { runCatching { fetchInitial(serverUrl, FIRST_CHUNK_SIZE, lite = true) } }
+        }
+
         pollJob?.cancel()
         pollJob = scope.launch {
             var consecutiveFailures = 0
@@ -112,8 +121,15 @@ class HttpSubtitleSource(
                 // Exponential backoff when circuit is open: 1.5s → 3s → 6s → 12s → … → cap 60s.
                 // When circuit is closed, use the normal poll interval.
                 val sleepMs = if (circuitOpen) {
-                    val exp = (RETRY_BACKOFF_BASE_MS * (1L shl (consecutiveFailures - maxConsecutiveFailures).coerceAtLeast(0)))
-                        .coerceAtMost(RETRY_BACKOFF_MAX_MS)
+                    // Clamped exponential backoff — the raw `1L shl n` previously
+                    // overflowed Long at n >= 63 and produced a negative delay,
+                    // which slipped past coerceAtMost and made delay() a no-op
+                    // (tight retry loop on long outages). Backoff.computeMs clamps
+                    // the shift and the result to [base, max].
+                    val exp = Backoff.computeMs(
+                        consecutiveFailures, maxConsecutiveFailures,
+                        RETRY_BACKOFF_BASE_MS, RETRY_BACKOFF_MAX_MS
+                    )
                     // Jitter: ±20 % to desynchronise retry storms across devices.
                     (exp * (0.8 + Math.random() * 0.4)).toLong()
                 } else {

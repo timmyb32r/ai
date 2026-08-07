@@ -32,6 +32,7 @@ object CrashHandler : Thread.UncaughtExceptionHandler {
     private lateinit var app: Application
     private lateinit var defaultHandler: Thread.UncaughtExceptionHandler
     private var installed = false
+    private val guard = CrashGuard()
 
     /** Must be called before any other code that might crash. */
     fun install(application: Application) {
@@ -44,9 +45,13 @@ object CrashHandler : Thread.UncaughtExceptionHandler {
     }
 
     override fun uncaughtException(thread: Thread, throwable: Throwable) {
-        writeCrashDump(throwable)
-        // Pass to OS — shows the standard "app has stopped" dialog.
-        defaultHandler.uncaughtException(thread, throwable)
+        // The default handler MUST always run — even if writeCrashDump itself
+        // throws an Error (OOM on a giant stack trace). CrashGuard swallows
+        // any throwable from the dump step and bounds reentrancy.
+        guard.handle(
+            writeDump = { writeCrashDump(throwable) },
+            callDefault = { defaultHandler.uncaughtException(thread, throwable) }
+        )
     }
 
     // ── write ────────────────────────────────────────────────────────

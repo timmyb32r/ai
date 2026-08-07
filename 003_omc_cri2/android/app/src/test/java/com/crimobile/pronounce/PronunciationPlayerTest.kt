@@ -132,4 +132,73 @@ class PronunciationPlayerTest {
         pp.stop()
         assertEquals("stop seeks to saved position", 200_000L, fake.lastSeekMs)
     }
+
+    @Test
+    fun `after word duration player resumes and onComplete fires`() = runTest {
+        val fake = FakeRadioPlayer(initialTimelineMs = 200_000L)
+        var completed = 0
+        val pp = PronunciationPlayer(
+            playerProvider = { fake },
+            scope = this,
+            onComplete = { completed++ }
+        )
+
+        pp.playWord(testWord) // start=100, end=102 → durationMs = 2000
+        testScheduler.runCurrent()
+        // playWord itself resumes once (to play the word audio).
+        assertEquals("playWord resumes", 1, fake.resumeCount)
+        assertEquals("no completion yet", 0, completed)
+
+        // Let the word duration elapse → the restore job runs.
+        testScheduler.advanceTimeBy(2000)
+        testScheduler.runCurrent()
+
+        assertTrue("player resumed again after restore", fake.resumeCount >= 2)
+        assertEquals("onComplete fired once", 1, completed)
+        assertEquals("restored to saved live position", 200_000L, fake.lastSeekMs)
+
+        pp.stop()
+    }
+
+    @Test
+    fun `rapid double pronounce preserves original live position`() = runTest {
+        val fake = FakeRadioPlayer(initialTimelineMs = 200_000L)
+        val pp = PronunciationPlayer(playerProvider = { fake }, scope = this)
+
+        // First pronounce: saves the live position (200_000) and seeks to the word.
+        pp.playWord(testWord) // seeks to 100_000
+        testScheduler.runCurrent()
+
+        // Simulate the player now sitting at the first word's position.
+        fake.setTimelineMs(100_000L)
+
+        // Rapid second pronounce while the first is still in flight.
+        pp.playWord(testWord.copy(start_sec = 105.0, end_sec = 107.0))
+        testScheduler.runCurrent()
+
+        // stop() must restore to the ORIGINAL live position (200_000), not the
+        // first word's position (100_000) that the player was momentarily at.
+        pp.stop()
+        assertEquals("restore to original live position, not word position", 200_000L, fake.lastSeekMs)
+    }
+
+    @Test
+    fun `onComplete does not fire when stop cancels in-flight pronounce`() = runTest {
+        val fake = FakeRadioPlayer(initialTimelineMs = 200_000L)
+        var completed = 0
+        val pp = PronunciationPlayer(
+            playerProvider = { fake },
+            scope = this,
+            onComplete = { completed++ }
+        )
+
+        pp.playWord(testWord)
+        testScheduler.runCurrent()
+        // Cancel before the word duration elapses.
+        pp.stop()
+        testScheduler.advanceTimeBy(2000)
+        testScheduler.runCurrent()
+
+        assertEquals("no completion when cancelled by stop", 0, completed)
+    }
 }

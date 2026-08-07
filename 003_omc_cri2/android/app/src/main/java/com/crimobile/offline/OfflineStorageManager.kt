@@ -19,16 +19,20 @@ import com.crimobile.debug.DebugLogger
  *         metadata/{id}.json          -- per-segment metadata
  *         audio/{id}.ts               -- raw .ts audio file
  */
-class OfflineStorageManager(private val context: Context) {
+class OfflineStorageManager private constructor(private val rootDir: File) {
+
+    constructor(context: Context) : this(File(context.filesDir, "cri_offline"))
 
     // Shared lock across all instances (CriViewModel + SyncWorker may coexist).
     companion object {
         private val lock = Any()
         private const val TAG = "CRIRadio:offlineStore"
         private fun zeroPad(id: Int) = id.toString().padStart(9, '0')
+
+        /** Test-only factory: operate directly on [rootDir] without a Context. */
+        internal fun forRoot(rootDir: File) = OfflineStorageManager(rootDir)
     }
 
-    private val rootDir: File = File(context.filesDir, "cri_offline")
     private val sessionsDir: File = File(rootDir, "sessions")
     private val sessionsIndexFile: File = File(sessionsDir, "index.json")
 
@@ -77,9 +81,25 @@ class OfflineStorageManager(private val context: Context) {
     fun saveSegment(segment: SubtitleSegment, tsBytes: ByteArray, sessionId: String) {
         synchronized(lock) {
             val id = segment.segment_id
-            val metaJson = segmentToJson(segment)
+            // MUST use the canonical SubtitleParser serializer so every persisted
+            // field (char_pinyin_uncertain, cedict_meanings, wiktionary_meanings, …)
+            // round-trips back via parseSegment. A previous private serializer here
+            // dropped those three fields → offline word popups lost CEDICT/Wiktionary
+            // glosses and probabilistic-fill flags (offline/live data drift).
+            val metaJson = com.crimobile.subtitles.SubtitleParser.segmentToJson(segment).toString(2)
             File(sessionMetaDir(sessionId), fileName(id, "json")).writeText(metaJson)
             File(sessionAudioDir(sessionId), fileName(id, "ts")).writeBytes(tsBytes)
+        }
+    }
+
+    /**
+     * Write the lightweight segment index under the session's metadata dir.
+     * Wrapped in the shared lock so a concurrent [loadSegmentsForSession] /
+     * [SegmentIndex.read] cannot observe a partially-written index.
+     */
+    fun writeSegmentIndex(sessionId: String, segments: List<SubtitleSegment>) {
+        synchronized(lock) {
+            SegmentIndex.write(sessionMetaDir(sessionId), segments)
         }
     }
 
@@ -179,7 +199,7 @@ class OfflineStorageManager(private val context: Context) {
     fun countSegmentsInSession(sessionId: String): Int {
         synchronized(lock) {
             val d = sessionMetaDir(sessionId)
-            return if (d.exists()) d.listFiles()?.size ?: 0 else 0
+            return if (d.exists()) countSegmentMetaFiles(d) else 0
         }
     }
 
@@ -248,7 +268,7 @@ class OfflineStorageManager(private val context: Context) {
             sessionsDir.listFiles()?.forEach { sessionDir ->
                 if (!sessionDir.isDirectory || sessionDir.name.startsWith(".")) return@forEach
                 val metaDir = File(sessionDir, "metadata")
-                val count = if (metaDir.exists()) metaDir.listFiles()?.size ?: 0 else 0
+                val count = if (metaDir.exists()) countSegmentMetaFiles(metaDir) else 0
                 if (count > 0) {
                     // Parse sessionId: {startSec}_{durationSec}
                     val parts = sessionDir.name.split("_")
@@ -400,44 +420,14 @@ class OfflineStorageManager(private val context: Context) {
         }
     }
 
-    private fun segmentToJson(seg: SubtitleSegment): String {
-        val wordsArr = JSONArray()
-        seg.words.forEach { w ->
-            wordsArr.put(JSONObject().apply {
-                put("text", w.text)
-                put("char_start", w.char_start)
-                put("char_end", w.char_end)
-                put("start_sec", w.start_sec)
-                put("end_sec", w.end_sec)
-                put("pinyin", w.pinyin)
-                put("translation", w.translation)
-                if (w.char_pinyin.isNotEmpty()) {
-                    put("char_pinyin", JSONArray(w.char_pinyin))
-                }
-                if (w.senses.isNotEmpty()) {
-                    val sa = JSONArray()
-                    w.senses.forEach { s ->
-                        sa.put(JSONObject().apply {
-                            put("number", s.number)
-                            put("labels", JSONArray(s.labels))
-                            put("text", s.text)
-                            put("notes", s.notes)
-                        })
-                    }
-                    put("senses", sa)
-                }
-            })
-        }
-        return JSONObject().apply {
-            put("segment_id", seg.segment_id)
-            put("timeline_start_sec", seg.timeline_start_sec)
-            put("timeline_end_sec", seg.timeline_end_sec)
-            put("ts_file", seg.ts_file)
-            put("text_zh", seg.text_zh)
-            put("text_pinyin", seg.text_pinyin)
-            put("text_en", seg.text_en)
-            put("words", wordsArr)
-        }.toString(2)
+    /** Count per-segment metadata files, excluding the index and temp files. */
+    private fun countSegmentMetaFiles(metaDir: File): Int {
+        return metaDir.listFiles { f ->
+            f.name.endsWith(".json") &&
+                f.name != SegmentIndex.INDEX_FILE_NAME &&
+                f.name != "_segments_cache.json" &&
+                !f.name.startsWith(".")
+        }?.size ?: 0
     }
 
 }

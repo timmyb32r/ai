@@ -65,6 +65,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -1139,7 +1140,7 @@ private fun SubtitleList(
                     if (wholePx != 0) {
                         try {
                             listState.scrollBy(wholePx.toFloat())
-                        } catch (_: Exception) { }
+                        } catch (e: CancellationException) { throw e } catch (_: Exception) { }
                         totalScrolledPx += wholePx
                         accumulatedPx -= wholePx
                     }
@@ -1147,7 +1148,7 @@ private fun SubtitleList(
                 is ScrollResult.ScrollTo -> {
                     try {
                         listState.scrollToItem(result.index, 0)
-                    } catch (_: Exception) { }
+                    } catch (e: CancellationException) { throw e } catch (_: Exception) { }
                 }
                 is ScrollResult.NoOp, null -> { /* nothing to do */ }
             }
@@ -1236,7 +1237,12 @@ private fun SubtitleList(
             .align(Alignment.TopEnd)
             .padding(end = 4.dp)
         ) {
-            ScrollThumb(listState, modifier = Modifier)
+            ScrollThumb(
+                listState,
+                modifier = Modifier,
+                onThumbDragStart = { scrollMode.value = ScrollMode.MANUAL },
+                onThumbDragEnd = { scrollMode.value = ScrollMode.AUTO }
+            )
         }
     }
 }
@@ -1361,7 +1367,9 @@ private fun SegmentCard(
 @Composable
 private fun ScrollThumb(
     listState: LazyListState,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onThumbDragStart: () -> Unit = {},
+    onThumbDragEnd: () -> Unit = {}
 ) {
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
@@ -1393,10 +1401,14 @@ private fun ScrollThumb(
                         val startFrac = listState.firstVisibleItemIndex.toFloat() / curMax
                         DebugLogger.i("CRIRadio:thumb", "start: first=${listState.firstVisibleItemIndex} total=$curTotal frac=$startFrac")
                         dragStartData = Triple(curMax, startFrac, 0f)
+                        // Take over from auto-scroll so the thumb drag isn't fought
+                        // by the karaoke auto-scroll loop (MutatorMutex ping-pong).
+                        onThumbDragStart()
                     },
                     onDragEnd = {
                         DebugLogger.i("CRIRadio:thumb", "end: first=${listState.firstVisibleItemIndex}")
                         dragStartData = null
+                        onThumbDragEnd()
                     },
                     onDragCancel = {
                         DebugLogger.i("CRIRadio:thumb", "cancel")
