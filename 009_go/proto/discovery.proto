@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package Ydb.Discovery.V1;
+
+option go_package = "transferia2-go/internal/pqproto;pqproto";
+
+import "google/protobuf/any.proto";
+
+message ListEndpointsRequest {
+  string database = 1;
+  repeated string service = 2;
+}
+
+message EndpointInfo {
+  string address = 1;
+  uint32 port = 2;
+  float load_factor = 3;
+  bool ssl = 4;
+  repeated string service = 5;
+  string location = 6;
+  uint32 node_id = 7;
+  repeated string ip_v4 = 8;
+  repeated string ip_v6 = 9;
+  string ssl_target_name_override = 10;
+}
+
+message ListEndpointsResult {
+  repeated EndpointInfo endpoints = 1;
+  string self_location = 2;
+}
+
+message Operation {
+  string id = 1;
+  bool ready = 2;
+  int64 status = 3;
+  google.protobuf.Any result = 5;
+}
+
+message ListEndpointsResponse { Operation operation = 1; }
+
+service DiscoveryService {
+  rpc ListEndpoints(ListEndpointsRequest) returns (ListEndpointsResponse);
+}

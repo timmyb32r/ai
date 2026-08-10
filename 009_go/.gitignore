@@ -1,0 +1,5 @@
+/bin/
+/transferia
+*.pprof
+*.test
+.DS_Store
