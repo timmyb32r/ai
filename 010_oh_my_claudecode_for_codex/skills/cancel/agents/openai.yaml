@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cancel Workflow"
+  short_description: "Stop active work without unsafe cleanup"
+  default_prompt: "Use $cancel to handle this task with its specialized workflow."

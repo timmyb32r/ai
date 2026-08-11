@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralph"
+  short_description: "Persist until verified completion"
+  default_prompt: "Use $ralph to handle this task with its specialized workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Specialist"
+  short_description: "Create safe branches and atomic history"
+  default_prompt: "Use $git-master to handle this task with its specialized workflow."

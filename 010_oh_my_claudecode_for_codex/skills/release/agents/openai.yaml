@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release"
+  short_description: "Prepare and verify repository releases"
+  default_prompt: "Use $release to handle this task with its specialized workflow."

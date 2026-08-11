@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Wiki"
+  short_description: "Maintain durable linked project knowledge"
+  default_prompt: "Use $wiki to handle this task with its specialized workflow."

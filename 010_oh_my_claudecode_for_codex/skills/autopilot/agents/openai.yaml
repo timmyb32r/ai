@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autopilot"
+  short_description: "Execute a scoped idea end to end"
+  default_prompt: "Use $autopilot to handle this task with its specialized workflow."

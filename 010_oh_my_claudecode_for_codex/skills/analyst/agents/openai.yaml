@@ -1,0 +1,4 @@
+interface:
+  display_name: "Requirements Analyst"
+  short_description: "Clarify requirements and acceptance criteria"
+  default_prompt: "Use $analyst to handle this task with its specialized workflow."

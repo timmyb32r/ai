@@ -1,0 +1,4 @@
+interface:
+  display_name: "UltraQA"
+  short_description: "Cycle tests and fixes to a quality target"
+  default_prompt: "Use $ultraqa to handle this task with its specialized workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skillify"
+  short_description: "Turn a proven workflow into a skill"
+  default_prompt: "Use $skillify to handle this task with its specialized workflow."

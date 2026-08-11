@@ -1,0 +1,4 @@
+interface:
+  display_name: "Merge Readiness"
+  short_description: "Gate merging on evidence and understanding"
+  default_prompt: "Use $merge-readiness to handle this task with its specialized workflow."

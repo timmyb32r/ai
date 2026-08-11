@@ -1,0 +1,4 @@
+interface:
+  display_name: "Writer Memory"
+  short_description: "Track story canon and continuity"
+  default_prompt: "Use $writer-memory to handle this task with its specialized workflow."

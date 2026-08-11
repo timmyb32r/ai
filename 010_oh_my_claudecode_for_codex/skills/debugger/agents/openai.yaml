@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debugger"
+  short_description: "Trace failures to their minimal root cause"
+  default_prompt: "Use $debugger to handle this task with its specialized workflow."

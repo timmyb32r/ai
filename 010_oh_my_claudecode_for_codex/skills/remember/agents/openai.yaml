@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remember"
+  short_description: "Store reusable knowledge in the right place"
+  default_prompt: "Use $remember to handle this task with its specialized workflow."

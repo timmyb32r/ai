@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Reviewer"
+  short_description: "Find correctness and maintainability issues"
+  default_prompt: "Use $code-reviewer to handle this task with its specialized workflow."

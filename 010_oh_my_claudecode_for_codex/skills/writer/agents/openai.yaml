@@ -1,0 +1,4 @@
+interface:
+  display_name: "Technical Writer"
+  short_description: "Write accurate developer documentation"
+  default_prompt: "Use $writer to handle this task with its specialized workflow."

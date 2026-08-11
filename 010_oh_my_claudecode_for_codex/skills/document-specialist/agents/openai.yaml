@@ -1,0 +1,4 @@
+interface:
+  display_name: "Documentation Researcher"
+  short_description: "Research authoritative docs with citations"
+  default_prompt: "Use $document-specialist to handle this task with its specialized workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Data Scientist"
+  short_description: "Run rigorous evidence-backed data analysis"
+  default_prompt: "Use $scientist to handle this task with its specialized workflow."

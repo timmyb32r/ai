@@ -1,0 +1,4 @@
+interface:
+  display_name: "Focused Executor"
+  short_description: "Implement bounded changes and verify them"
+  default_prompt: "Use $executor to handle this task with its specialized workflow."

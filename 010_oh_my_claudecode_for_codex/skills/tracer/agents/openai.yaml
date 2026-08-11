@@ -1,0 +1,4 @@
+interface:
+  display_name: "Causal Tracer"
+  short_description: "Rank competing causes using concrete evidence"
+  default_prompt: "Use $tracer to handle this task with its specialized workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codebase Explorer"
+  short_description: "Map files, symbols, patterns, and dependencies"
+  default_prompt: "Use $explore to handle this task with its specialized workflow."

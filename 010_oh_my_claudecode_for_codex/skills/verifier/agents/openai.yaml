@@ -1,0 +1,4 @@
+interface:
+  display_name: "Completion Verifier"
+  short_description: "Prove completion with fresh evidence"
+  default_prompt: "Use $verifier to handle this task with its specialized workflow."

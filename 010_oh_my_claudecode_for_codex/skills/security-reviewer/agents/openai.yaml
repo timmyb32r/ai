@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Reviewer"
+  short_description: "Audit trust boundaries and vulnerabilities"
+  default_prompt: "Use $security-reviewer to handle this task with its specialized workflow."

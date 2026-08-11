@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Interview"
+  short_description: "Turn ambiguity into an approved spec"
+  default_prompt: "Use $deep-interview to handle this task with its specialized workflow."

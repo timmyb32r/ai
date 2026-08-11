@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Team"
+  short_description: "Coordinate bounded parallel agents"
+  default_prompt: "Use $team to handle this task with its specialized workflow."

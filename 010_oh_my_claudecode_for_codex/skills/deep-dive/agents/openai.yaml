@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Dive"
+  short_description: "Trace causes and crystallize requirements"
+  default_prompt: "Use $deep-dive to handle this task with its specialized workflow."

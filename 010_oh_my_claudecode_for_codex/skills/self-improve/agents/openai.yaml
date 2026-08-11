@@ -1,0 +1,4 @@
+interface:
+  display_name: "Self Improve"
+  short_description: "Evolve measured improvements safely"
+  default_prompt: "Use $self-improve to handle this task with its specialized workflow."

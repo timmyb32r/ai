@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Init"
+  short_description: "Generate hierarchical AGENTS.md guidance"
+  default_prompt: "Use $deepinit to handle this task with its specialized workflow."

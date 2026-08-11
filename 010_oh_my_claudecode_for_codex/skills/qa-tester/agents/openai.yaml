@@ -1,0 +1,4 @@
+interface:
+  display_name: "Runtime QA Tester"
+  short_description: "Validate real CLI and service behavior"
+  default_prompt: "Use $qa-tester to handle this task with its specialized workflow."

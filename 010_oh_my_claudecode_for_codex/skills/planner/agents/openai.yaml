@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implementation Planner"
+  short_description: "Create actionable plans without implementing"
+  default_prompt: "Use $planner to handle this task with its specialized workflow."

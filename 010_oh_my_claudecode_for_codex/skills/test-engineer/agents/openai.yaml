@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Engineer"
+  short_description: "Design tests, TDD flows, and flaky-test fixes"
+  default_prompt: "Use $test-engineer to handle this task with its specialized workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scientific Research"
+  short_description: "Run reproducible multi-stage research"
+  default_prompt: "Use $scientific-research to handle this task with its specialized workflow."

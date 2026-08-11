@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Session Manager"
+  short_description: "Manage isolated worktrees safely"
+  default_prompt: "Use $project-session-manager to handle this task with its specialized workflow."

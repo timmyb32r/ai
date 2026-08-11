@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify"
+  short_description: "Prove behavior with fresh evidence"
+  default_prompt: "Use $verify to handle this task with its specialized workflow."

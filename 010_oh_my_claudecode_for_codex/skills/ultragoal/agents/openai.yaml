@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ultragoal"
+  short_description: "Track durable multi-goal execution"
+  default_prompt: "Use $ultragoal to handle this task with its specialized workflow."

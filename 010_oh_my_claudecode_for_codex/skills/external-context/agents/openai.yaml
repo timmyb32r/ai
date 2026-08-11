@@ -1,0 +1,4 @@
+interface:
+  display_name: "External Context"
+  short_description: "Research authoritative sources with citations"
+  default_prompt: "Use $external-context to handle this task with its specialized workflow."

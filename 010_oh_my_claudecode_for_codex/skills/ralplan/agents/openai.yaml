@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralplan"
+  short_description: "Build and challenge a consensus plan"
+  default_prompt: "Use $ralplan to handle this task with its specialized workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Strict Critic"
+  short_description: "Challenge plans, designs, and completion claims"
+  default_prompt: "Use $critic to handle this task with its specialized workflow."

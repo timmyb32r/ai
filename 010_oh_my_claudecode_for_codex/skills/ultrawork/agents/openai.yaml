@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ultrawork"
+  short_description: "Run independent work in parallel"
+  default_prompt: "Use $ultrawork to handle this task with its specialized workflow."

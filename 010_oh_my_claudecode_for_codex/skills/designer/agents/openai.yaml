@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI/UX Designer"
+  short_description: "Design polished, intentional interfaces"
+  default_prompt: "Use $designer to handle this task with its specialized workflow."

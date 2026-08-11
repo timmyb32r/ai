@@ -1,0 +1,4 @@
+interface:
+  display_name: "Software Architect"
+  short_description: "Analyze architecture and technical tradeoffs"
+  default_prompt: "Use $architect to handle this task with its specialized workflow."

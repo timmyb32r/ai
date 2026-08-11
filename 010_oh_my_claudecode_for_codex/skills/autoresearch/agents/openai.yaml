@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autoresearch"
+  short_description: "Iterate against an explicit evaluator"
+  default_prompt: "Use $autoresearch to handle this task with its specialized workflow."

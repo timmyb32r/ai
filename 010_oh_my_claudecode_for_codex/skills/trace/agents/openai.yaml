@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trace"
+  short_description: "Explain causes with competing hypotheses"
+  default_prompt: "Use $trace to handle this task with its specialized workflow."

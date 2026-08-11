@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Slop Cleaner"
+  short_description: "Remove bloat while preserving behavior"
+  default_prompt: "Use $ai-slop-cleaner to handle this task with its specialized workflow."

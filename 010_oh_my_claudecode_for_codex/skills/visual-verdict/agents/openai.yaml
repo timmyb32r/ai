@@ -1,0 +1,4 @@
+interface:
+  display_name: "Visual Verdict"
+  short_description: "Compare UI screenshots to references"
+  default_prompt: "Use $visual-verdict to handle this task with its specialized workflow."
