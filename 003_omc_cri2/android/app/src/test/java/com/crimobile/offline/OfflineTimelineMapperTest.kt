@@ -17,6 +17,37 @@ import org.junit.Test
  */
 class OfflineTimelineMapperTest {
 
+    @Test
+    fun `three hours of fractional MP3 durations do not accumulate millisecond drift`() {
+        var epoch = 1_758_240_000.0
+        val segments = (0 until 3600).map { i ->
+            val start = epoch
+            epoch += if (i % 2 == 0) 3.024 else 2.988
+            seg(i, start, epoch)
+        }
+        val m = OfflineTimelineMapper(segments)
+        assertEquals(10_821_600L, m.segmentOffsetsMs.last())
+        val position = m.segmentOffsetsMs[3500] + 1000
+        assertEquals((segments[3500].timeline_start_sec * 1000).toLong() + 1000,
+            m.timelineMsForPosition(position))
+    }
+
+    @Test
+    fun `submillisecond duration is retained until cumulative conversion`() {
+        val m = OfflineTimelineMapper((0 until 1000).map { i -> seg(i, i * 1.0005, (i + 1) * 1.0005) })
+        assertEquals(1_000_500L, m.segmentOffsetsMs.last())
+    }
+
+    @Test
+    fun `gap is skipped in local playback and seek lands at next available audio`() {
+        val m = OfflineTimelineMapper(listOf(seg(1, 100.0, 103.0), seg(10, 200.0, 203.0)))
+        assertEquals(200_000L, m.timelineMsForPosition(3000))
+        val target = m.seekTarget(150_000)
+        assertEquals(1, target.segmentIndex)
+        assertEquals(0L, target.offsetInSegmentMs)
+        assertEquals(3000L, target.absolutePositionMs)
+    }
+
     private fun seg(id: Int, start: Double, end: Double) =
         SegmentMeta(id, start, end, "$id.ts", "zh$id", "py$id")
 

@@ -30,6 +30,7 @@ type Source struct {
 	ScrollSteps      int      `yaml:"scroll_steps"`
 	Adapter          string   `yaml:"adapter"`
 	CardSelector     string   `yaml:"card_selector"`
+	TitleSelector    string   `yaml:"title_selector"`
 	LoadMoreSelector string   `yaml:"load_more_selector"`
 	LoadMoreClicks   int      `yaml:"load_more_clicks"`
 	ID               string   `yaml:"id"`
@@ -40,6 +41,7 @@ type Source struct {
 	LinkSelector     string   `yaml:"link_selector"`
 	URLPattern       string   `yaml:"url_pattern"`
 	ContentSelector  string   `yaml:"content_selector"`
+	DateSelector     string   `yaml:"date_selector"` // Optional fallback for visible publication dates.
 	NextSelector     string   `yaml:"next_selector"`
 	ExtraListingURLs []string `yaml:"extra_listing_urls"`
 	MaxPages         int      `yaml:"max_pages"`
@@ -83,7 +85,9 @@ func LoadConfig(path string) (Config, error) {
 			return c, fmt.Errorf("invalid or duplicate id: %s", s.ID)
 		}
 		ids[s.ID] = true
-		if s.Adapter != "" && s.Adapter != "cloudera" {
+		switch s.Adapter {
+		case "", "cloudera", "digoal", "pingkai", "mirrorship", "infoq-bigdata", "modb-news":
+		default:
 			return c, fmt.Errorf("%s: unknown adapter %s", s.ID, s.Adapter)
 		}
 		if s.Name == "" {
@@ -99,7 +103,7 @@ func LoadConfig(path string) (Config, error) {
 				}
 			}
 		}
-		for _, sel := range []string{s.LinkSelector, s.ContentSelector, s.NextSelector, s.WaitSelector, s.LoadMoreSelector, s.CardSelector} {
+		for _, sel := range []string{s.LinkSelector, s.ContentSelector, s.DateSelector, s.NextSelector, s.WaitSelector, s.LoadMoreSelector, s.CardSelector, s.TitleSelector} {
 			if sel != "" {
 				if _, e = cascadia.Compile(sel); e != nil {
 					return c, fmt.Errorf("%s selector: %w", s.ID, e)

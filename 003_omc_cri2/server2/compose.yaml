@@ -1,0 +1,153 @@
+name: cri-server2
+
+x-runtime: &runtime
+  restart: unless-stopped
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+services:
+  server:
+    <<: *runtime
+    build: .
+    image: cri-server2:local
+    ports: ['${HTTP_PORT:-8080}:8080']
+    cpus: 1.0
+    mem_limit: 2560m
+    memswap_limit: 2560m
+    pids_limit: 128
+    ulimits:
+      nofile: {soft: 1024, hard: 1024}
+    tmpfs: ['/tmp:size=67108864,mode=1777']
+    environment:
+      ADDR: ':8080'
+      OUTPUT_DIR: /data
+      CHANNEL_URL: '${CHANNEL_URL:-https://sk.cri.cn/905.m3u8}'
+      ASR_URL: http://asr:8766
+      HANLP_URL: http://hanlp:8765
+      ASSETS_DIR: /assets
+      DELAY: '${DELAY:-180s}'
+      RETENTION: '${RETENTION:-3h}'
+      SNAPSHOT_TTL: '${SNAPSHOT_TTL:-10m}'
+      INFERENCE_TIMEOUT: '${INFERENCE_TIMEOUT:-60s}'
+      STALL_TIMEOUT: '${STALL_TIMEOUT:-30s}'
+      HLS_TIME: '${HLS_TIME:-3}'
+      QUEUE_SECONDS: '${QUEUE_SECONDS:-300}'
+      MAX_DATA_BYTES: '${MAX_DATA_BYTES:-10737418240}'
+      MIN_FREE_BYTES: '${MIN_FREE_BYTES:-10737418240}'
+      GOMEMLIMIT: 1792MiB
+      GOMAXPROCS: '1'
+    volumes:
+      - archive:/data
+      - type: bind
+        source: '${MODEL_ASSETS_DIR:?Set MODEL_ASSETS_DIR to the original server/.docker-cache directory}'
+        target: /assets
+        read_only: true
+        bind: {create_host_path: false}
+    depends_on:
+      asr: {condition: service_healthy}
+      hanlp: {condition: service_healthy}
+    networks: [default, inference]
+    healthcheck:
+      test: [CMD, wget, -qO-, 'http://127.0.0.1:8080/health/ready']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
+    stop_grace_period: 30s
+
+  asr:
+    <<: *runtime
+    build: {context: ., dockerfile: services/Dockerfile.asr, target: runtime}
+    image: cri-server2-asr:local
+    cpus: 2.0
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 64
+    ulimits:
+      nofile: {soft: 128, hard: 128}
+    tmpfs: ['/tmp:size=33554432,mode=1777']
+    environment:
+      SERVICE_KIND: asr
+      MODEL_DIR: /models
+      MODEL_THREADS: '2'
+      INFERENCE_TIMEOUT: '30'
+    volumes:
+      - type: bind
+        source: '${ASR_MODEL_DIR:?Set ASR_MODEL_DIR to the sense-voice-2024 directory}'
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+    networks: [inference]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 240s
+    stop_grace_period: 5s
+
+  hanlp:
+    <<: *runtime
+    build: {context: ., dockerfile: services/Dockerfile.hanlp}
+    image: cri-server2-hanlp:local
+    cpus: 1.0
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 64
+    ulimits:
+      nofile: {soft: 128, hard: 128}
+    tmpfs: ['/tmp:size=33554432,mode=1777']
+    environment:
+      SERVICE_KIND: hanlp
+      MODEL_DIR: /models
+      MODEL_THREADS: '1'
+      INFERENCE_TIMEOUT: '10'
+      HANLP_HOME: /models
+      HF_HOME: /models/huggingface
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+    volumes:
+      - type: bind
+        source: '${HANLP_ASSETS_DIR:?Set HANLP_ASSETS_DIR to a prepared HanLP cache directory}'
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+    networks: [inference]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 240s
+    stop_grace_period: 5s
+
+  prepare-hanlp:
+    profiles: [prepare]
+    build: {context: ., dockerfile: services/Dockerfile.hanlp}
+    image: cri-server2-hanlp:local
+    # Preparation writes only the explicitly mounted model directory. Runtime
+    # mounts it read-only and has no external network route.
+    user: '0:0'
+    command: [python, prepare_hanlp.py]
+    cpus: 1.0
+    mem_limit: 2g
+    environment:
+      HANLP_HOME: /models
+      HF_HOME: /models/huggingface
+    volumes:
+      - type: bind
+        source: '${HANLP_ASSETS_DIR:?Set HANLP_ASSETS_DIR}'
+        target: /models
+        bind: {create_host_path: false}
+
+volumes:
+  archive:
+networks:
+  inference: {internal: true}

@@ -13,7 +13,8 @@ android {
         targetSdk = 34
         versionCode = 2
         versionName = "2.0"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = providers.gradleProperty("nativeSmokeRunner")
+            .getOrElse("androidx.test.runner.AndroidJUnitRunner")
     }
 
     buildFeatures { compose = true }

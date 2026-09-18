@@ -1,6 +1,7 @@
 package com.crimobile.offline
 
 import com.crimobile.model.SegmentMeta
+import kotlin.math.roundToLong
 
 /**
  * Pure, testable mapping between absolute epoch-millisecond timeline positions
@@ -40,10 +41,14 @@ class OfflineTimelineMapper(segments: List<SegmentMeta>) {
     init {
         val sorted = segments.sortedBy { it.timeline_start_sec }
         val offsets = mutableListOf(0L)
+        var durationUs = 0L
         for (seg in sorted) {
-            val durMs = ((seg.timeline_end_sec - seg.timeline_start_sec) * 1000)
-                .toLong().coerceAtLeast(1)
-            offsets.add(offsets.last() + durMs)
+            // Epoch subtraction can yield 3.023999929 for a 3.024s MP3 segment.
+            // Round that representation error, then retain sub-ms duration until
+            // converting the cumulative media position, rather than losing 1ms per segment.
+            durationUs += ((seg.timeline_end_sec - seg.timeline_start_sec) * 1_000_000)
+                .roundToLong().coerceAtLeast(1000)
+            offsets.add(durationUs / 1000)
         }
         orderedSegments = sorted
         segmentOffsetsMs = offsets.toLongArray()
@@ -79,7 +84,7 @@ class OfflineTimelineMapper(segments: List<SegmentMeta>) {
         }
         if (lo >= orderedSegments.size) return orderedSegments.size - 1
         if (hi < 0) return -1
-        return hi
+        return lo // a seek into an outage lands at the next available segment
     }
 
     /**
@@ -127,7 +132,7 @@ class OfflineTimelineMapper(segments: List<SegmentMeta>) {
         if (idx < 0) return SeekTarget(0, 0L, 0L)
         val seg = orderedSegments[idx]
         val segStartMs = (seg.timeline_start_sec * 1000).toLong()
-        val segDurMs = ((seg.timeline_end_sec - seg.timeline_start_sec) * 1000).toLong()
+        val segDurMs = segmentOffsetsMs[idx + 1] - segmentOffsetsMs[idx]
         val offsetInSeg = (timelineMs - segStartMs).coerceIn(0, segDurMs)
         val absolutePos = (segmentOffsetsMs[idx] + offsetInSeg).coerceAtLeast(0)
         return SeekTarget(idx, offsetInSeg, absolutePos)

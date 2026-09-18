@@ -1,0 +1,14 @@
+.git
+.env
+.docker-cache
+assets
+data
+*.onnx
+**/*.pt
+*.bin
+*.gz
+*.tar
+*.tar.bz2
+**/__pycache__
+.venv
+test-output

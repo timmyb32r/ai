@@ -248,7 +248,7 @@ func TestShippedConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Sources) != 24 {
+	if len(c.Sources) != 41 {
 		t.Fatalf("sources: %d", len(c.Sources))
 	}
 }

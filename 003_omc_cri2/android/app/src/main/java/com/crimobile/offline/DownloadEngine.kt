@@ -3,11 +3,14 @@ package com.crimobile.offline
 import android.content.Context
 import com.crimobile.model.SubtitleSegment
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -44,11 +47,11 @@ data class DownloadProgress(
  * DownloadEngine is created fresh for each download / SyncWorker retry.
  */
 class DownloadEngine(
-    private val context: Context,
+    context: Context?,
     private val serverUrl: String,
-    private val storageManager: OfflineStorageManager
-) {
+    private val storageManager: OfflineStorageManager,
     private val client: OkHttpClient = sharedClient
+) {
 
     /** Fetch the server's archive time bounds. */
     suspend fun fetchArchiveInfo(): ArchiveInfo = withContext(Dispatchers.IO) {
@@ -57,7 +60,8 @@ class DownloadEngine(
             .header("Accept", "application/json")
             .build()
 
-        client.newCall(request).execute().use { response ->
+        client.readCancellable(request) { response ->
+            if (!response.isSuccessful) throw IOException("Archive status HTTP ${response.code}")
             val body = response.body?.string() ?: throw IOException("Empty status response")
             val json = JSONObject(body)
 
@@ -81,11 +85,13 @@ class DownloadEngine(
         endSec: Double,
         onProgress: suspend (DownloadProgress) -> Unit
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        val transfer = ArchiveTransfer(serverUrl, client)
+        var stagingSession: String? = null
         try {
             onProgress(DownloadProgress(currentAction = "Fetching segment list…", isRunning = true))
 
             // 1. Fetch paginated metadata
-            val allSegments = fetchAllSegments(startSec, endSec) { page, total ->
+            val allSegments = transfer.fetchSegments(startSec, endSec) { page, total ->
                 onProgress(DownloadProgress(
                     totalSegments = total,
                     downloadedSegments = 0,
@@ -94,15 +100,16 @@ class DownloadEngine(
                 ))
             }
 
-            if (!isActive) return@withContext Result.failure(Exception("Cancelled"))
+            currentCoroutineContext().ensureActive()
             if (allSegments.isEmpty()) {
-                return@withContext Result.failure(Exception("No segments found for the requested time range"))
+                throw IOException("No segments found for the requested time range")
             }
 
             DebugLogger.i(TAG, "downloadRange: ${allSegments.size} segments to download")
 
             // Create session directory before downloading
-            val sessionId = storageManager.createSession(startSec.toLong(), (endSec - startSec).toInt())
+            val sessionId = storageManager.createDownloadSession()
+            stagingSession = sessionId
 
             // 2. Download .ts files in parallel batches (10 concurrent)
             val totalSize = allSegments.size
@@ -112,19 +119,17 @@ class DownloadEngine(
             val savedSegments = mutableListOf<SubtitleSegment>()
 
             allSegments.chunked(CONCURRENT_DOWNLOADS).forEach { batch ->
-                if (!isActive) return@withContext Result.failure(Exception("Cancelled"))
+                currentCoroutineContext().ensureActive()
+                transfer.checkLease()
 
-                batch.map { segment ->
-                    async {
-                        downloadTsFile(segment)
-                    }
-                }.awaitAll().forEachIndexed { i, result ->
-                    if (result != null) {
-                        val segment = batch[i]
-                        storageManager.saveSegment(segment, result, sessionId)
-                        savedSegments.add(segment)
-                        downloadedCount++
-                    }
+                val audio = coroutineScope {
+                    batch.map { segment -> async { downloadTsFile(transfer, segment) } }.awaitAll()
+                }
+                audio.forEachIndexed { i, result ->
+                    val segment = batch[i]
+                    storageManager.saveSegment(segment, result, sessionId)
+                    savedSegments.add(segment)
+                    downloadedCount++
                 }
 
                 onProgress(DownloadProgress(
@@ -135,34 +140,26 @@ class DownloadEngine(
                 ))
             }
 
+            // Write the index under the shared storage lock (concurrent reads safe)
+            // and only for segments we actually saved audio for.
+            storageManager.writeSegmentIndex(sessionId, savedSegments)
+            storageManager.invalidateCache(sessionId) // still delete old cache
+            if (storageManager.concatAudioFiles(sessionId) == null) throw IOException("Could not assemble downloaded audio")
+            currentCoroutineContext().ensureActive()
+            transfer.checkLease()
+            storageManager.publishDownload(sessionId, startSec.toLong(), (endSec - startSec).toInt(), downloadedCount)
+            stagingSession = null
+
             onProgress(DownloadProgress(
                 totalSegments = totalSize,
                 downloadedSegments = downloadedCount,
                 currentAction = "Complete: $downloadedCount segments saved",
                 isRunning = false
             ))
-
-            // Write the index under the shared storage lock (concurrent reads safe)
-            // and only for segments we actually saved audio for.
-            storageManager.writeSegmentIndex(sessionId, savedSegments)
-            storageManager.invalidateCache(sessionId) // still delete old cache
-            storageManager.concatAudioFiles(sessionId) // → continuous.ts for gapless offline playback
-
-            // Update session index with final segment count
-            val sessions = storageManager.loadAllSessions().toMutableList()
-            val startSecL = startSec.toLong()
-            val durSec = (endSec - startSec).toInt()
-            sessions.removeAll { it.startSec == startSecL && it.durationSec == durSec }
-            sessions.add(OfflineStorageManager.SessionMeta(
-                startSec = startSecL,
-                durationSec = durSec,
-                segmentCount = downloadedCount,
-                createdAt = System.currentTimeMillis()
-            ))
-            storageManager.writeSessionsIndex(sessions)
-
             DebugLogger.i(TAG, "downloadRange complete: $downloadedCount/$totalSize segments")
             Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             DebugLogger.e(TAG, "downloadRange failed: ${e.message}", e)
             onProgress(DownloadProgress(
@@ -170,87 +167,39 @@ class DownloadEngine(
                 error = e.message ?: "Download failed"
             ))
             Result.failure(e)
+        } finally {
+            withContext(NonCancellable + Dispatchers.IO) {
+                stagingSession?.let { storageManager.discardDownload(it) }
+                transfer.release()
+            }
         }
     }
 
     // ── Internal ───────────────────────────────────────────────────────
 
     /**
-     * Fetches all segment metadata for the given time range using pagination.
-     */
-    private suspend fun fetchAllSegments(
-        startSec: Double,
-        endSec: Double,
-        onPage: suspend (Int, Int) -> Unit
-    ): List<SubtitleSegment> {
-        val allSegments = mutableListOf<SubtitleSegment>()
-        var offset = 0
-
-        while (currentCoroutineContext().isActive) {
-            val url = "$serverUrl/api/segments/range" +
-                "?start_sec=$startSec&end_sec=$endSec" +
-                "&limit=$PAGE_SIZE&offset=$offset"
-
-            val request = Request.Builder().url(url).header("Accept", "application/json").build()
-            // `use` guarantees the Response (and its connection) is released even
-            // when the body is null or an exception is thrown mid-parse.
-            val done = client.newCall(request).execute().use { response ->
-                val body = response.body?.string() ?: return@use true // stop on empty body
-                val json = JSONObject(body)
-
-                val segmentsArr = json.getJSONArray("segments")
-                val total = json.optInt("total", 0)
-
-                for (i in 0 until segmentsArr.length()) {
-                    // The segment object may be wrapped or direct — handle both
-                    val item = segmentsArr.optJSONObject(i) ?: continue
-                    // If the server returns the segment directly (not wrapped in a "segment" key),
-                    // parse it directly. Otherwise look for a "segment" key (SSE-like wrapper).
-                    val segmentObj = if (item.has("segment")) item.getJSONObject("segment") else item
-                    allSegments.add(com.crimobile.subtitles.SubtitleParser.parseSegment(segmentObj))
-                }
-
-                onPage(allSegments.size, total)
-
-                offset += PAGE_SIZE
-                offset >= total
-            }
-            if (done) break
-        }
-
-        return allSegments
-    }
-
-    /**
      * Downloads a single .ts audio file. Retries transient failures so a single
      * HTTP blip does not leave a segment without audio until the next daily sync.
      */
-    private suspend fun downloadTsFile(segment: SubtitleSegment): ByteArray? {
+    private suspend fun downloadTsFile(transfer: ArchiveTransfer, segment: SubtitleSegment): ByteArray {
         val tsFile = segment.ts_file
-        val url = "$serverUrl/hls/$tsFile"
+        var lastFailure: IOException? = null
         for (attempt in 1..TS_DOWNLOAD_ATTEMPTS) {
-            val request = Request.Builder().url(url).build()
+            currentCoroutineContext().ensureActive()
+            transfer.checkLease()
             try {
-                // `use` closes the Response on every path — including HTTP errors,
-                // which previously leaked a connection per failed download.
-                client.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) {
-                        return response.body?.bytes()
-                    } else {
-                        DebugLogger.w(TAG, "HTTP ${response.code} for $tsFile (attempt $attempt)")
-                    }
-                }
-            } catch (e: Exception) {
+                return transfer.audio(segment)
+            } catch (e: IOException) {
+                lastFailure = e
                 DebugLogger.w(TAG, "Failed to download $tsFile (attempt $attempt): ${e.message}")
             }
             if (attempt < TS_DOWNLOAD_ATTEMPTS) delay(TS_DOWNLOAD_RETRY_MS)
         }
-        return null
+        throw IOException("Incomplete download: $tsFile unavailable after $TS_DOWNLOAD_ATTEMPTS attempts", lastFailure)
     }
 
     companion object {
         private const val TAG = "CRIRadio:download"
-        private const val PAGE_SIZE = 500
         private const val CONCURRENT_DOWNLOADS = 10
         private const val TS_DOWNLOAD_ATTEMPTS = 3
         private const val TS_DOWNLOAD_RETRY_MS = 1000L

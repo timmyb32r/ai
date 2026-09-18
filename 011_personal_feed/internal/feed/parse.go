@@ -81,6 +81,20 @@ func meta(d *goquery.Document, selector string) string {
 	return strings.TrimSpace(v)
 }
 func parseDate(raw string) time.Time { t, _ := dateparse.ParseAny(strings.TrimSpace(raw)); return t }
+func selectedDate(root *goquery.Selection, selector string) time.Time {
+	if selector == "" {
+		return time.Time{}
+	}
+	el := root.Find(selector).First()
+	for _, attr := range []string{"datetime", "content"} {
+		if raw, ok := el.Attr(attr); ok {
+			if t := parseDate(raw); !t.IsZero() {
+				return t
+			}
+		}
+	}
+	return parseDate(text(el.Text()))
+}
 func parseFeed(body, base string) ([]Article, error) {
 	parsed, e := gofeed.NewParser().ParseString(body)
 	if e != nil {
@@ -157,7 +171,16 @@ func parseListing(body, base string, s Source) ([]Article, string, error) {
 			cardSelector = "article, .w-dyn-item, li"
 		}
 		card := el.Closest(cardSelector)
-		title := text(el.Find("h1,h2,h3,h4").First().Text())
+		title := ""
+		if s.TitleSelector != "" {
+			title = text(card.Find(s.TitleSelector).First().Text())
+			if title == "" {
+				title = text(el.Find(s.TitleSelector).First().Text())
+			}
+		}
+		if title == "" {
+			title = text(el.Find("h1,h2,h3,h4").First().Text())
+		}
 		if title == "" {
 			title = text(card.Find("h1,h2,h3,h4,.article-title").First().Text())
 		}
@@ -200,6 +223,9 @@ func parseListing(body, base string, s Source) ([]Article, string, error) {
 
 		date, _ := card.Find("time").First().Attr("datetime")
 		a.Published = parseDate(date)
+		if a.Published.IsZero() {
+			a.Published = selectedDate(card, s.DateSelector)
+		}
 		a.Summary = html.EscapeString(text(card.Find("p").First().Text()))
 		img, _ := card.Find("img").First().Attr("src")
 		a.Image = absolute(base, img)
@@ -213,8 +239,19 @@ func parseListing(body, base string, s Source) ([]Article, string, error) {
 	return out, next, nil
 }
 func (f *Fetcher) Discover(ctx context.Context, s Source) ([]Article, string, error) {
-	if s.Adapter == "cloudera" {
+	switch s.Adapter {
+	case "cloudera":
 		return f.cloudera(ctx, s)
+	case "digoal":
+		return f.digoal(ctx, s)
+	case "pingkai":
+		return f.pingkai(ctx, s)
+	case "mirrorship":
+		return f.mirrorship(ctx, s)
+	case "infoq-bigdata":
+		return f.infoqBigData(ctx, s)
+	case "modb-news":
+		return f.modbNews(ctx, s)
 	}
 	var warnings []string
 	var rssArticles []Article
@@ -319,12 +356,21 @@ func (f *Fetcher) Discover(ctx context.Context, s Source) ([]Article, string, er
 	}
 	out = append(rssArticles, out...)
 	unique := []Article{}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for _, a := range out {
-		if !seen[a.URL] {
-			seen[a.URL] = true
-			unique = append(unique, a)
+		if i, ok := seen[a.URL]; ok {
+			// The HTML supplement can provide a date omitted by the RSS item.
+			// Keep the RSS body and fill metadata before chronological sorting.
+			if unique[i].Published.IsZero() {
+				unique[i].Published = a.Published
+			}
+			if unique[i].Image == "" {
+				unique[i].Image = a.Image
+			}
+			continue
 		}
+		seen[a.URL] = len(unique)
+		unique = append(unique, a)
 	}
 	sortArticles(unique)
 	if len(unique) == 0 {
@@ -333,6 +379,15 @@ func (f *Fetcher) Discover(ctx context.Context, s Source) ([]Article, string, er
 	return unique, strings.Join(warnings, "; "), nil
 }
 func (f *Fetcher) Enrich(ctx context.Context, s Source, a Article) (Article, error) {
+	if s.Adapter == "digoal" {
+		return f.enrichDigoal(ctx, s, a)
+	}
+	if s.Adapter == "infoq-bigdata" {
+		return f.enrichInfoQ(ctx, s, a)
+	}
+	if s.Adapter == "mirrorship" && a.Content != "" {
+		return a, nil
+	}
 	body, base, e := f.Get(ctx, a.URL, false, "")
 	if e == nil {
 		a, e = extractArticle(body, base, s, a)
@@ -352,7 +407,13 @@ func extractArticle(body, base string, s Source, a Article) (Article, error) {
 		return a, e
 	}
 	u, _ := url.Parse(base)
-	title := meta(d, `meta[property="og:title"]`)
+	title := ""
+	if s.TitleSelector != "" {
+		title = text(d.Find(s.TitleSelector).First().Text())
+	}
+	if title == "" {
+		title = meta(d, `meta[property="og:title"]`)
+	}
 	if title == "" {
 		title = text(d.Find("h1").First().Text())
 	}
@@ -376,6 +437,9 @@ func extractArticle(body, base string, s Source, a Article) (Article, error) {
 		a.Published = t
 	}
 	readArticleMetadata(d, &a)
+	if a.Published.IsZero() {
+		a.Published = selectedDate(d.Selection, s.DateSelector)
+	}
 	content := ""
 	if s.ContentSelector != "" {
 		content, _ = d.Find(s.ContentSelector).First().Html()

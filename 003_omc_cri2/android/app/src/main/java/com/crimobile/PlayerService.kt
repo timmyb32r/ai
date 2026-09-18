@@ -12,7 +12,9 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import com.crimobile.player.TimelinePlaylistParserFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.crimobile.model.PlaybackState
@@ -58,9 +60,12 @@ class PlayerService : MediaSessionService() {
         // 1. Single ExoPlayer — used for both audio playback and MediaSession.
         //    Audio focus + becoming-noisy handling so the stream pauses (not plays
         //    over) incoming calls, other media apps, and headphone disconnects.
+        val playlistMaps = TimelinePlaylistParserFactory()
         exoPlayer = ExoPlayer.Builder(this)
             .setMediaSourceFactory(
-                DefaultMediaSourceFactory(this).setLiveTargetOffsetMs(3000)
+                HlsMediaSource.Factory(DefaultHttpDataSource.Factory())
+                    .setPlaylistParserFactory(playlistMaps)
+                    .setTimestampAdjusterInitializationTimeoutMs(10_000)
             )
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -76,7 +81,14 @@ class PlayerService : MediaSessionService() {
             }
 
         // 2. Radio player wraps the same ExoPlayer.
-        player = ExoRadioPlayer(exoPlayer)
+        player = ExoRadioPlayer(exoPlayer, playlistMaps)
+        scope.launch {
+            player.gapEvents.collect { durationMs ->
+                android.widget.Toast.makeText(this@PlayerService,
+                    "Пропущен недоступный фрагмент эфира (${durationMs / 1000} с)",
+                    android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
         RadioPlayerHolder.setPlayer(player)
 
         // 3. Media3 session — the single session used by both the platform

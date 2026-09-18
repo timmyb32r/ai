@@ -7,6 +7,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsManifest
 import com.crimobile.model.PlaybackState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +15,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
@@ -23,7 +26,8 @@ import com.crimobile.debug.DebugLogger
 private const val TAG = "CRIRadio:player"
 
 class ExoRadioPlayer(
-    private val player: ExoPlayer  // injected — PlayerService owns the ExoPlayer for MediaSession
+    private val player: ExoPlayer,  // injected — PlayerService owns the ExoPlayer for MediaSession
+    private val playlistMaps: TimelinePlaylistParserFactory? = null
 ) : RadioPlayer {
 
     private val scope = CoroutineScope(Dispatchers.Main)
@@ -44,6 +48,12 @@ class ExoRadioPlayer(
     private var currentHlsUrl: String? = null
     private val retry = RetryController(MAX_RETRIES, RETRY_BASE_DELAY_MS, RETRY_MAX_DELAY_MS)
     private var retryJob: Job? = null
+    private val gapTracker = PlaybackGapTracker()
+    private val _gapEvents = MutableSharedFlow<Long>(extraBufferCapacity = 4)
+    val gapEvents = _gapEvents.asSharedFlow()
+
+    private fun currentMap(): HlsTimelineMap? = (player.currentManifest as? HlsManifest)
+        ?.mediaPlaylist?.let { playlistMaps?.forPlaylist(it) }
 
     // Stored as a field so release() can remove it (defensive — ExoPlayer.release
     // also clears listeners, but explicit removal is correct hygiene and safe if
@@ -148,6 +158,14 @@ class ExoRadioPlayer(
             return
         }
         timeline.getWindow(idx, window)
+        val map = currentMap()
+        val mapped = map?.at(player.currentPosition)
+        if (mapped != null) {
+            _currentTimelineMs.value = mapped.epochMs
+            val gap = gapTracker.advance(map, player.currentPosition)
+            if (gap > 0) _gapEvents.tryEmit(gap)
+            return
+        }
         if (window.windowStartTimeMs != C.TIME_UNSET) {
             _currentTimelineMs.value = window.windowStartTimeMs + player.currentPosition
         }
@@ -158,6 +176,7 @@ class ExoRadioPlayer(
      * reconnect attempt after an error starts the backoff from scratch.
      */
     override fun play(hlsUrl: String) {
+        gapTracker.reset()
         DebugLogger.i(TAG, "play url=$hlsUrl")
         retry.reset()
         prepareAndPlay(hlsUrl)
@@ -243,13 +262,14 @@ class ExoRadioPlayer(
                 _behindLiveWindow.value = true
                 seekToLiveEdge()
             } else {
-                player.seekTo(pausedAtTimelineMs - window.windowStartTimeMs)
+                seekTo(pausedAtTimelineMs)
             }
         }
         player.play()
     }
 
     override fun seekTo(timelineMs: Long) {
+        gapTracker.resetPosition()
         DebugLogger.d(TAG, "seekTo $timelineMs")
         pausedAtTimelineMs = timelineMs  // remember so resume() doesn't jump back
         val window = Timeline.Window()
@@ -262,12 +282,14 @@ class ExoRadioPlayer(
             return
         }
         timeline.getWindow(idx, window)
+        currentMap()?.positionFor(timelineMs)?.let { player.seekTo(it); return }
         if (window.windowStartTimeMs != C.TIME_UNSET) {
             player.seekTo((timelineMs - window.windowStartTimeMs).coerceAtLeast(0))
         }
     }
 
     override fun seekToLiveEdge() {
+        gapTracker.resetPosition()
         DebugLogger.i(TAG, "seekToLiveEdge")
         player.seekToDefaultPosition()
         _behindLiveWindow.value = false

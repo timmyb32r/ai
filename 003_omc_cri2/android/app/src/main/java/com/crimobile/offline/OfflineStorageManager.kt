@@ -6,6 +6,7 @@ import com.crimobile.model.SubtitleSegment
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import com.crimobile.debug.DebugLogger
 
 /**
@@ -78,6 +79,63 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
             }
         }
         return sid
+    }
+
+    /** Keep failed downloads separate from an already saved session. */
+    fun createDownloadSession(): String = synchronized(lock) {
+        val sid = ".download-${java.util.UUID.randomUUID()}"
+        try {
+            check(sessionMetaDir(sid).mkdirs()) { "Cannot create download metadata directory" }
+            check(sessionAudioDir(sid).mkdirs()) { "Cannot create download audio directory" }
+        } catch (e: Exception) {
+            sessionDir(sid).deleteRecursively()
+            throw e
+        }
+        sid
+    }
+
+    fun discardDownload(sid: String) = synchronized(lock) {
+        require(sid.startsWith(".download-") && !sid.contains('/'))
+        sessionDir(sid).deleteRecursively()
+        Unit
+    }
+
+    fun publishDownload(stagingId: String, startSec: Long, durationSec: Int, segmentCount: Int) = synchronized(lock) {
+        require(stagingId.startsWith(".download-") && !stagingId.contains('/'))
+        require(segmentCount > 0)
+        val staging = sessionDir(stagingId)
+        if (!staging.isDirectory) throw IOException("Downloaded session is missing")
+        // Read-modify-write must share the directory transaction's lock: separate
+        // download workers must not overwrite one another's index entries.
+        val sessions = loadAllSessions().filterNot {
+            it.startSec == startSec && it.durationSec == durationSec
+        } + SessionMeta(startSec, durationSec, segmentCount, System.currentTimeMillis())
+        val target = sessionDir(sessionId(startSec, durationSec))
+        val backup = File(sessionsDir, ".replaced-${java.util.UUID.randomUUID()}")
+        val hadPrevious = target.exists()
+        if (hadPrevious && !target.renameTo(backup)) throw IOException("Cannot replace saved session")
+        if (!staging.renameTo(target)) {
+            val error = IOException("Cannot publish downloaded session")
+            if (hadPrevious && !backup.renameTo(target)) {
+                error.addSuppressed(IOException("Cannot restore saved session from ${backup.name}"))
+            }
+            throw error
+        }
+        try {
+            writeSessionsIndex(sessions)
+        } catch (error: Exception) {
+            // Keep both copies until the index commits. Restore the new data to
+            // staging so the caller's normal failure cleanup cannot delete the
+            // previously saved session.
+            if (!target.renameTo(staging)) {
+                error.addSuppressed(IOException("Cannot return downloaded session to staging"))
+            } else if (hadPrevious && !backup.renameTo(target)) {
+                error.addSuppressed(IOException("Cannot restore saved session from ${backup.name}"))
+            }
+            throw error
+        }
+        if (hadPrevious) backup.deleteRecursively()
+        Unit
     }
 
     // ── Write ──────────────────────────────────────────────────────────
@@ -254,10 +312,15 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
             }
             // Atomic write: .tmp → rename
             val tmpFile = File(sessionsDir, ".index.json.tmp")
-            tmpFile.writeText(arr.toString(2))
-            if (!tmpFile.renameTo(sessionsIndexFile)) {
-                // Fallback: write directly if rename fails (cross-filesystem edge case)
-                sessionsIndexFile.writeText(arr.toString(2))
+            try {
+                tmpFile.outputStream().use { output ->
+                    output.write(arr.toString(2).toByteArray(Charsets.UTF_8))
+                    output.fd.sync()
+                }
+                if (!tmpFile.renameTo(sessionsIndexFile)) {
+                    throw IOException("Cannot atomically replace saved sessions index")
+                }
+            } finally {
                 tmpFile.delete()
             }
         }
@@ -364,7 +427,7 @@ class OfflineStorageManager private constructor(private val rootDir: File) {
             val audioDir = sessionAudioDir(sessionId)
             if (!audioDir.exists()) return null
 
-            val tsFiles = audioDir.listFiles { f -> f.name.endsWith(".ts") }
+            val tsFiles = audioDir.listFiles { f -> f.name.matches(Regex("\\d+\\.ts")) }
                 ?.sortedBy { it.name.substringBefore('.').toIntOrNull() ?: Int.MAX_VALUE } ?: return null
             if (tsFiles.isEmpty()) return null
 

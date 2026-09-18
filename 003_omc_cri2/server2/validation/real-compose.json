@@ -1,0 +1,67 @@
+{
+  "result": "passed",
+  "verified_at_utc": "2026-09-18T19:57:52.741571+00:00",
+  "environment": "local Docker/Colima linux arm64; not target VM",
+  "input": "SenseVoice model bundle test_wavs/zh.wav; finite sample replayed by ingest reconnect",
+  "model": "SenseVoice Small int8 2024-07-17; zh; ITN; original readonly weights",
+  "tokenizer": "HanLP COARSE_ELECTRA_SMALL_ZH; original readonly cache",
+  "images": {
+    "server": "sha256:1382876fc2b7d658615dc77550ac705467644d187040eb028a626d0c03c13b96",
+    "asr": "sha256:c51c216452e56113c6d6ad0de07e2b8e6109521934983509de2337819252cc12",
+    "hanlp": "sha256:e15b8ab9d2a1a8d8ef5d52975201b9426425808a810227d847f2c129830fb70e"
+  },
+  "validated": {
+    "segments": 4,
+    "words": 16,
+    "audio_bytes": 97760,
+    "bkrs_words": 8,
+    "cedict_words": 8,
+    "wiktionary_words": 12
+  },
+  "assertions": {
+    "metadata_word_offsets_timing_and_pinyin": true,
+    "bkrs_cedict_wiktionary_output": true,
+    "hls_audio_download": true,
+    "complete_snapshot_pagination_and_audio": true,
+    "snapshot_release": true,
+    "unique_monotonic_segment_ids": true
+  },
+  "dropped_segments": 0,
+  "resources": {
+    "server": {
+      "memory_current_bytes": 2126241792,
+      "memory_peak_bytes": 2187952128,
+      "memory_limit_bytes": 2684354560,
+      "task_count_during_probe": 9,
+      "process_fd_counts": {
+        "7": 11
+      }
+    },
+    "asr": {
+      "memory_current_bytes": 609120256,
+      "memory_peak_bytes": 623271936,
+      "memory_limit_bytes": 1610612736,
+      "task_count_during_probe": 7,
+      "process_fd_counts": {
+        "7": 8,
+        "8": 4,
+        "9": 8
+      }
+    },
+    "hanlp": {
+      "memory_current_bytes": 404873216,
+      "memory_peak_bytes": 425775104,
+      "memory_limit_bytes": 2147483648,
+      "task_count_during_probe": 6,
+      "process_fd_counts": {
+        "7": 8,
+        "8": 4,
+        "9": 19
+      }
+    }
+  },
+  "limitations": [
+    "Short functional integration, not a long-duration stability or target-VM throughput measurement.",
+    "Restart persistence was separately verified before the final Go image rebuild."
+  ]
+}

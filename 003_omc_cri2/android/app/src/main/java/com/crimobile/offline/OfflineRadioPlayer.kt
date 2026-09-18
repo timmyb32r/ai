@@ -12,6 +12,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.crimobile.model.PlaybackState
 import com.crimobile.model.SegmentMeta
 import com.crimobile.player.RadioPlayer
+import com.crimobile.player.HlsTimelineMap
+import com.crimobile.player.PlaybackGapTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,6 +60,9 @@ class OfflineRadioPlayer(
     private val segmentOffsetsMs: LongArray
     private var builtCount = 0
     private val isContinuous: Boolean         // true → single concatenated file, no multi-window API
+    private val gapTracker = PlaybackGapTracker()
+    private val gapMap: HlsTimelineMap
+    private val appContext = context.applicationContext
 
     init {
         // Discover available audio in ONE directory listing (avoids N per-segment
@@ -76,6 +81,10 @@ class OfflineRadioPlayer(
         mapper = OfflineTimelineMapper(available)
         orderedSegments = mapper.orderedSegments
         segmentOffsetsMs = mapper.segmentOffsetsMs
+        gapMap = HlsTimelineMap(orderedSegments.mapIndexed { i, s ->
+            HlsTimelineMap.Segment(s.ts_file, segmentOffsetsMs[i], (s.timeline_start_sec * 1000).toLong(),
+                segmentOffsetsMs[i + 1] - segmentOffsetsMs[i])
+        })
 
         DebugLogger.i(TAG, "init ${orderedSegments.size} segments (${segments.size} total, " +
             "${segments.size - orderedSegments.size} missing audio)")
@@ -86,7 +95,10 @@ class OfflineRadioPlayer(
         var useContinuous = false
         if (orderedSegments.isNotEmpty()) {
             val concatFile = storageManager.getConcatenatedAudioFile(sessionId)
-            if (concatFile != null) {
+            val hasGaps = orderedSegments.zipWithNext().any { (a, b) ->
+                kotlin.math.abs(b.timeline_start_sec - a.timeline_end_sec) > 0.002
+            }
+            if (concatFile != null && !hasGaps) {
                 // Single continuous file → one decoder, zero gaps.
                 val factory = DefaultMediaSourceFactory(context)
                 player.setMediaSource(factory.createMediaSource(MediaItem.fromUri(Uri.fromFile(concatFile))))
@@ -192,6 +204,7 @@ class OfflineRadioPlayer(
     }
 
     override fun seekTo(timelineMs: Long) {
+        gapTracker.resetPosition()
         DebugLogger.d(TAG, "seekTo $timelineMs")
         if (orderedSegments.isEmpty()) return
         val target = mapper.seekTarget(timelineMs)
@@ -209,6 +222,7 @@ class OfflineRadioPlayer(
     }
 
     override fun seekToLiveEdge() {
+        gapTracker.resetPosition()
         DebugLogger.i(TAG, "seekToLiveEdge → last segment")
         if (orderedSegments.isNotEmpty()) {
             if (isContinuous) {
@@ -249,6 +263,9 @@ class OfflineRadioPlayer(
             }
         }
         _currentTimelineMs.value = mapper.timelineMsForPosition(totalPos).coerceAtLeast(0)
+        val gap = gapTracker.advance(gapMap, totalPos)
+        if (gap > 0) android.widget.Toast.makeText(appContext,
+            "Пропущен недоступный фрагмент эфира (${gap / 1000} с)", android.widget.Toast.LENGTH_LONG).show()
     }
 
     companion object {

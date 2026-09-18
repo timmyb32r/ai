@@ -1,0 +1,15 @@
+{
+  "result": "passed",
+  "verified_at_utc": "2026-09-18T20:11:21.307700+00:00",
+  "environment": "disposable Android 34 arm64 Google Play emulator",
+  "fixture": "Two independent MP3/TS segments with a 300-second program-date-time gap and EXT-X-DISCONTINUITY",
+  "assertions": {
+    "both_segments_played": true,
+    "native_audio_format_and_rendered_buffers": true,
+    "epoch_mapping_before_and_after_gap": true,
+    "single_gap_event_at_playback_crossing": true,
+    "completed_without_waiting_through_outage": true,
+    "seek_into_outage_lands_on_next_segment": true
+  },
+  "instrumentation_output": "Native HLS gap smoke passed: decoded both segments, mapped epochs, notified at crossing, completed without waiting through outage."
+}

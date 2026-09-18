@@ -1,0 +1,97 @@
+{
+  "status": {
+    "active_snapshots": 1,
+    "asr_engine": "sherpa-onnx",
+    "asr_model": "sense-voice-2024",
+    "channel_url": "/assets/sense-voice-2024/test_wavs/zh.wav",
+    "clients_connected": 0,
+    "dictionary": "bkrs",
+    "live_edge_offset_sec": 42.38193321228027,
+    "metadata_files": 10,
+    "newest_segment_end_sec": 1789761141.0710669,
+    "oldest_segment_start_sec": 1789761082.323,
+    "pipeline": {
+      "dropped_total": 0,
+      "ingest_restarts": 0,
+      "last_input_at": "2026-09-18T19:53:03.281254634Z",
+      "last_publication_at": "0001-01-01T00:00:00Z",
+      "pending_seconds": 0,
+      "published_total": 0,
+      "status": "connecting"
+    },
+    "segments_total": 10,
+    "status": "connecting",
+    "storage": {
+      "active_snapshots": 1,
+      "newest_segment_end_sec": 1789761141.0710669,
+      "oldest_segment_start_sec": 1789761082.323,
+      "segments_total": 10,
+      "storage_bytes": 412440
+    },
+    "storage_bytes": 412440
+  },
+  "ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "prior_history_and_snapshot_preserved": true,
+  "status_after_publication": {
+    "active_snapshots": 0,
+    "asr_engine": "sherpa-onnx",
+    "asr_model": "sense-voice-2024",
+    "channel_url": "/assets/sense-voice-2024/test_wavs/zh.wav",
+    "clients_connected": 0,
+    "dictionary": "bkrs",
+    "live_edge_offset_sec": 7.377933025360107,
+    "metadata_files": 18,
+    "newest_segment_end_sec": 1789761218.454067,
+    "oldest_segment_start_sec": 1789761082.323,
+    "pipeline": {
+      "dropped_total": 0,
+      "ingest_restarts": 4,
+      "last_input_at": "2026-09-18T19:53:38.395056821Z",
+      "last_publication_at": "2026-09-18T19:53:38.615044593Z",
+      "pending_seconds": 0,
+      "published_total": 8,
+      "status": "running"
+    },
+    "segments_total": 18,
+    "status": "running",
+    "storage": {
+      "active_snapshots": 0,
+      "newest_segment_end_sec": 1789761218.454067,
+      "oldest_segment_start_sec": 1789761082.323,
+      "segments_total": 18,
+      "storage_bytes": 710744
+    },
+    "storage_bytes": 710744
+  },
+  "ids_after_publication": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17
+  ]
+}

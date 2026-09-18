@@ -10,6 +10,61 @@ workers: 3
 browser_path: /usr/bin/chromium
 browser_no_sandbox: true # Container runs as unprivileged user; Chromium namespace sandbox unavailable.
 sources:
+  - id: airbyte
+    name: Airbyte
+    url: https://airbyte.com/blog
+    link_selector: '.blog_list-wrapper .library-blog_card-link[href]'
+    card_selector: '.library-blog_item'
+    url_pattern: '^https://airbyte\.com/blog/[^/?]+/?$'
+    next_selector: 'a.w-pagination-next'
+    max_pages: 2
+    browser_fallback: true
+  - id: astronomer
+    name: Astronomer
+    url: https://www.astronomer.io/blog/
+    link_selector: 'article.post-card h2 a[href]'
+    card_selector: 'article.post-card'
+    url_pattern: '^https://www\.astronomer\.io/blog/[^/?]+/?$'
+    max_pages: 1
+    browser_fallback: true
+  - id: openlineage
+    name: OpenLineage
+    url: https://openlineage.io/blog/
+    feed_url: https://openlineage.io/blog/feed.json
+    link_selector: 'article header h2 a[href]'
+    card_selector: article
+    next_selector: 'a.pagination-nav__link--next'
+    max_pages: 2
+    browser_fallback: true
+  - id: meltano
+    name: Meltano
+    url: https://meltano.com/blog
+    link_selector: 'article.blog-list-item .blog-list-item-text > a[href]'
+    card_selector: 'article.blog-list-item'
+    date_selector: '.blog-list-item-date, .blog-author-date .bold'
+    url_pattern: '^https://meltano\.com/blog/[^/?]+/?$'
+    browser: true
+    browser_fallback: true
+    wait_selector: 'article.blog-list-item'
+    load_more_selector: '#load-more-button'
+    load_more_clicks: 1
+  - id: onehouse
+    name: Onehouse
+    url: https://www.onehouse.ai/blog
+    link_selector: 'header a[aria-label="title link"][href^="/blog/"], article[data-blog-card] a.group[href^="/blog/"]'
+    card_selector: 'article[data-blog-card], header'
+    url_pattern: '^https://www\.onehouse\.ai/blog/[^/?]+/?$'
+    max_pages: 1
+    browser_fallback: true
+  - id: slingdata
+    name: SlingData Articles
+    url: https://slingdata.io/articles/
+    feed_url: https://slingdata.io/rss.xml
+    link_selector: 'main article a.group[href^="/articles/"]'
+    card_selector: article
+    url_pattern: '^https://slingdata\.io/articles/[^/?]+/?$'
+    max_pages: 1
+    browser_fallback: true
   - id: cdata
     name: "CData"
     url: https://www.cdata.com/blog/
@@ -192,3 +247,83 @@ sources:
     url_pattern: "/blog/[^/?]+/?$"
     browser_fallback: true
     extra_listing_urls: ["https://mws.ru/blog/?page=2"]
+
+  # Chinese blogs and technical communities
+  - id: tapdata-cn
+    name: TapData 中文博客
+    url: https://tapdata.net/blog.html
+    link_selector: 'a.news_list_item_inner'
+    card_selector: '.news_list_item_line'
+    date_selector: '.news_list_item_date, .news_detail_date'
+    url_pattern: '^https://tapdata\.net/(blog/)?[^/?]+\.html$'
+    max_pages: 1
+  - id: taosdata
+    name: TDengine 涛思数据博客
+    url: https://www.taosdata.com/blog
+    link_selector: 'main .gb-query-loop-item > a.gb-container-2d94c046'
+    card_selector: '.gb-query-loop-item'
+    title_selector: '.gb-headline-adfcb47c, main h1'
+    url_pattern: '^https://www\.taosdata\.com/[^?#]+\.html$'
+    next_selector: '.gb-query-loop-pagination a.gb-button-1e099794'
+    max_pages: 2
+  - id: timecho
+    name: Timecho 技术解析
+    url: https://www.timecho.com/tags/introduction
+    link_selector: '.main-post-list-container a.post-container-wrapper'
+    card_selector: '.post-container-wrapper'
+    title_selector: '.post-detail-title, .page-content-title'
+    date_selector: '.post-detail-date'
+    url_pattern: '^https://www\.timecho\.com/archives/[^/?]+$'
+    extra_listing_urls: ['https://www.timecho.com/tags/introduction/page/2']
+    max_pages: 2
+  - id: digoal
+    name: Digoal PostgreSQL Blog
+    url: https://github.com/digoal/blog
+    adapter: digoal
+    listing_url: https://raw.githubusercontent.com/digoal/blog/master/README.md
+  - id: selectdb
+    name: SelectDB
+    url: https://www.selectdb.com/blogs
+    link_selector: a.blog-card
+    card_selector: a.blog-card
+    title_selector: .blog-card-title
+    date_selector: .blog-card-meta-date
+    url_pattern: '^https://www.selectdb.com/blog/[0-9]+$'
+    next_selector: '.pagination a.page-btn:last-child'
+    max_pages: 2
+  - id: mirrorship
+    name: Mirrorship
+    url: https://www.mirrorship.cn/zh-CN/blog
+    adapter: mirrorship
+  - id: pingkai
+    name: Pingkai / TiDB Community
+    url: https://pingkai.cn/tidbcommunity/blog
+    listing_url: https://pingkai.cn/tidbcommunity/blog?latest=true
+    adapter: pingkai
+    content_selector: article
+  - id: aliyun-profile
+    name: Aliyun — 灵杰开发者
+    url: https://developer.aliyun.com/profile/gfbp4bwpctdbo
+    link_selector: '.dynamic-title a[href^="/article/"]'
+    browser_fallback: true
+    wait_selector: '.dynamic-title a[href]'
+    card_selector: '.news-item-a'
+    date_selector: '.article-time'
+    url_pattern: '^https://developer\.aliyun\.com/article/[0-9]+$'
+    max_pages: 1
+  - id: whaleops
+    name: WhaleOps — 白鲸开源
+    url: https://www.whaleops.com/846829-846839.html
+    link_selector: 'a.newTitle.pc[href]'
+    card_selector: 'li.modSet'
+    date_selector: '.nDate'
+    url_pattern: '^https://www\.whaleops\.com/846839-846849_[0-9]+\.html$'
+    max_pages: 1
+  - id: modb-news
+    name: 墨天轮 — 最新资讯
+    url: https://www.modb.pro/dbNews
+    adapter: modb-news
+  - id: infoq-bigdata
+    name: InfoQ 中国 — 大数据
+    url: https://www.infoq.cn/topic/bigdata
+    adapter: infoq-bigdata
