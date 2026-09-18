@@ -26,7 +26,7 @@ def quote(value):
 with env.open('x') as f:
     f.write('MODEL_ASSETS_DIR=' + quote(str(assets)) + '\n')
     f.write('ASR_MODEL_DIR=' + quote(str(assets / 'sense-voice-2024')) + '\n')
-    f.write('HANLP_ASSETS_DIR=' + quote(str(hanlp)) + '\nHTTP_PORT=8080\n')
+    f.write('HANLP_ASSETS_DIR=' + quote(str(hanlp)) + '\nHTTP_PORT=8081\n')
 print('Validated existing SenseVoice/dictionaries; wrote .env without copying assets.')
 print('Prepare HanLP once: docker compose --profile prepare run --rm --build prepare-hanlp')
 print('Then: docker compose up -d --build')

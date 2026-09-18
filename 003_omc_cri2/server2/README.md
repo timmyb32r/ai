@@ -17,7 +17,7 @@ cp .env.example .env
 MODEL_ASSETS_DIR=/absolute/path/server/.docker-cache
 ASR_MODEL_DIR=/absolute/path/server/.docker-cache/sense-voice-2024
 HANLP_ASSETS_DIR=/absolute/path/hanlp-models
-HTTP_PORT=8080
+HTTP_PORT=8081
 ```
 
 `MODEL_ASSETS_DIR` должен содержать `dabkrs.gz`, `cedict_ts.u8`, `zh-extract.jsonl.gz`, `Unihan_Readings.txt`. Каталог SenseVoice должен содержать `model.int8.onnx` и `tokens.txt`. Эти файлы уже используются старой сборкой; повторно скачивать их не нужно.
@@ -29,10 +29,12 @@ mkdir -p /absolute/path/hanlp-models
 docker compose --profile prepare run --build --rm prepare-hanlp
 docker compose up --build -d --wait --wait-timeout 600
 docker compose ps
-curl -f http://localhost:8080/health/ready
+curl -f http://localhost:8081/health/ready
 ```
 
 Первый запуск ждёт загрузки словарей и наполнения трёхминутного буфера. На системах с отдельным бинарником Compose замените `docker compose` на `docker-compose`. Подготовка HanLP требует интернета; сервисы распознавания во время работы используют внутреннюю сеть и готовые модели только для чтения. Существующий кеш HanLP также можно использовать, см. [инструкции сервисов](services/README.md).
+
+Публичный порт CRI по умолчанию — **8081**, чтобы RSS-сервис мог использовать 8080. Android по умолчанию обращается к `http://china-radio-international.duckdns.org:8081` (эмулятор — `http://10.0.2.2:8081`). Если `.env` уже создан, замените в нём `HTTP_PORT=8080` на `HTTP_PORT=8081`: пример не переопределяет существующий файл. Внутри контейнера сервер продолжает слушать 8080; при запуске Go напрямую адрес по умолчанию — `:8081`.
 
 Для параллельной проверки рядом со старым сервером выберите другой `HTTP_PORT`, например `18088`. При окончательном переключении освободите прежний порт и измените адрес сервера в Android при необходимости. Старую директорию и старый Docker volume эта версия не изменяет.
 

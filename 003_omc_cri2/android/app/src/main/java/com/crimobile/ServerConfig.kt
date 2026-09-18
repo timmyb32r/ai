@@ -6,9 +6,9 @@ object ServerConfig {
     /** Default server URL — detects emulator vs real device. */
     val defaultUrl: String
         get() = if (isEmulator) {
-            "http://10.0.2.2:8080"
+            "http://10.0.2.2:8081"
         } else {
-            "http://china-radio-international.duckdns.org:8080"
+            "http://china-radio-international.duckdns.org:8081"
         }
 
     private val isEmulator: Boolean

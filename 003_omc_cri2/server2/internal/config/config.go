@@ -17,7 +17,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	c := Config{Addr: env("ADDR", ":8080"), ChannelURL: env("CHANNEL_URL", "https://sk.cri.cn/905.m3u8"), OutputDir: env("OUTPUT_DIR", "/data"), ASRURL: env("ASR_URL", "http://asr:8766"), HanLPURL: env("HANLP_URL", "http://hanlp:8765"), AssetsDir: env("ASSETS_DIR", "/assets"), FFmpeg: env("FFMPEG_PATH", "ffmpeg"), SegmentSeconds: 3, QueueSeconds: 300, Delay: 180 * time.Second, Retention: 3 * time.Hour, SnapshotTTL: 10 * time.Minute, InferenceTimeout: 60 * time.Second, StallTimeout: 30 * time.Second, MaxBytes: 10 << 30, ReserveBytes: 10 << 30}
+	c := Config{Addr: env("ADDR", ":8081"), ChannelURL: env("CHANNEL_URL", "https://sk.cri.cn/905.m3u8"), OutputDir: env("OUTPUT_DIR", "/data"), ASRURL: env("ASR_URL", "http://asr:8766"), HanLPURL: env("HANLP_URL", "http://hanlp:8765"), AssetsDir: env("ASSETS_DIR", "/assets"), FFmpeg: env("FFMPEG_PATH", "ffmpeg"), SegmentSeconds: 3, QueueSeconds: 300, Delay: 180 * time.Second, Retention: 3 * time.Hour, SnapshotTTL: 10 * time.Minute, InferenceTimeout: 60 * time.Second, StallTimeout: 30 * time.Second, MaxBytes: 10 << 30, ReserveBytes: 10 << 30}
 	for key, p := range map[string]*time.Duration{"DELAY": &c.Delay, "RETENTION": &c.Retention, "SNAPSHOT_TTL": &c.SnapshotTTL, "INFERENCE_TIMEOUT": &c.InferenceTimeout, "STALL_TIMEOUT": &c.StallTimeout} {
 		if raw := os.Getenv(key); raw != "" {
 			v, e := time.ParseDuration(raw)

@@ -17,7 +17,7 @@ services:
     <<: *runtime
     build: .
     image: cri-server2:local
-    ports: ['${HTTP_PORT:-8080}:8080']
+    ports: ['${HTTP_PORT:-8081}:8080']
     cpus: 1.0
     mem_limit: 2560m
     memswap_limit: 2560m
