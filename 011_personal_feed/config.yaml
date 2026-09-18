@@ -1,0 +1,194 @@
+# Personal Feed — configuration is read at startup.
+listen: ":8080"
+database: /data/feed.db
+public_base_url: "" # Optional: http://feeds.example.com:8080
+interval: 30m
+timeout: 45s
+initial_items: 20
+max_items: 100
+workers: 3
+browser_path: /usr/bin/chromium
+browser_no_sandbox: true # Container runs as unprivileged user; Chromium namespace sandbox unavailable.
+sources:
+  - id: cdata
+    name: "CData"
+    url: https://www.cdata.com/blog/
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+  - id: alibaba
+    name: "Alibaba Cloud"
+    url: https://www.alibabacloud.com/blog
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+_[0-9]+$"
+    browser_fallback: true
+  - id: ibm
+    name: "IBM Think Insights"
+    url: https://www.ibm.com/think/insights
+    link_selector: "[href*=\"/think/insights/\"]"
+    url_pattern: "/think/insights/[^/?]+$"
+    browser_fallback: true
+    listing_url: "https://www.ibm.com/content/adobe-cms/us/en/think/insights/jcr:content/root/table_of_contents/horizontal_media_gro.horizontal-media-group-results.html?pageNum=1&itemsPerPage=24"
+  - id: informatica
+    name: "Informatica"
+    url: https://www.informatica.com/blogs.html
+    link_selector: "a.blog-infa-tile"
+    url_pattern: "/blogs/[^/]+\\.html$"
+    browser_fallback: true
+    browser: true
+    listing_url: "https://www.informatica.com/blogs.html#t=WWW&sort=%40wwwpublishdate%20descending&numberOfResults=27"
+    wait_selector: "a.CoveoResultLink"
+    load_more_selector: ".coveo-pager-next span[role=button]"
+    load_more_clicks: 2
+  - id: huawei
+    name: "Huawei Cloud"
+    url: https://bbs.huaweicloud.com/blogs
+    link_selector: "a.blogs-title"
+    url_pattern: "/blogs/[0-9]+$"
+    browser_fallback: true
+    browser: true
+    scroll_steps: 3
+  - id: tencent
+    name: "Tencent Cloud Developer"
+    url: https://cloud.tencent.com/developer
+    link_selector: "a.cdc-article-panel-response2__title"
+    url_pattern: "/developer/article/[0-9]+$"
+    browser_fallback: true
+    browser: true
+    scroll_steps: 3
+  - id: cloudera
+    name: "Cloudera"
+    url: https://www.cloudera.com/blog.html
+    link_selector: "article h2 a, article h3 a, .article-title a"
+    url_pattern: "/blog/[^/]+/[^/]+\\.html$"
+    browser_fallback: true
+    adapter: "cloudera"
+    listing_url: "https://www.cloudera.com/blog/all-blogs.category-posts.json"
+  - id: precisely
+    name: "Precisely"
+    url: https://www.precisely.com/blog/
+    link_selector: "a.loop-item--post"
+    url_pattern: "/blog/[^/]+/[^/]+/?$"
+    browser_fallback: true
+    browser: true
+    wait_selector: "a.loop-item--post"
+    load_more_selector: "a.facetwp-page.next"
+    load_more_clicks: 1
+  - id: weld
+    name: "Weld"
+    url: https://weld.app/blog
+    link_selector: "h2 a[href], h3 a[href]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+    browser: true
+    wait_selector: "main h2 a[href*=\"/blog/\"]"
+    load_more_selector: "button.mx-auto"
+    load_more_clicks: 5
+  - id: integrate
+    name: "Integrate.io"
+    url: https://www.integrate.io/blog/
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+    next_selector: "a.next, a[rel=next]"
+  - id: rivery
+    name: "Rivery"
+    url: https://rivery.io/blog/
+    link_selector: "a.tease__link, a.blog-tease__link"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+    next_selector: "a.next, a[rel=next]"
+    extra_listing_urls: ["https://rivery.io/blog/page/2/"]
+  - id: dbconvert
+    name: "DBConvert"
+    url: https://dbconvert.com/blog/
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+  - id: databricks
+    name: "Databricks"
+    url: https://www.databricks.com/blog
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+  - id: claude
+    name: "Claude"
+    url: https://claude.com/blog
+    link_selector: "a.clickable_link[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+    card_selector: ".w-dyn-item"
+    next_selector: "a.w-pagination-next"
+  - id: ververica
+    name: "Ververica"
+    url: https://www.ververica.com/blog
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+    next_selector: "a[aria-label=\"Next page\"]"
+  - id: tapdata
+    name: "TapData"
+    url: https://tapdata.io/blog/
+    link_selector: "a.blog_article_item-content"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+  - id: cockroachlabs
+    name: "Cockroach Labs"
+    url: https://www.cockroachlabs.com/blog/
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+    next_selector: "a[aria-label=\"Next Page\"]"
+  - id: vk-data-ml
+    name: "VK Cloud — Data & ML"
+    url: https://cloud.vk.ru/blog/hubs/data-ml/
+    link_selector: "[class*=\"ArticleCard_\"] a[href]"
+    url_pattern: "^https://cloud.vk.ru/blog/[^/?]+/$"
+    browser_fallback: true
+    card_selector: "[class*=\"ArticleCard_card\"]"
+  - id: uber
+    name: "Uber Engineering"
+    url: https://www.uber.com/us/en/blog/engineering/
+    link_selector: "a.css-gCCMpk"
+    url_pattern: "/us/en/blog/[^/?]+/$"
+    browser_fallback: true
+    extra_listing_urls: ["https://www.uber.com/us/en/blog/engineering/page/2/"]
+  - id: ian-macomber
+    name: "Ian Macomber"
+    url: https://www.iandmacomber.com/
+    link_selector: "a[href*=\"/blog/\"]:not([href$=\"/about\"])"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+  - id: risingwave
+    name: "RisingWave"
+    url: https://risingwave.com/blog/
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+    browser: true
+    wait_selector: 'button[class*="w-1/2"]'
+    load_more_selector: 'button[class*="w-1/2"]'
+    load_more_clicks: 2
+  - id: streamkap
+    name: "Streamkap"
+    url: https://streamkap.com/blog
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+  - id: yandex-research
+    name: "Yandex Research"
+    url: https://research.yandex.com/blog
+    link_selector: "a[href*=\"/blog/\"]"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+    browser: true
+    wait_selector: "[class*=\"PostItem_\"]"
+    load_more_selector: "article button"
+    load_more_clicks: 4
+  - id: mws
+    name: "MWS"
+    url: https://mws.ru/blog/
+    link_selector: "a.news-card-item"
+    url_pattern: "/blog/[^/?]+/?$"
+    browser_fallback: true
+    extra_listing_urls: ["https://mws.ru/blog/?page=2"]

@@ -1,0 +1,21 @@
+services:
+  feed:
+    build: .
+    restart: unless-stopped
+    dns:
+      - "${DNS_SERVER:-1.1.1.1}"
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - feed-data:/data
+    shm_size: 256mb
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "personal-feed", "-config", "/app/config.yaml", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+volumes:
+  feed-data:

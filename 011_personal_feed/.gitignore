@@ -1,0 +1,7 @@
+/data/
+/reports/
+/personal-feed
+*.db
+*.db-shm
+*.db-wal
+config.local.yaml
